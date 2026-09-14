@@ -1,0 +1,120 @@
+"""Save/load (spec §8.5) via JSON — human-readable, no pickle trust issues.
+
+Serializes just enough to resume: the current map, both fog grids, the
+player, and the living monsters/chests on the current level. Regenerating a
+fresh dungeon on load is not an option (the player would lose position/HP
+continuity), so the exact map is round-tripped as a list of row strings.
+"""
+
+import json
+
+from game.entity import Entity
+from game.item import Chest, Item
+from game.monster import Monster
+
+SAVE_VERSION = 1
+
+
+def _entity_to_dict(e):
+    d = {'x': e.x, 'y': e.y, 'char': e.char, 'color': e.color, 'name': e.name}
+    if isinstance(e, Monster):
+        d.update(type='monster', kind=e.kind, hp=e.hp, max_hp=e.max_hp,
+                  power=e.power, alive=e.alive, is_boss=e.is_boss)
+    elif isinstance(e, Chest):
+        d.update(type='chest', guaranteed_min_rarity=e.guaranteed_min_rarity)
+    elif isinstance(e, Item):
+        # Only reachable from an old (pre-chest) save file -- current play
+        # never leaves a bare Item sitting in state.entities anymore.
+        d.update(type='item', kind=e.kind, rarity=e.rarity)
+    else:
+        d.update(type='entity')
+    return d
+
+
+def _entity_from_dict(d):
+    if d['type'] == 'monster':
+        m = Monster(d['x'], d['y'], d['kind'], is_boss=d.get('is_boss', False))
+        m.hp, m.max_hp, m.power, m.alive = d['hp'], d['max_hp'], d['power'], d['alive']
+        return m
+    if d['type'] == 'chest':
+        return Chest(d['x'], d['y'], d.get('guaranteed_min_rarity'))
+    if d['type'] == 'item':
+        return Item(d['x'], d['y'], d['kind'], d.get('rarity', 'common'))
+    e = Entity(d['x'], d['y'], d['char'], color=d['color'], name=d['name'])
+    return e
+
+
+def _gear_to_dict(item):
+    return None if item is None else {'kind': item.kind, 'rarity': item.rarity}
+
+
+def _gear_from_dict(d):
+    return None if d is None else Item(0, 0, d['kind'], d['rarity'])
+
+
+def state_to_dict(state):
+    return {
+        'version': SAVE_VERSION,
+        'width': state.width,
+        'height': state.height,
+        'fov_radius': state.fov_radius,
+        'depth': state.depth,
+        'game_over': state.game_over,
+        'game_map': [''.join(row) for row in state.game_map],
+        'seen': [[bool(c) for c in row] for row in state.seen],
+        'messages': state.messages,
+        'player': {
+            'x': state.player.x, 'y': state.player.y,
+            'char_class': state.player.char_class,
+            'hp': state.player.hp, 'max_hp': state.player.max_hp,
+            'base_power': state.player.base_power, 'power': state.player.power,
+            'defense': state.player.defense,
+            'weapon': _gear_to_dict(state.player.weapon),
+            'armor': _gear_to_dict(state.player.armor),
+            'inventory': list(state.player.inventory),
+        },
+        'entities': [_entity_to_dict(e) for e in state.entities if e is not state.player],
+    }
+
+
+def apply_dict(state, data):
+    """Mutate `state` in place to match a previously saved dict."""
+    state.width = data['width']
+    state.height = data['height']
+    state.fov_radius = data['fov_radius']
+    state.depth = data['depth']
+    state.game_over = data['game_over']
+    state.game_map = [list(row) for row in data['game_map']]
+    state.seen = data['seen']
+    state.visible = [[False] * state.width for _ in range(state.height)]
+    state.messages = data['messages']
+
+    p = data['player']
+    state.player.x, state.player.y = p['x'], p['y']
+    # get() with fallbacks: saves from before classes/gear existed had no field.
+    state.player.char_class = p.get('char_class', 'warrior')
+    state.player.hp, state.player.max_hp = p['hp'], p['max_hp']
+    state.player.base_power = p.get('base_power', p['power'])
+    state.player.power = p['power']
+    state.player.defense = p.get('defense', 0)
+    state.player.weapon = _gear_from_dict(p.get('weapon'))
+    state.player.armor = _gear_from_dict(p.get('armor'))
+    state.player.inventory = list(p['inventory'])
+
+    state.cancel_monster_phase()  # queued monsters belong to the discarded level
+    state.entities = [state.player] + [_entity_from_dict(d) for d in data['entities']]
+    state.update_fov()
+
+
+def save_game(state, path):
+    with open(path, 'w') as f:
+        json.dump(state_to_dict(state), f)
+
+
+def load_game(path):
+    """Returns a dict suitable for apply_dict(), or None if no save exists."""
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None

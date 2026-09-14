@@ -1,0 +1,57 @@
+"""The renderer interface. Three methods is enough.
+
+get_action() returns a *semantic* action string, never a keycode — that is what
+keeps the game loop identical across curses and SDL.
+"""
+
+
+class Action:
+    """Valid return values from Renderer.get_action()."""
+    MOVE_N = 'move_n'
+    MOVE_S = 'move_s'
+    MOVE_W = 'move_w'
+    MOVE_E = 'move_e'
+    # Arrow keys. For a warrior these behave exactly like MOVE_* (walk /
+    # bump-attack); for an archer they fire an arrow instead of moving.
+    # GameState decides which, based on player.char_class -- the renderer
+    # doesn't need to know about classes at all.
+    SHOOT_N = 'shoot_n'
+    SHOOT_S = 'shoot_s'
+    SHOOT_W = 'shoot_w'
+    SHOOT_E = 'shoot_e'
+    WAIT = 'wait'
+    DESCEND = 'descend'
+    SAVE = 'save'
+    LOAD = 'load'
+    QUIT = 'quit'
+
+
+class Renderer:
+    def draw(self, state):
+        """Draw the whole frame from `state`."""
+        raise NotImplementedError
+
+    def get_action(self):
+        """Block for input; return an Action value, or None to ignore it."""
+        raise NotImplementedError
+
+    def show_title_screen(self):
+        """Block until the player picks Start or Quit. Returns True to start,
+        False to quit without ever building a GameState."""
+        raise NotImplementedError
+
+    def choose_class(self):
+        """Block until the player picks a class. Returns 'warrior' or 'archer'."""
+        raise NotImplementedError
+
+    def pause(self, ms):
+        """Hold the current frame for `ms` milliseconds.
+
+        Lets the game loop space out the monster half of a round so the
+        player watches it resolve instead of seeing every blow land at once.
+        """
+        raise NotImplementedError
+
+    def close(self):
+        """Restore the terminal / tear down the window."""
+        raise NotImplementedError
