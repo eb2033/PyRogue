@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "WebSearch",
-      "Bash(.venv/bin/python --version)",
-      "Bash(/home/Egor/Projects/PythonRogue/.venv/bin/pip list *)"
-    ]
-  }
-}
