@@ -7,6 +7,8 @@ continuity), so the exact map is round-tripped as a list of row strings.
 """
 
 import json
+import os
+from pathlib import Path
 
 from game.entity import Entity
 from game.item import Chest, Item
@@ -107,14 +109,30 @@ def apply_dict(state, data):
 
 
 def save_game(state, path):
-    with open(path, 'w') as f:
-        json.dump(state_to_dict(state), f)
+    """Write `state` to `path` (str or Path), chosen by the caller -- normally
+    game.paths.save_path(). The write goes to a sibling temp file that is then
+    renamed over the target, so a crash mid-save can't truncate an existing
+    save. The parent directory is created if missing."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = json.dumps(state_to_dict(state))
+    tmp = path.with_name(path.name + '.tmp')
+    try:
+        with open(tmp, 'w', encoding='utf-8') as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def load_game(path):
     """Returns a dict suitable for apply_dict(), or None if no save exists."""
     try:
-        with open(path) as f:
+        with open(path, encoding='utf-8') as f:
             return json.load(f)
     except FileNotFoundError:
         return None

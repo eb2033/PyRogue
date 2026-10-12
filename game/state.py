@@ -13,6 +13,7 @@ the monsters still queued never act. end_turn() runs both halves back to back
 for callers that don't care about the split (tests, headless use).
 """
 
+from game import paths
 from game.dungeon import generate_dungeon, place_stairs
 from game.entity import Entity
 from game.fov import update_visibility
@@ -21,7 +22,20 @@ from game.monster import Monster, is_boss_level, spawn_boss, spawn_monsters
 from game.save import apply_dict, load_game, save_game
 from game.tiles import STAIRS_DOWN, is_walkable
 
-SAVE_PATH = 'savegame.json'
+# None means "use paths.save_path()" (the per-user data dir), resolved at
+# save/load time rather than import time. Tests -- or anything else that wants
+# saves somewhere specific -- may set this to an explicit path instead.
+SAVE_PATH = None
+
+
+def current_save_path():
+    """Where 's'/'l' write and read the save, migrating a legacy
+    ./savegame.json into the user data dir on first use."""
+    if SAVE_PATH is not None:
+        return SAVE_PATH
+    target = paths.save_path()
+    paths.migrate_legacy_save(target)
+    return target
 
 # Semantic action -> (dx, dy) in game coordinates. y grows downward.
 MOVE_DELTAS = {
@@ -107,12 +121,20 @@ class GameState:
             return False
 
         if action == 'save':
-            save_game(self, SAVE_PATH)
-            self.log('Game saved.')
+            try:
+                save_game(self, current_save_path())
+            except OSError as exc:
+                self.log(f'Save failed: {exc.strerror or exc}')
+            else:
+                self.log('Game saved.')
             return False
 
         if action == 'load':
-            data = load_game(SAVE_PATH)
+            try:
+                data = load_game(current_save_path())
+            except (OSError, ValueError) as exc:
+                self.log(f'Load failed: {getattr(exc, "strerror", None) or exc}')
+                return False
             if data is None:
                 self.log('No save file found.')
             else:
