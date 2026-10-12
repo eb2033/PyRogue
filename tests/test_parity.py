@@ -42,6 +42,13 @@ class ParityTest(unittest.TestCase):
     def test_every_action_reachable_in_pygame(self):
         self.assertEqual(pygame_actions(), ALL_ACTIONS)
 
+    @unittest.skipUnless(input_map, 'pygame-ce not installed')
+    def test_window_keys_never_shadow_game_keys(self):
+        # F11 is the renderer's own (fullscreen); it must not also be an Action.
+        for k in input_map.FULLSCREEN_KEYS:
+            self.assertNotIn(k, input_map.KEY_ACTIONS)
+            self.assertNotIn(k, input_map.CONFIRM_KEYS)
+
 
 if __name__ == '__main__':
     unittest.main()
