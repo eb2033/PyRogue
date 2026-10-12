@@ -9,6 +9,7 @@ __pycache__/
 # Build output (PyInstaller, see desktop_build_plan.md WS-E)
 build/
 dist/
+*.spec~
 
 # Runtime files the game writes into the working directory
 savegame.json
@@ -21,3 +22,5 @@ roguelike_reference.md
 desktop_build_plan.md
 going_graphical.md
 !agent_log.md
+!CHANGELOG.md
+!packaging/NOTES.md

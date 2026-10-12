@@ -1,2 +1,3 @@
 # Build tooling. Not needed to run or test the game.
 pyinstaller==6.22.3    # packaging/pyrogue.spec (WS-E); --onedir --noupx only
+pyinstaller-hooks-contrib==2026.8   # pulled in by pyinstaller; pinned so CI builds are reproducible
