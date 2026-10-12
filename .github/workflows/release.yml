@@ -1,0 +1,213 @@
+# Build the frozen game and publish it. Owned by WS-F (desktop_build_plan.md §5).
+#
+#   git tag v0.1.0 && git push --tags   -> GitHub Release with both zips + SHA256SUMS
+#                                          (+ itch.io, if BUTLER_API_KEY is set)
+#   Actions tab -> release -> Run workflow
+#                                       -> the same builds, uploaded as workflow
+#                                          artifacts only: no release, no itch push.
+#                                          Use this to test the Windows build
+#                                          without tagging.
+#
+# PyInstaller cannot cross-compile, so the Windows exe can only come from a
+# Windows runner. The release checklist lives in CHANGELOG.md and
+# packaging/NOTES.md.
+#
+# itch.io (opt-in): add a repo secret BUTLER_API_KEY (itch.io -> settings ->
+# API keys) and a repo variable ITCH_PROJECT set to "<itch-user>/<game>"
+# (e.g. "someone/pyrogue"). Without the secret the push job is skipped.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: '3.14'
+
+jobs:
+  version:
+    name: check version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      prerelease: ${{ steps.read.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - id: read
+        name: game/version.py must match the tag
+        shell: bash
+        run: |
+          version="$(python packaging/version_info.py --print-version)"
+          echo "game/version.py: $version"
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME#v}"
+            if [[ "$tag" != "$version" ]]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match game/version.py ($version). Bump game/version.py and re-tag."
+              exit 1
+            fi
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # 0.1.0rc1 / 0.2.0b2 etc. -> mark the GitHub Release as a pre-release.
+          if [[ "$version" =~ [a-zA-Z] ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: build (${{ matrix.platform }})
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+          - os: ubuntu-latest
+            platform: linux
+    runs-on: ${{ matrix.os }}
+    env:
+      SDL_VIDEODRIVER: dummy
+      SDL_AUDIODRIVER: dummy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./packaging/build.ps1
+        env:
+          PYTHON: python
+      - name: Build (Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: ./packaging/build.sh
+        env:
+          PYTHON: python
+
+      - name: Frozen smoke test
+        run: python -m unittest tests.test_frozen_smoke -v
+
+      - name: Check the zip name matches the version
+        shell: bash
+        run: test -f "dist/PyRogue-${{ matrix.platform }}-${{ needs.version.outputs.version }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PyRogue-${{ matrix.platform }}
+          path: dist/PyRogue-${{ matrix.platform }}-${{ needs.version.outputs.version }}.zip
+          if-no-files-found: error
+          # The payload is already a zip; don't recompress it.
+          compression-level: 0
+
+  release:
+    name: GitHub Release
+    if: github.ref_type == 'tag'
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: PyRogue-*
+          path: release
+          merge-multiple: true
+      - name: Checksums
+        working-directory: release
+        run: |
+          sha256sum PyRogue-*.zip > SHA256SUMS
+          cat SHA256SUMS
+      - name: Release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          python3 - <<'EOF'
+          import os, re
+          version = os.environ['VERSION']
+          text = open('CHANGELOG.md', encoding='utf-8').read()
+          match = re.search(rf'^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## |\Z)', text, re.M | re.S)
+          body = match.group(1).strip() if match else ''
+          if not body:
+              body = f'PyRogue {version}. See CHANGELOG.md.'
+          body += ('\n\nDownload the zip for your platform, unzip the whole folder, and run '
+                   '`PyRogue.exe` (Windows) or `PyRogue` (Linux). Verify downloads with '
+                   '`SHA256SUMS`.')
+          open('release-notes.md', 'w', encoding='utf-8').write(body + '\n')
+          EOF
+          cat release-notes.md
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          flags=()
+          if [[ "$PRERELEASE" == "true" ]]; then flags+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" release/PyRogue-*.zip release/SHA256SUMS \
+            --verify-tag --title "PyRogue $VERSION" --notes-file release-notes.md "${flags[@]}"
+
+  itch:
+    name: itch.io (butler)
+    if: github.ref_type == 'tag'
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    env:
+      BUTLER_API_KEY: ${{ secrets.BUTLER_API_KEY }}
+      ITCH_PROJECT: ${{ vars.ITCH_PROJECT }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Skip (no BUTLER_API_KEY secret)
+        if: env.BUTLER_API_KEY == ''
+        run: echo "BUTLER_API_KEY is not set; skipping the itch.io push."
+      - name: Require ITCH_PROJECT
+        if: env.BUTLER_API_KEY != '' && env.ITCH_PROJECT == ''
+        run: |
+          echo "::error::BUTLER_API_KEY is set but the ITCH_PROJECT repo variable (\"<itch-user>/<game>\") is not."
+          exit 1
+      - uses: actions/download-artifact@v4
+        if: env.BUTLER_API_KEY != ''
+        with:
+          pattern: PyRogue-*
+          path: release
+          merge-multiple: true
+      - name: Install butler
+        if: env.BUTLER_API_KEY != ''
+        run: |
+          curl -fsSL -o butler.zip https://broth.itch.zone/butler/linux-amd64/LATEST/archive/default
+          unzip -q butler.zip -d "$RUNNER_TEMP/butler"
+          chmod +x "$RUNNER_TEMP/butler/butler"
+          echo "$RUNNER_TEMP/butler" >> "$GITHUB_PATH"
+      - name: Push to itch.io
+        if: env.BUTLER_API_KEY != ''
+        run: |
+          butler -V
+          for platform in windows linux; do
+            dir="itch/$platform"
+            mkdir -p "$dir"
+            # The zip holds a top-level PyRogue/ folder; push its contents so
+            # the itch app installs PyRogue.exe at the root of the game dir.
+            unzip -q "release/PyRogue-$platform-$VERSION.zip" -d "$dir"
+            butler push "$dir/PyRogue" "$ITCH_PROJECT:$platform" --userversion "$VERSION"
+          done
