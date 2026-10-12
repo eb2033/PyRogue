@@ -29,6 +29,10 @@ KEY_ACTIONS = {
     pygame.K_RIGHT: Action.SHOOT_E,
 }
 
+# Handled inside the renderer (fullscreen toggle), never turned into an Action --
+# curses has no equivalent, and GameState has no business knowing about windows.
+FULLSCREEN_KEYS = (pygame.K_F11,)
+
 CONFIRM_KEYS = (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE)
 
 

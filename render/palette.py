@@ -27,3 +27,9 @@ BACKGROUND = (0, 0, 0)
 def color(index, default=TEXT):
     """RGB for an Entity.color int, falling back for unknown values."""
     return COLORS.get(index, default)
+
+
+def brighten(rgb, amount=0.35):
+    """`rgb` moved `amount` of the way toward white -- the boss highlight,
+    standing in for curses' A_BOLD on top of the pair's colour."""
+    return tuple(round(c + (255 - c) * amount) for c in rgb)

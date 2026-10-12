@@ -4,9 +4,11 @@ Picks a renderer, builds the world, runs the loop. The loop itself is
 renderer-agnostic: it only ever sees semantic actions (render.base.Action), so
 adding a graphical front end does not touch this file.
 
-    .venv/bin/python main.py                    # terminal (default)
+    .venv/bin/python main.py                    # terminal (default from source)
     .venv/bin/python main.py --renderer pygame  # window (needs pygame-ce)
-    .venv/bin/python main.py --renderer tcod    # graphical (not yet implemented)
+
+A frozen build (PyInstaller exe) defaults to the window instead: it is built
+without a console, so there is no terminal for curses to draw in.
 """
 
 import argparse
@@ -14,6 +16,7 @@ import os
 
 from dotenv import load_dotenv
 
+from game.paths import is_frozen
 from game.settings import env_int
 from game.state import GameState
 
@@ -26,6 +29,14 @@ DEFAULT_FOV_RADIUS = 6
 DEFAULT_TURN_DELAY_MS = 110
 
 
+RENDERERS = ['curses', 'pygame']
+
+
+def default_renderer():
+    """$RENDERER if set, else 'pygame' in a frozen build and 'curses' from source."""
+    return os.getenv('RENDERER') or ('pygame' if is_frozen() else 'curses')
+
+
 def make_renderer(name, width, height):
     if name == 'curses':
         from render.curses_render import CursesRenderer
@@ -33,9 +44,6 @@ def make_renderer(name, width, height):
     if name == 'pygame':
         from render.pygame_render import PygameRenderer
         return PygameRenderer(width, height)
-    if name == 'tcod':
-        from render.tcod_render import TcodRenderer
-        return TcodRenderer(width, height)
     raise SystemExit(f'unknown renderer: {name}')
 
 
@@ -68,8 +76,7 @@ def main():
     load_dotenv()
 
     parser = argparse.ArgumentParser(description='PythonRogue')
-    parser.add_argument('--renderer', default=os.getenv('RENDERER', 'curses'),
-                        choices=['curses', 'pygame', 'tcod'])
+    parser.add_argument('--renderer', default=default_renderer(), choices=RENDERERS)
     args = parser.parse_args()
 
     width = env_int('MAP_WIDTH', DEFAULT_WIDTH)
