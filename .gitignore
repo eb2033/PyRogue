@@ -1,4 +1,23 @@
 .claude/
 .agents/
-*.md
 
+# Python / tooling
+__pycache__/
+*.pyc
+.venv/
+
+# Build output (PyInstaller, see desktop_build_plan.md WS-E)
+build/
+dist/
+
+# Runtime files the game writes into the working directory
+savegame.json
+
+# Markdown is ignored by default; the project's own docs are its memory and are tracked.
+*.md
+!README.md
+!CLAUDE.md
+!roguelike_reference.md
+!desktop_build_plan.md
+!going_graphical.md
+!agent_log.md
