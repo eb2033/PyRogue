@@ -17,7 +17,7 @@ savegame.json
 *.md
 !README.md
 !CLAUDE.md
-!roguelike_reference.md
-!desktop_build_plan.md
-!going_graphical.md
+roguelike_reference.md
+desktop_build_plan.md
+going_graphical.md
 !agent_log.md
