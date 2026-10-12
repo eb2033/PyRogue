@@ -14,6 +14,7 @@ import os
 
 from dotenv import load_dotenv
 
+from game.settings import env_int
 from game.state import GameState
 
 DEFAULT_WIDTH = 50
@@ -23,13 +24,6 @@ DEFAULT_FOV_RADIUS = 6
 # TURN_DELAY_MS=0 to resolve each round instantly, as it worked before the
 # player and monster halves were split apart.
 DEFAULT_TURN_DELAY_MS = 110
-
-
-def env_int(name, default):
-    try:
-        return int(os.getenv(name, default))
-    except ValueError:
-        return default
 
 
 def make_renderer(name, width, height):

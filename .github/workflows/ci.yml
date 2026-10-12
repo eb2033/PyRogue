@@ -1,0 +1,45 @@
+# Unit tests on every push and PR. Owned by WS-F (desktop_build_plan.md §5).
+# The pygame tests run headless through SDL's dummy drivers, which is what
+# makes the windowed renderer testable here at all.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.12', '3.13', '3.14']
+    runs-on: ${{ matrix.os }}
+    env:
+      SDL_VIDEODRIVER: dummy
+      SDL_AUDIODRIVER: dummy
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: python -m pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
+
+  # The terminal build must keep working with zero installs. game/ and the
+  # curses path are stdlib-only; pygame tests must skip, not fail.
+  stdlib-only:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: game/ imports nothing outside the standard library
+        run: python -c "import game.state, game.paths, game.settings, game.crashlog, game.version"
+      - name: tests pass without pygame (python-dotenv only, for main.py)
+        run: |
+          python -m pip install python-dotenv==1.2.2
+          python -m unittest discover -s tests -v

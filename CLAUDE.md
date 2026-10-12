@@ -11,11 +11,16 @@ generation, FOV, entities, and the stretch-goal roadmap.
 .venv/bin/python main.py --renderer pygame  # OS window (needs pygame-ce, installed in .venv)
 ```
 
-`tests/test_game.py`, `tests/test_menu.py` and `tests/test_loop.py` cover `game/` logic, the pure
-menu/banner helpers, and the main loop's monster-phase driving
-(`.venv/bin/python -m unittest discover -s tests -v`). There is no build step, and no automated test
-touches the curses renderer itself (it needs a real terminal) — verify rendering/input changes by
-running the game.
+Setting up a checkout (or a fresh worktree — `.venv` is gitignored, so each needs its own):
+`python -m venv .venv && .venv/bin/pip install -r requirements.txt`. `requirements-dev.txt`
+(PyInstaller) is only for packaging.
+
+Tests: `.venv/bin/python -m unittest discover -s tests -v`. The pygame suites run headless (they set
+`SDL_VIDEODRIVER=dummy` themselves) and skip cleanly when pygame isn't installed.
+`.github/workflows/ci.yml` runs them on Ubuntu + Windows × Python 3.12/3.13/3.14, plus a
+no-pygame job that proves the terminal path still needs nothing beyond `python-dotenv`. There is no
+build step yet, and no automated test touches the curses renderer itself (it needs a real terminal)
+— verify curses rendering/input changes by running the game.
 
 ## Layout
 
@@ -26,16 +31,29 @@ running the game.
 - `game/` — all game logic, standard library only, speaks `(x, y)` throughout. `state.py` owns turn
   resolution (`GameState`, including the archer's ranged attack); `dungeon.py`, `rect.py`, `tiles.py`
   are dungeon generation; `entity.py`, `monster.py`, `item.py` are the entity hierarchy; `fov.py` is
-  field of view; `save.py` is JSON save/load.
+  field of view; `save.py` is JSON save/load. Platform layer (desktop plan WS-B, **P0 stubs**):
+  `paths.py` (`resource_path`/`user_data_dir`/`save_path`/`log_path` — only `is_frozen` and the
+  from-source `resource_path` are real), `settings.py` (`env_int` is real and is what `main.py`
+  uses; `load`/`find_config`, the `python-dotenv` replacement, raise `NotImplementedError`),
+  `crashlog.py` (stub), `version.py` (`__version__`, WS-F).
 - `render/` — the renderer boundary. `base.py` defines `Action` (semantic keys, including `SHOOT_*`
   for the arrow keys) and the `Renderer` interface (`draw`/`get_action`/`show_title_screen`/
   `choose_class`/`pause`/`close`); `curses_render.py` is the terminal renderer (stdlib only, the only file
   that speaks `(y, x)`); `menu.py` is the pure (curses-free) menu-selection state; `banner.py` builds
-  ASCII-art banner text from a small block font; `pygame_render.py` is the windowed renderer
-  (pygame-ce, glyph grid, panel/menu parity with curses — the `desktop_build_plan.md` §3.1 spike, see
-  **Windowed renderer** below) with its key table in `input_map.py`; `tcod_render.py` is a not-yet-implemented graphical
+  ASCII-art banner text from a small block font. The pygame front end (see **Windowed renderer**
+  below) is split by desktop-plan workstream: `pygame_render.py` (window, event loop, map cells) +
+  `input_map.py` + `palette.py` (Entity.color int → RGB) are WS-A; `ui.py` (`Layout` — the single
+  source of truth for geometry — `Canvas` for grid text, `paint_panel`) and `screens.py` (paint-only
+  menu/game-over frames; the menu *event loop* stays in `pygame_render.py`) are WS-D; `tileset.py`
+  (`Tileset.glyph()` → `None` means "draw the character"; a P0 stub that is always unavailable) is
+  WS-C. `tcod_render.py` is a not-yet-implemented graphical
   scaffold (see `going_graphical.md`) — it has no menu/class methods since it never gets past
   `__init__` without the `tcod` package installed.
+- `tests/test_pygame_render.py` (renderer + events + a full scripted run through `main.run`),
+  `tests/test_ui.py` (`Layout`, paint smoke tests, `Tileset` fallback), `tests/test_parity.py`
+  (both renderers' key tables reach every `Action`), `tests/test_paths.py` (WS-B platform stubs).
+- `requirements.txt` (`pygame-ce`, `python-dotenv`, both pinned), `requirements-dev.txt`
+  (`pyinstaller`), `.github/workflows/ci.yml`.
 - `tests/test_game.py`, `tests/test_menu.py`, `tests/test_loop.py` — headless `unittest` suites:
   `game/` logic (dungeon gen, FOV, combat, adjacency, turn phases, classes, items, save/load); the
   pure menu/banner helpers; and `main.resolve_monster_phase` driven with a recording stand-in
@@ -43,6 +61,10 @@ running the game.
   `.venv/bin/python -m unittest discover -s tests -v`. There is intentionally no test for the
   curses renderer's drawing/getch itself — it needs a real terminal (or a pty — see `agent_log.md`'s
   note on the `TERM=xterm` arrow-key SS3-vs-CSI trap if you script one).
+- **The next three docs are private: gitignored and untracked, on purpose.** They exist only in the
+  primary checkout, not in a git worktree or a fresh clone. If you're working in a worktree and
+  can't find one, read it from the primary checkout: the first path `git worktree list` prints.
+  Don't `git add -f` them (the repo is public).
 - `roguelike_reference.md` — the spec/reference. Section numbers below refer to it.
 - `going_graphical.md` — research notes (2026-08-26) on an eventual graphical build. Its §0
   recommendation of `tcod` is **superseded** by `desktop_build_plan.md`; the rest (packaging,
@@ -50,8 +72,9 @@ running the game.
 - `desktop_build_plan.md` — the plan (2026-10-06) for taking the game out of the terminal and
   shipping it as a `.exe`: `pygame-ce` renderer, PyInstaller `--onedir` built on a Windows CI
   runner, split into seven workstreams with exclusive file ownership so agents can run in parallel.
-  **Read this before starting any graphical or packaging work.** Nothing in it is implemented yet —
-  the repo is still terminal-only.
+  **Read this before starting any graphical or packaging work.** Done so far: the §3.1 spike and
+  **P0** (§4.1 lists the contract decisions P0 made); P1 onwards is open. If you are one of several
+  agents, edit only the files your workstream owns (§5) — and `CLAUDE.md` belongs to WS-G.
 - `.env` — read via `python-dotenv`. `main.py` looks for `MAP_WIDTH`, `MAP_HEIGHT`, `FOV_RADIUS`,
   `RENDERER` and `TURN_DELAY_MS`, each with a code default (50 / 20 / 6 / `curses` / 110); the
   checked-in `.env` only sets `MAP_WIDTH=40` and `MAP_HEIGHT=20`, so an actual run is a **40x20**
@@ -76,9 +99,9 @@ running the game.
   commercially released game appears to use `python-tcod`, while pygame and Ren'Py have a real
   shipping record.
 - **The dependency rule is per-directory, and that is what makes a graphical build possible**
-  (`desktop_build_plan.md` §0.1, not yet implemented): `game/**` and `render/curses_render.py` stay
-  stdlib-only forever; a future `render/pygame_render.py` / `ui.py` / `tileset.py` may import
-  `pygame-ce`; and `main.py` is meant to *lose* its `python-dotenv` dependency (replaced by a
+  (`desktop_build_plan.md` §0.1, in force): `game/**` and `render/curses_render.py` stay
+  stdlib-only forever; `render/pygame_render.py`, `input_map.py`, `ui.py`, `screens.py` and
+  `tileset.py` may import `pygame-ce` (`palette.py` happens not to); and `main.py` is meant to *lose* its `python-dotenv` dependency (replaced by a
   stdlib settings reader), which would make the whole terminal path dependency-free.
 - `curses` ships with Python on Linux/macOS. Windows needs `pip install windows-curses`.
 - Prefer adding a new file under `game/` or `render/` over growing an existing one — the package
@@ -217,7 +240,8 @@ letterboxes it (crisp text, no scaling); tiling WMs resize the window at creatio
 expected. Not yet verified on Windows itself — that's the P2 CI build.
 
 Test coverage: `tests/test_game.py` (68 tests) + `tests/test_menu.py` (7) + `tests/test_loop.py`
-(7) + `tests/test_pygame_render.py` (11, headless via `SDL_VIDEODRIVER=dummy`) = 93 unit tests, plus ad hoc fuzz/PTY smoke testing during development — see `agent_log.md` for
+(7) + `tests/test_pygame_render.py` (10) + `tests/test_ui.py` (8) + `tests/test_parity.py` (3) +
+`tests/test_paths.py` (8) = 111 unit tests (19 of them skip without pygame), plus ad hoc fuzz/PTY smoke testing during development — see `agent_log.md` for
 what was run and why.
 
 ## Gotchas

@@ -21,8 +21,8 @@ from game.state import GameState
 from render.base import Action
 
 if pygame is not None:
-    from render import input_map
-    from render.pygame_render import BACKGROUND, PygameRenderer
+    from render.palette import BACKGROUND
+    from render.pygame_render import PygameRenderer
 
 WIDTH, HEIGHT = 40, 20
 
@@ -48,10 +48,9 @@ class PygameRendererTest(unittest.TestCase):
     def test_draw_paints_the_player_cell(self):
         state = GameState(WIDTH, HEIGHT)
         self.renderer.draw(state)
-        r = self.renderer
-        cell = pygame.Rect(r.origin_x + state.player.x * r.cell_w,
-                           r.origin_y + state.player.y * r.cell_h, r.cell_w, r.cell_h)
-        pixels = {tuple(r.screen.get_at((x, y)))[:3]
+        cell = self.renderer.layout.cell_rect(state.player.x, state.player.y)
+        screen = self.renderer.canvas.surface
+        pixels = {tuple(screen.get_at((x, y)))[:3]
                   for x in range(cell.left, cell.right) for y in range(cell.top, cell.bottom)}
         self.assertTrue(pixels - {BACKGROUND}, 'player cell is blank')
 
@@ -73,12 +72,13 @@ class PygameRendererTest(unittest.TestCase):
 
     def test_resize_relayouts_and_keeps_waiting(self):
         self.renderer.draw(GameState(WIDTH, HEIGHT))
-        before = self.renderer.cell_w
-        self.renderer.screen = pygame.display.set_mode((3000, 1500), pygame.RESIZABLE)
+        before = self.renderer.layout.cell_w
+        pygame.display.set_mode((3000, 1500), pygame.RESIZABLE)
         self.post(pygame.event.Event(pygame.VIDEORESIZE, size=(3000, 1500), w=3000, h=1500),
                   key(pygame.K_d, 'd'))
         self.assertEqual(self.renderer.get_action(), Action.MOVE_E)
-        self.assertGreater(self.renderer.cell_w, before)
+        self.assertGreater(self.renderer.layout.cell_w, before)
+        self.assertEqual(self.renderer.canvas.surface.get_size(), (3000, 1500))
 
     def test_pause_keeps_typed_ahead_keys(self):
         self.post(key(pygame.K_a, 'a'))
@@ -114,17 +114,6 @@ class PygameRendererTest(unittest.TestCase):
     def test_title_quit_option(self):
         self.post(key(pygame.K_DOWN), key(pygame.K_RETURN, '\r'))
         self.assertFalse(self.renderer.show_title_screen())
-
-
-@unittest.skipUnless(pygame, 'pygame-ce not installed')
-class InputParityTest(unittest.TestCase):
-    def test_same_actions_reachable_as_curses(self):
-        try:
-            from render.curses_render import KEY_ACTIONS as CURSES_ACTIONS
-        except ImportError:  # pragma: no cover - Windows without windows-curses
-            self.skipTest('curses not available')
-        pygame_actions = set(input_map.CHAR_ACTIONS.values()) | set(input_map.KEY_ACTIONS.values())
-        self.assertEqual(pygame_actions, set(CURSES_ACTIONS.values()))
 
 
 if __name__ == '__main__':
