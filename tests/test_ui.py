@@ -71,8 +71,13 @@ class PaintTest(unittest.TestCase):
         self.canvas.clear()
 
     def assertDrewSomething(self, rect):
+        # Count pixels, don't average them: one line of text over the whole
+        # map area averages to (0, 0, 0) with thinner fonts (Consolas on
+        # Windows CI, Liberation Mono) even though ~1600 pixels are lit.
         area = self.canvas.surface.subsurface(rect)
-        self.assertNotEqual(pygame.transform.average_color(area)[:3], palette.BACKGROUND)
+        untouched = pygame.mask.from_threshold(area, palette.BACKGROUND, (1, 1, 1, 255))
+        self.assertLess(untouched.count(), area.get_width() * area.get_height(),
+                        'nothing drawn in this area')
 
     def test_panel(self):
         ui.paint_panel(self.canvas, GameState(WIDTH, HEIGHT))
