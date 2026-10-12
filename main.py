@@ -9,13 +9,19 @@ adding a graphical front end does not touch this file.
 
 A frozen build (PyInstaller exe) defaults to the window instead: it is built
 without a console, so there is no terminal for curses to draw in.
+
+Settings come from the environment, then a .env file (game/settings.py), then
+the code defaults below. An uncaught exception is appended to crash.log in the
+per-user data directory (game/paths.py) -- the windowed exe has no stderr.
+
+The terminal path imports nothing outside the standard library.
 """
 
 import argparse
 import os
+import sys
 
-from dotenv import load_dotenv
-
+from game import crashlog, settings
 from game.paths import is_frozen
 from game.settings import env_int
 from game.state import GameState
@@ -73,7 +79,8 @@ def run(renderer, state, delay_ms=DEFAULT_TURN_DELAY_MS):
 
 
 def main():
-    load_dotenv()
+    # Before anything reads the environment -- default_renderer() included.
+    settings.load()
 
     parser = argparse.ArgumentParser(description='PythonRogue')
     parser.add_argument('--renderer', default=default_renderer(), choices=RENDERERS)
@@ -96,4 +103,12 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception:
+        # Written here rather than via crashlog.install()'s excepthook: a
+        # --windowed PyInstaller build reports the exception in its own dialog
+        # and may never run sys.excepthook. renderer.close() has already run
+        # (main's finally), so a terminal is restored before the traceback.
+        crashlog.write(*sys.exc_info())
+        raise

@@ -1,6 +1,6 @@
 """The whole world in one object, plus turn resolution.
 
-GameState knows nothing about curses, tcod, or keys. It takes semantic actions
+GameState knows nothing about curses, pygame, or keys. It takes semantic actions
 (see render.base.Action) and advances the world. That is what lets one game loop
 drive either renderer.
 

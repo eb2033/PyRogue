@@ -37,12 +37,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'
-      - name: game/ imports nothing outside the standard library
-        run: python -c "import game.state, game.paths, game.settings, game.crashlog, game.version"
-      - name: tests pass without pygame (python-dotenv only, for main.py)
-        run: |
-          python -m pip install python-dotenv==1.2.2
-          python -m unittest discover -s tests -v
+      - name: game/ and main.py import nothing outside the standard library
+        run: python -c "import main, game.state, game.paths, game.settings, game.crashlog, game.version"
+      - name: tests pass with nothing installed
+        run: python -m unittest discover -s tests -v
 
   # Freeze the game on both OSes and launch the result (WS-E/WS-F). This is
   # the only place the Windows exe is built before a release -- PyInstaller
