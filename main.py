@@ -2,10 +2,11 @@
 
 Picks a renderer, builds the world, runs the loop. The loop itself is
 renderer-agnostic: it only ever sees semantic actions (render.base.Action), so
-adding the tcod front end does not touch this file.
+adding a graphical front end does not touch this file.
 
-    .venv/bin/python main.py                  # terminal (default)
-    .venv/bin/python main.py --renderer tcod  # graphical (not yet implemented)
+    .venv/bin/python main.py                    # terminal (default)
+    .venv/bin/python main.py --renderer pygame  # window (needs pygame-ce)
+    .venv/bin/python main.py --renderer tcod    # graphical (not yet implemented)
 """
 
 import argparse
@@ -35,6 +36,9 @@ def make_renderer(name, width, height):
     if name == 'curses':
         from render.curses_render import CursesRenderer
         return CursesRenderer()
+    if name == 'pygame':
+        from render.pygame_render import PygameRenderer
+        return PygameRenderer(width, height)
     if name == 'tcod':
         from render.tcod_render import TcodRenderer
         return TcodRenderer(width, height)
@@ -71,7 +75,7 @@ def main():
 
     parser = argparse.ArgumentParser(description='PythonRogue')
     parser.add_argument('--renderer', default=os.getenv('RENDERER', 'curses'),
-                        choices=['curses', 'tcod'])
+                        choices=['curses', 'pygame', 'tcod'])
     args = parser.parse_args()
 
     width = env_int('MAP_WIDTH', DEFAULT_WIDTH)
