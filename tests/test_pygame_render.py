@@ -202,6 +202,83 @@ class PygameRendererTest(unittest.TestCase):
         self.assertEqual(self.renderer.layout.font_path, font)
         self.renderer.draw(GameState(WIDTH, HEIGHT))
 
+    def test_make_renderer_uses_the_bundled_font(self):
+        renderer = main.make_renderer('pygame', WIDTH, HEIGHT)
+        try:
+            self.assertTrue(renderer.layout.font_path.endswith(main.BUNDLED_FONT))
+            self.assertTrue(os.path.isfile(renderer.layout.font_path))
+        finally:
+            renderer.close()
+
+    # -- P3: mouse in the menus ----------------------------------------------
+
+    @staticmethod
+    def motion(pos=(5, 5)):
+        return pygame.event.Event(pygame.MOUSEMOTION, pos=pos, rel=(1, 1), buttons=(0, 0, 0))
+
+    @staticmethod
+    def click(pos=(5, 5), button=1):
+        return pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=pos, button=button)
+
+    def test_menu_hover_moves_the_highlight(self):
+        seen = []
+        def fake_hit(layout, menu, banner, pos):
+            seen.append(menu.index)
+            return {(1, 1): 1}.get(pos)
+        self.post(self.motion((1, 1)), key(pygame.K_RETURN, '\r'))
+        with mock.patch.object(screens, 'option_at', fake_hit):
+            self.assertFalse(self.renderer.show_title_screen())  # Quit, via hover
+        self.assertEqual(seen, [0])
+
+    def test_menu_click_selects_like_enter(self):
+        self.post(self.click((1, 1)))
+        with mock.patch.object(screens, 'option_at', lambda *a: 1):
+            self.assertFalse(self.renderer.show_title_screen())
+        self.post(self.click((2, 2)))
+        with mock.patch.object(screens, 'option_at', lambda *a: 0):
+            self.assertTrue(self.renderer.show_title_screen())
+
+    def test_menu_click_outside_any_option_does_nothing(self):
+        self.post(self.click((9, 9)), self.motion((9, 9)), key(pygame.K_DOWN),
+                  key(pygame.K_RETURN, '\r'))
+        with mock.patch.object(screens, 'option_at', lambda *a: None):
+            self.assertFalse(self.renderer.show_title_screen())  # keys decided it
+
+    def test_menu_right_click_is_ignored(self):
+        self.post(self.click((1, 1), button=3), key(pygame.K_RETURN, '\r'))
+        with mock.patch.object(screens, 'option_at', lambda *a: 1):
+            self.assertTrue(self.renderer.show_title_screen())
+
+    def test_menu_repaints_only_when_the_highlight_changes(self):
+        self.post(self.motion(), self.motion(), self.motion(), key(pygame.K_RETURN, '\r'))
+        with mock.patch.object(screens, 'option_at', lambda *a: 1), \
+                mock.patch.object(screens, 'paint_menu') as paint:
+            self.renderer.show_title_screen()
+        # first paint, one repaint after the highlight moved, none for the
+        # two motions that changed nothing, then Enter returns.
+        self.assertEqual(paint.call_count, 2)
+
+    def test_menu_keys_unchanged_with_mouse_support(self):
+        self.post(key(pygame.K_s, 's'), key(pygame.K_SPACE, ' '))
+        self.assertFalse(self.renderer.show_title_screen())
+        self.post(key(pygame.K_q, 'q'))
+        self.assertFalse(self.renderer.show_title_screen())
+
+    def test_mouse_events_are_ignored_during_get_action(self):
+        self.post(self.motion(), self.click(), self.click(button=3), key(pygame.K_d, 'd'))
+        with mock.patch.object(screens, 'option_at', lambda *a: 0) as hit:
+            self.assertEqual(self.renderer.get_action(), Action.MOVE_E)
+
+    def test_pause_keeps_keys_when_mouse_events_are_queued(self):
+        self.post(self.motion(), key(pygame.K_a, 'a'), self.click())
+        self.renderer.pause(30)
+        self.assertEqual(self.renderer.get_action(), Action.MOVE_W)
+
+    def test_window_close_in_a_menu_is_delivered_by_get_action(self):
+        self.post(self.motion(), pygame.event.Event(pygame.QUIT))
+        self.assertFalse(self.renderer.show_title_screen())
+        self.assertEqual(self.renderer.get_action(), Action.QUIT)
+
     # -- P1: game over, and a whole run --------------------------------------
 
     def test_game_over_shows_overlay_and_q_quits(self):

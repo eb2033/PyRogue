@@ -38,6 +38,9 @@ DEFAULT_TURN_DELAY_MS = 110
 RENDERERS = ['curses', 'pygame']
 
 
+BUNDLED_FONT = 'JetBrainsMono-Regular.ttf'
+
+
 def default_renderer():
     """$RENDERER if set, else 'pygame' in a frozen build and 'curses' from source."""
     return os.getenv('RENDERER') or ('pygame' if is_frozen() else 'curses')
@@ -53,7 +56,11 @@ def make_renderer(name, width, height):
         from render.tileset import Tileset
         # TILES=0 keeps the window drawing characters, like the terminal.
         tileset = Tileset(resource_path('assets')) if env_int('TILES', 1) else None
-        return PygameRenderer(width, height, tileset=tileset)
+        # The bundled font, so Windows and Linux draw the same glyphs; a missing
+        # file falls back to a system monospace font.
+        font = resource_path('assets', 'fonts', BUNDLED_FONT)
+        return PygameRenderer(width, height, tileset=tileset,
+                              font_path=str(font) if font.is_file() else None)
     raise SystemExit(f'unknown renderer: {name}')
 
 
