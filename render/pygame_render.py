@@ -148,14 +148,16 @@ class PygameRenderer(Renderer):
         elif event.type in REPAINT_EVENTS:
             self._relayout()
 
-    def _wait_key(self):
-        """Block until a key is pressed, servicing the window meanwhile.
+    def _wait_input(self, mouse=False):
+        """Block until a key press (or, with `mouse`, a mouse motion / left
+        click), servicing the window meanwhile.
 
-        Returns the KEYDOWN event, or None if the window was closed. event.wait()
+        Returns the event, or None if the window was closed. event.wait()
         sleeps in the OS like getch() does, but wakes for expose / resize /
         close too, so the window stays live. Window keys (F11) are handled
         here and never returned, so every caller -- get_action and the menus
-        alike -- gets them for free.
+        alike -- gets them for free. Mouse events are skipped unless asked for:
+        only the menus want them; gameplay stays keyboard-only.
         """
         while not self._quit_requested:
             event = pygame.event.wait()
@@ -164,8 +166,15 @@ class PygameRenderer(Renderer):
                     self.toggle_fullscreen()
                     continue
                 return event
+            if mouse and (event.type == pygame.MOUSEMOTION or
+                          (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1)):
+                return event
             self._handle_window_event(event)
         return None
+
+    def _wait_key(self):
+        """Block until a key is pressed; mouse events are ignored."""
+        return self._wait_input()
 
     # -- menus ----------------------------------------------------------------
 
@@ -173,11 +182,26 @@ class PygameRenderer(Renderer):
         """Up/down/enter menu, same keys as the terminal one. Returns the
         chosen option, or None on 'q' or window close."""
         menu = Menu(options)
+        repaint = True
         while True:
-            self._show(lambda: screens.paint_menu(self.canvas, menu, banner_lines, descriptions))
-            event = self._wait_key()
+            if repaint:
+                self._show(lambda: screens.paint_menu(self.canvas, menu, banner_lines,
+                                                      descriptions))
+            repaint = True
+            event = self._wait_input(mouse=True)
             if event is None:
                 return None
+            if event.type in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN):
+                hit = screens.option_at(self.layout, menu, banner_lines, event.pos)
+                if hit is None:
+                    repaint = False
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    menu.index = hit
+                    return menu.selected()
+                else:
+                    repaint = hit != menu.index  # only repaint when it moved
+                    menu.index = hit
+                continue
             char = input_map.event_char(event)
             if char == 'w' or event.key == pygame.K_UP:
                 menu.move(-1)
