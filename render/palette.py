@@ -1,8 +1,8 @@
 """RGB colours for the pygame front end. Owned by WS-A (desktop_build_plan.md §5).
 
 Mirrors curses_render.COLOR_PAIRS: the keys are the same Entity.color ints the
-game stores (pair 1 player, 2 red, 3 chest, 4-7 the gear-rarity ladder from
-game/item.py's RARITY_COLOR), so game/ never needs to know about RGB.
+game stores (pair 1 player, 2 red, 3 gear chest, 4-7 the gear-rarity ladder
+from game/item.py's RARITY_COLOR, 8 potion chest), so game/ never needs to know about RGB.
 No pygame import -- plain tuples, usable from any module.
 """
 
@@ -14,6 +14,7 @@ COLORS = {
     5: (90, 130, 255),    # rare (blue)
     6: (205, 90, 205),    # epic (magenta)
     7: (230, 230, 230),   # common (white)
+    8: (255, 120, 190),   # potion chest (pink)
 }
 PLAYER = COLORS[1]
 DANGER = COLORS[2]

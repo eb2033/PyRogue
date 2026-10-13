@@ -16,8 +16,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from game.dungeon import generate_dungeon, place_stairs
 from game.entity import Entity
 from game.fov import compute_fov, update_visibility
-from game.item import (Chest, ITEM_KIND_WEIGHTS, Item, RARITIES, MAX_SCALING_DEPTH,
-                       rarity_weights_for_depth, roll_rarity, spawn_chests)
+from game.item import (CHEST_COLOR, Chest, ITEM_KIND_WEIGHTS, Item, MAX_SCALING_DEPTH,
+                       POTION_CHEST_COLOR, RARITIES, rarity_weights_for_depth, roll_rarity,
+                       spawn_chests)
 from game.monster import (BOSS_REFERENCE_KIND, MONSTER_TYPES, ORTHOGONAL_STEPS, Monster,
                           is_boss_level, scale_stats, spawn_boss, spawn_monsters,
                           tier_for_depth)
@@ -534,6 +535,29 @@ class GearTests(unittest.TestCase):
         self.assertIs(state.player.weapon, w2)
         self.assertIn('swap', state.messages[-1])
 
+    def test_worse_weapon_is_left_behind(self):
+        random.seed(53)
+        state = GameState(50, 20)
+        base_power = state.player.power
+        epic = Item(state.player.x, state.player.y, 'weapon', 'epic')
+        epic.apply(state.player, state.log)
+        common = Item(state.player.x, state.player.y, 'weapon', 'common')
+        common.apply(state.player, state.log)
+        self.assertIs(state.player.weapon, epic)
+        self.assertEqual(state.player.power, base_power + epic.bonus)
+        self.assertNotIn(common.name, state.player.inventory)
+        self.assertIn('leave', state.messages[-1])
+
+    def test_equal_or_worse_armor_is_left_behind(self):
+        random.seed(54)
+        state = GameState(50, 20)
+        rare = Item(state.player.x, state.player.y, 'armor', 'rare')
+        rare.apply(state.player, state.log)
+        for rarity in ('common', 'uncommon', 'rare'):
+            Item(state.player.x, state.player.y, 'armor', rarity).apply(state.player, state.log)
+            self.assertIs(state.player.armor, rare)
+            self.assertEqual(state.player.defense, rare.bonus)
+
     def test_armor_reduces_incoming_damage_with_floor_of_one(self):
         random.seed(44)
         state = GameState(50, 20)
@@ -632,6 +656,18 @@ class ChestTests(unittest.TestCase):
             self.assertIn(item.kind, ITEM_KIND_WEIGHTS)
             self.assertIn(item.rarity, RARITIES)
 
+    def test_chest_kind_is_fixed_at_spawn_and_sets_its_color(self):
+        potion = Chest(0, 0, kind='potion')
+        weapon = Chest(0, 0, kind='weapon')
+        armor = Chest(0, 0, kind='armor')
+        self.assertEqual(potion.color, POTION_CHEST_COLOR)
+        self.assertEqual(weapon.color, CHEST_COLOR)
+        self.assertEqual(armor.color, CHEST_COLOR)
+        rng = random.Random(55)
+        for chest in (potion, weapon, armor):
+            for depth in (1, 10):
+                self.assertEqual(chest.open(depth, rng=rng).kind, chest.kind)
+
     def test_boss_chest_ignores_depth_scaling(self):
         chest = Chest(0, 0, guaranteed_min_rarity='rare')
         rng = random.Random(52)
@@ -714,7 +750,8 @@ class SaveLoadTests(unittest.TestCase):
     def test_chest_on_the_map_round_trips(self):
         random.seed(49)
         state = GameState(50, 20)
-        chest = Chest(state.player.x + 1, state.player.y, guaranteed_min_rarity='rare')
+        chest = Chest(state.player.x + 1, state.player.y, guaranteed_min_rarity='rare',
+                      kind='potion')
         state.entities = [state.player, chest]
 
         with tempfile.TemporaryDirectory() as d:
@@ -726,6 +763,8 @@ class SaveLoadTests(unittest.TestCase):
         loaded_chests = [e for e in fresh.entities if isinstance(e, Chest)]
         self.assertEqual(len(loaded_chests), 1)
         self.assertEqual(loaded_chests[0].guaranteed_min_rarity, 'rare')
+        self.assertEqual(loaded_chests[0].kind, 'potion')
+        self.assertEqual(loaded_chests[0].color, POTION_CHEST_COLOR)
         self.assertEqual((loaded_chests[0].x, loaded_chests[0].y), (chest.x, chest.y))
 
 

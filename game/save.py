@@ -23,7 +23,8 @@ def _entity_to_dict(e):
         d.update(type='monster', kind=e.kind, hp=e.hp, max_hp=e.max_hp,
                   power=e.power, alive=e.alive, is_boss=e.is_boss)
     elif isinstance(e, Chest):
-        d.update(type='chest', guaranteed_min_rarity=e.guaranteed_min_rarity)
+        d.update(type='chest', guaranteed_min_rarity=e.guaranteed_min_rarity,
+                 kind=e.kind)
     elif isinstance(e, Item):
         # Only reachable from an old (pre-chest) save file -- current play
         # never leaves a bare Item sitting in state.entities anymore.
@@ -39,7 +40,8 @@ def _entity_from_dict(d):
         m.hp, m.max_hp, m.power, m.alive = d['hp'], d['max_hp'], d['power'], d['alive']
         return m
     if d['type'] == 'chest':
-        return Chest(d['x'], d['y'], d.get('guaranteed_min_rarity'))
+        # A save from before chests had a kind gets one rolled now.
+        return Chest(d['x'], d['y'], d.get('guaranteed_min_rarity'), kind=d.get('kind'))
     if d['type'] == 'item':
         return Item(d['x'], d['y'], d['kind'], d.get('rarity', 'common'))
     e = Entity(d['x'], d['y'], d['char'], color=d['color'], name=d['name'])

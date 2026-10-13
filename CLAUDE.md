@@ -136,11 +136,12 @@ running the game.
 - **Map is a 2D list of chars**, indexed `game_map[y][x]`, built by `make_empty_map(w, h, fill='#')`.
 - **Tile chars**: `#` wall, `.` floor, `+` door, `>` stairs down, `@` player, lowercase letters for
   monsters (uppercase for a boss version of the same kind, e.g. `o`/`O` for orc), `=` chest
-  (unopened; `!`/`/`/`[` potion/weapon/armor only exist transiently once one is opened).
+  (unopened — pink holds a potion, cyan holds gear; `!`/`/`/`[` potion/weapon/armor only exist transiently once one is opened).
 - **Walkability** is a char comparison (`!= '#'`), not a tile-type system.
 - **Colors** go through `curses.init_pair(n, fg, bg)` and are stored on entities as an int
   (`Entity.color`), rendered with `curses.color_pair(...)`. Pair 1 is yellow-on-black (the player);
-  pairs 4-7 are the gear-rarity ladder (`game/item.py`'s `RARITY_COLOR` picks the number).
+  pairs 4-7 are the gear-rarity ladder (`game/item.py`'s `RARITY_COLOR` picks the number); pair 8
+  is the pink potion chest.
 - Map dimensions are `DEFAULT_WIDTH`/`DEFAULT_HEIGHT` constants in `main.py`, overridden by the
   `MAP_WIDTH`/`MAP_HEIGHT` env vars via `env_int`, and passed explicitly into `GameState(width,
   height, ...)`. `GameState` keeps them as `self.width`/`self.height`; nothing under `game/` reads
@@ -228,18 +229,21 @@ loading a save).
 Uncommon → Rare → Epic (`RARITIES`, spawn-weighted 60/25/12/3 via `roll_rarity`). Rarity sets a flat
 stat (`GEAR_BONUS`: 1/2/4/7) for weapons (`player.power = player.base_power + bonus`) and armor
 (`player.defense = bonus`, subtracted from incoming damage with a floor of 1 in `GameState.attack`),
-and a heal amount for potions (`POTION_HEAL`: 8/14/22/35). Gear auto-equips on pickup, replacing
-whatever was in that slot (no inventory/drop management — picking up a second weapon just swaps).
+and a heal amount for potions (`POTION_HEAL`: 8/14/22/35). Gear auto-equips on pickup only if
+its bonus beats what is already in that slot; an equal or worse piece is left behind with a log
+line (no inventory/drop management).
 Rarity also picks the item's on-map color (pairs 4-7 in `render/curses_render.py`, green/blue/
 magenta/white for uncommon/rare/epic/common) — the render side panel has a dedicated `-- gear --`
 section showing the equipped weapon/armor's name, bonus, and rarity in that color.
 
-**Chests, not bare items, spawn on the floor** (`game/item.py`'s `Chest`, `=` on the map, cyan):
+**Chests, not bare items, spawn on the floor** (`game/item.py`'s `Chest`, `=` on the map, pink or cyan):
 `spawn_chests(rooms)` rolls 50/50 per room — skipping `rooms[0]`, the player's start — and places
-a chest instead of a raw `Item`. A chest holds nothing until opened
-(`GameState.open_chest`, triggered by walking onto it, same as items used to auto-apply) — kind and
-rarity are rolled fresh at that moment via `roll_kind`/`roll_rarity`, against the *current depth*,
-not the depth it was spawned at. `rarity_weights_for_depth` interpolates linearly from the depth-1
+a chest instead of a raw `Item`. A chest's *kind* is rolled at spawn (`roll_kind`) so the map can
+show it: potion chests are pink (`POTION_CHEST_COLOR`, pair 8 — xterm-256 colour 213, magenta on an
+8-colour terminal), gear chests stay cyan (pair 3). Its *rarity* is rolled only when it is opened
+(`GameState.open_chest`, triggered by walking onto it) via `roll_rarity`, against the *current
+depth*, not the depth it was spawned at. Saves store the kind; a chest from an older save gets one
+rolled on load. `rarity_weights_for_depth` interpolates linearly from the depth-1
 weights toward a much better table by `MAX_SCALING_DEPTH` (20), then holds steady past that, so "the
 deeper you go the better the loot" is continuous rather than tied to the monster-scaling 3-floor
 tiers. A boss's chest (`spawn_boss_chest`) ignores that table entirely and always rolls rare or epic
@@ -268,10 +272,10 @@ window; that call is deprecated in pygame-ce 2.4+ (its warning is silenced) — 
 underlined, matching curses. Verified in a real window on Linux; on Windows only via CI's
 headless tests so far.
 
-Test coverage: `test_game.py` (68 tests) + `test_menu.py` (7) + `test_loop.py` (7) +
+Test coverage: `test_game.py` (71 tests) + `test_menu.py` (7) + `test_loop.py` (7) +
 `test_pygame_render.py` (24) + `test_ui.py` (8) + `test_parity.py` (4) + `test_paths.py` (28) +
 `test_settings.py` (18) + `test_crashlog.py` (7) + `test_main.py` (2) + `test_frozen_smoke.py` (3)
-= 176 unit tests, plus ad hoc fuzz/PTY smoke testing during development — see `agent_log.md` for
+= 179 unit tests, plus ad hoc fuzz/PTY smoke testing during development — see `agent_log.md` for
 what was run and why.
 
 ## Gotchas

@@ -1,16 +1,17 @@
 """Items (spec §6, stretch goal #4) plus a gear/rarity system and chests.
 
 Three item kinds: potions (consumed on pickup), and two equipment slots --
-weapon (bonus power) and armor (bonus defense) -- that auto-equip on pickup,
-replacing whatever was in that slot. Every kind is tiered Common -> Uncommon
+weapon (bonus power) and armor (bonus defense) -- that auto-equip on pickup
+when they beat what is already in that slot, and are left behind otherwise. Every kind is tiered Common -> Uncommon
 -> Rare -> Epic; rarity drives both the visual color (an int color-pair
 number, same convention Entity.color already uses for players/monsters) and
 the stat payoff.
 
 Loot no longer sits on the floor as a bare Item: what actually spawns in a
-room is a Chest. Opening one (walk onto it) rolls kind and rarity fresh at
-that moment against the *current depth*, via `roll_rarity`, so the contents
-aren't fixed until the player actually gets there -- and the odds genuinely
+room is a Chest. Its *kind* is fixed at spawn so the map can colour it
+(potion chests pink, gear chests cyan); opening one (walk onto it) rolls the
+*rarity* fresh at that moment against the *current depth*, via `roll_rarity`,
+so the quality isn't fixed until the player actually gets there -- and the odds genuinely
 improve the deeper the run goes (see `rarity_weights_for_depth`), not just
 at the moment of spawning.
 """
@@ -55,7 +56,8 @@ ITEM_CHARS = {'potion': '!', 'weapon': '/', 'armor': '['}
 ITEM_KIND_WEIGHTS = {'potion': 0.5, 'weapon': 0.25, 'armor': 0.25}
 
 CHEST_CHAR = '='
-CHEST_COLOR = 3  # reuses the cyan pair the old flat "item" color used
+CHEST_COLOR = 3         # gear chests: reuses the cyan pair the old flat "item" color used
+POTION_CHEST_COLOR = 8  # potion chests: pink (pair 8 in render/curses_render.py)
 BOSS_CHEST_MIN_RARITIES = ['rare', 'epic']
 BOSS_CHEST_MIN_WEIGHTS = [0.75, 0.25]
 
@@ -99,6 +101,10 @@ class Item(Entity):
 
         slot = 'weapon' if self.kind == 'weapon' else 'armor'
         old = getattr(player, slot)
+        if old is not None and old.bonus >= self.bonus:
+            log(f'You leave the {self.name} ({self.rarity}); '
+                f'your {old.name} is better.')
+            return
         setattr(player, slot, self)
         if slot == 'weapon':
             player.power = player.base_power + self.bonus
@@ -112,21 +118,27 @@ class Item(Entity):
 
 
 class Chest(Entity):
-    """A sealed container. Doesn't hold a kind/rarity until opened -- that's
-    rolled fresh against the depth it's opened at, so "the deeper you go the
-    better the loot" holds for a chest you find early but open late, too.
+    """A sealed container. Its kind (potion/weapon/armor) is rolled at spawn
+    so the renderer can tell potion chests from gear chests by colour. Its
+    rarity isn't rolled until opened -- fresh against the depth it's opened
+    at, so "the deeper you go the better the loot" holds for a chest you find
+    early but open late, too.
 
     `guaranteed_min_rarity='rare'` marks a boss chest: it always contains
     rare-or-epic gear regardless of depth (spec-follow-up: "guaranteed rare
     drop"), rather than using the normal depth-scaled table.
     """
 
-    def __init__(self, x, y, guaranteed_min_rarity=None):
-        super().__init__(x, y, CHEST_CHAR, color=CHEST_COLOR, name='chest')
+    def __init__(self, x, y, guaranteed_min_rarity=None, kind=None, rng=random):
+        if kind is None:
+            kind = roll_kind(rng)
+        color = POTION_CHEST_COLOR if kind == 'potion' else CHEST_COLOR
+        super().__init__(x, y, CHEST_CHAR, color=color, name='chest')
         self.guaranteed_min_rarity = guaranteed_min_rarity
+        self.kind = kind
 
     def open(self, depth, rng=random):
-        kind = roll_kind(rng)
+        kind = self.kind
         if self.guaranteed_min_rarity == 'rare':
             rarity = rng.choices(BOSS_CHEST_MIN_RARITIES, weights=BOSS_CHEST_MIN_WEIGHTS)[0]
         else:
@@ -144,7 +156,7 @@ def spawn_chests(rooms, rng=random):
                 y = rng.randint(room.y1, room.y2 - 1)
                 if (x, y) not in occupied:
                     occupied.add((x, y))
-                    chests.append(Chest(x, y))
+                    chests.append(Chest(x, y, rng=rng))
                     break
     return chests
 

@@ -45,7 +45,9 @@ COLOR_PAIRS = {
     5: (curses.COLOR_BLUE, curses.COLOR_BLACK),     # rare
     6: (curses.COLOR_MAGENTA, curses.COLOR_BLACK),  # epic
     7: (curses.COLOR_WHITE, curses.COLOR_BLACK),    # common
+    8: (curses.COLOR_MAGENTA, curses.COLOR_BLACK),  # potion chest (pink -- see __init__)
 }
+PINK_256 = 213  # xterm-256 hot pink; 8-colour terminals fall back to magenta
 
 MESSAGE_LOG_LINES = 4
 
@@ -65,6 +67,8 @@ class CursesRenderer(Renderer):
 
         curses.start_color()
         for pair, (fg, bg) in COLOR_PAIRS.items():
+            if pair == 8 and curses.COLORS >= 256:
+                fg = PINK_256
             curses.init_pair(pair, fg, bg)
 
     # -- drawing helpers -----------------------------------------------------
