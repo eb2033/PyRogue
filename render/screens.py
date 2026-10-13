@@ -20,8 +20,9 @@ CLASS_DESCRIPTIONS = {
     'archer': 'Ranged. WASD moves, arrow keys fire.',
 }
 MENU_HINT = 'up/down or w/s to choose, enter to select, q to quit'
-GAME_OVER_TEXT = 'YOU DIED -- press q to quit'
-GAME_OVER_SHORT = ['YOU DIED', 'press q to quit']  # for maps narrower than that
+GAME_OVER_TITLE = 'YOU DIED'
+GAME_OVER_HINT = 'press q to quit'
+GAME_OVER_SCALE = 4  # the title is this many times the map's font
 
 
 def _menu_geometry(layout, options, banner_lines):
@@ -91,42 +92,40 @@ def option_at(layout, menu, banner_lines, pixel):
     return index if x0 <= px < x1 else None
 
 
-def _game_over_lines(layout):
-    """GAME_OVER_TEXT on one line, or split in two if the map is narrower."""
-    if layout.font.size(GAME_OVER_TEXT)[0] + 2 * layout.cell_w <= layout.map_rect().width:
-        return [GAME_OVER_TEXT]
-    return GAME_OVER_SHORT
+def game_over_fonts(layout):
+    """(title font, hint font). The title is GAME_OVER_SCALE times the map's
+    font, shrunk back toward it if it wouldn't fit across the map."""
+    room = layout.map_rect().width - 2 * layout.cell_w
+    size = layout.font_size * GAME_OVER_SCALE
+    while size > layout.font_size and layout._font(size).size(GAME_OVER_TITLE)[0] > room:
+        size -= 1
+    return layout._font(size), layout.font
 
 
-def game_over_rect(layout, state):
-    """Pixel rect of the game-over banner: a box across the map, at the end
-    of the map (top or bottom) farther from the player, so it doesn't hide
-    the player or what killed them."""
-    lines = _game_over_lines(layout)
-    text_w = max(layout.font.size(line)[0] for line in lines)
-    box = pygame.Rect(0, 0, text_w + 2 * layout.cell_w,
-                      len(lines) * layout.font.get_linesize() + layout.cell_h // 2)
+def game_over_rect(layout):
+    """Pixel rect of the game-over banner: a box centred across the top of
+    the map, holding the big title and the hint under it."""
+    title_font, hint_font = game_over_fonts(layout)
+    text_w = max(title_font.size(GAME_OVER_TITLE)[0], hint_font.size(GAME_OVER_HINT)[0])
+    text_h = title_font.get_linesize() + hint_font.get_linesize()
+    box = pygame.Rect(0, 0, text_w + 2 * layout.cell_w, text_h + layout.cell_h)
     area = layout.map_rect()
-    cell_h = layout.map_cell_size()[1]
-    player_y = layout.map_cell_to_pixel(state.player.x, state.player.y)[1] + cell_h // 2
     box.centerx = area.centerx
-    if player_y < area.centery:
-        box.bottom = area.bottom - cell_h
-    else:
-        box.top = area.top + cell_h
+    box.top = area.top + layout.cell_h // 2
     return box
 
 
-def paint_game_over(canvas, state):
-    """Overlay drawn on top of the final game frame: GAME_OVER_TEXT in a
+def paint_game_over(canvas):
+    """Overlay drawn on top of the final game frame: the title and hint in a
     framed box placed by game_over_rect."""
     layout = canvas.layout
-    box = game_over_rect(layout, state)
+    box = game_over_rect(layout)
     canvas.surface.fill(palette.BACKGROUND, box)
     pygame.draw.rect(canvas.surface, palette.DANGER, box, max(1, layout.cell_h // 12))
-    lines = _game_over_lines(layout)
-    line_h = layout.font.get_linesize()
-    top = box.centery - len(lines) * line_h // 2
-    for i, line in enumerate(lines):
-        text = canvas.text_surface(line, palette.DANGER)
-        canvas.surface.blit(text, text.get_rect(centerx=box.centerx, top=top + i * line_h))
+    title_font, hint_font = game_over_fonts(layout)
+    title = title_font.render(GAME_OVER_TITLE, True, palette.DANGER)
+    hint = hint_font.render(GAME_OVER_HINT, True, palette.DANGER)
+    top = box.top + layout.cell_h // 2
+    canvas.surface.blit(title, title.get_rect(centerx=box.centerx, top=top))
+    top += title_font.get_linesize()
+    canvas.surface.blit(hint, hint.get_rect(centerx=box.centerx, top=top))

@@ -329,7 +329,7 @@ class PygameRenderer(Renderer):
 
         ui.paint_panel(self.canvas, state)
         if state.game_over:
-            screens.paint_game_over(self.canvas, state)
+            screens.paint_game_over(self.canvas)
 
     def _paint_entity(self, entity):
         rgb = palette.color(entity.color, palette.VISIBLE)
@@ -355,8 +355,12 @@ class PygameRenderer(Renderer):
         self.canvas.surface.blit(flash, rect)
         number = self._glyph(f'-{hit.damage}', palette.brighten(palette.DANGER), bold=True)
         rise = round(rect.height * 0.5 * t)
-        self.canvas.surface.blit(number, number.get_rect(
-            midbottom=(rect.centerx, rect.top + rect.height // 3 - rise)))
+        spot = number.get_rect(midbottom=(rect.centerx, rect.top + rect.height // 3 - rise))
+        # pygame's synthetic bold is thin at these sizes, so stamp the number
+        # a second time, one stroke over, to thicken it.
+        stroke = max(1, number.get_height() // 14)
+        self.canvas.surface.blit(number, spot)
+        self.canvas.surface.blit(number, spot.move(stroke, 0))
 
     # -- map cells ------------------------------------------------------------
 
