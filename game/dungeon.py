@@ -7,6 +7,7 @@ until it either hits the target room count (min_rooms-max_rooms, default
 instead of stalling out around 2-3 rooms.
 """
 
+import heapq
 import random
 
 from game.rect import Rect
@@ -68,6 +69,108 @@ def place_doors(game_map, rooms):
                 run = []
 
 
+# Corridor routing costs (see route_corridor). Crossing a wall is the
+# expensive part, so corridors punch through as few as they can and prefer
+# an existing doorway or corridor to a fresh one.
+ROCK_COST = 3
+FLOOR_COST = 1
+DOORWAY_COST = 20
+
+
+def _wall_index(rooms):
+    """(sides, corners): every non-corner wall-ring tile mapped to the set of
+    (room, side) it belongs to, and the set of ring corner tiles."""
+    sides, corners = {}, set()
+    for i, room in enumerate(rooms):
+        for side_no, side in enumerate(wall_sides(room)):
+            for pos in side:
+                sides.setdefault(pos, set()).add((i, side_no))
+        corners.update({(room.x1 - 1, room.y1 - 1), (room.x2, room.y1 - 1),
+                        (room.x1 - 1, room.y2), (room.x2, room.y2)})
+    corners.difference_update(sides)  # a corner of one room can be a side of another
+    return sides, corners
+
+
+def route_corridor(game_map, rooms, start, goal):
+    """The cheapest 4-way path from `start` to `goal` (room centres), as a
+    list of (x, y), or None. It crosses room walls only head-on, through a
+    single tile: never along a wall, never through a ring corner, and never
+    next to an existing doorway in the same wall (which would make a gap no
+    door can close). Reusing an existing doorway or corridor is cheap."""
+    h, w = len(game_map), len(game_map[0])
+    sides, corners = _wall_index(rooms)
+
+    def cost(pos):
+        x, y = pos
+        if not (0 < x < w - 1 and 0 < y < h - 1) or pos in corners:
+            return None
+        if pos in sides:
+            if game_map[y][x] != WALL:
+                return FLOOR_COST  # an existing doorway
+            for room, side_no in sides[pos]:
+                for neighbour in _along_side(pos, side_no):
+                    nx, ny = neighbour
+                    if (room, side_no) in sides.get(neighbour, ()) and game_map[ny][nx] != WALL:
+                        return None  # would widen that doorway
+            return DOORWAY_COST
+        return FLOOR_COST if game_map[y][x] != WALL else ROCK_COST
+
+    best = {start: 0}
+    came_from = {}
+    queue = [(0, start)]
+    while queue:
+        dist, pos = heapq.heappop(queue)
+        if pos == goal:
+            path = [pos]
+            while pos in came_from:
+                pos = came_from[pos]
+                path.append(pos)
+            return path[::-1]
+        if dist > best[pos]:
+            continue
+        x, y = pos
+        for nxt in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+            step = cost(nxt)
+            if step is None:
+                continue
+            if sides.get(pos, set()) & sides.get(nxt, set()):
+                continue  # walking along a wall
+            if dist + step < best.get(nxt, float('inf')):
+                best[nxt] = dist + step
+                came_from[nxt] = pos
+                heapq.heappush(queue, (dist + step, nxt))
+    return None
+
+
+def _along_side(pos, side_no):
+    """The two tiles beside `pos` along its wall (north/south walls run
+    east-west, west/east walls run north-south)."""
+    x, y = pos
+    if side_no in (0, 1):
+        return ((x - 1, y), (x + 1, y))
+    return ((x, y - 1), (x, y + 1))
+
+
+def connect_rooms(game_map, rooms, rng=random):
+    """Corridors joining each room to the one placed before it, routed by
+    route_corridor once every room is carved -- so no room can later land
+    with its wall along an existing corridor. Falls back to the spec's
+    L-shaped corridor if routing ever fails."""
+    for prev, new in zip(rooms, rooms[1:]):
+        path = route_corridor(game_map, rooms, prev.center(), new.center())
+        if path is None:
+            (px, py), (nx, ny) = prev.center(), new.center()
+            if rng.random() < 0.5:
+                carve_h_corridor(game_map, px, nx, py)
+                carve_v_corridor(game_map, py, ny, nx)
+            else:
+                carve_v_corridor(game_map, py, ny, px)
+                carve_h_corridor(game_map, px, nx, ny)
+            continue
+        for x, y in path:
+            game_map[y][x] = FLOOR
+
+
 def generate_dungeon(w, h, min_rooms=4, max_rooms=6, min_size=4, max_size=8,
                      max_attempts=300):
     """Keeps rolling random, non-overlapping rooms until it hits a target
@@ -102,26 +205,15 @@ def generate_dungeon(w, h, min_rooms=4, max_rooms=6, min_size=4, max_size=8,
             if any(new_room.intersects(r) for r in rooms):
                 continue  # overlaps, skip
 
-            carve_room(game_map, new_room)
-
-            if rooms:
-                prev_x, prev_y = rooms[-1].center()
-                new_x, new_y = new_room.center()
-                horizontal_first = random.random() < 0.5
-                if horizontal_first:
-                    carve_h_corridor(game_map, prev_x, new_x, prev_y)
-                    carve_v_corridor(game_map, prev_y, new_y, new_x)
-                else:
-                    carve_v_corridor(game_map, prev_y, new_y, prev_x)
-                    carve_h_corridor(game_map, prev_x, new_x, new_y)
-
             rooms.append(new_room)
 
     if not rooms:
-        fallback = Rect(1, 1, max(1, w - 2), max(1, h - 2))
-        carve_room(game_map, fallback)
-        rooms.append(fallback)
+        rooms.append(Rect(1, 1, max(1, w - 2), max(1, h - 2)))
 
+    # Rooms first, then corridors: see connect_rooms.
+    for room in rooms:
+        carve_room(game_map, room)
+    connect_rooms(game_map, rooms)
     place_doors(game_map, rooms)
     return game_map, rooms
 

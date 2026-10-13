@@ -67,10 +67,17 @@ class DoorPlacementTests(unittest.TestCase):
     """Doors sit in the doorway -- the gap in a room's wall ring -- never on
     the room's own floor, and a closed doorway hides the room."""
 
-    def maps(self, count=300):
-        for seed in range(count):
+    @classmethod
+    def setUpClass(cls):
+        cls._maps = []
+        for seed in range(300):
             random.seed(seed)
-            yield generate_dungeon(40 if seed % 2 else 50, 20)
+            cls._maps.append(generate_dungeon(40 if seed % 2 else 50, 20))
+
+    def maps(self, count=300):
+        # Shared, generated once: routing makes generation ~8 ms a map. Tests
+        # must not mutate them.
+        return self._maps[:count]
 
     @staticmethod
     def inside(room, x, y):
@@ -115,6 +122,30 @@ class DoorPlacementTests(unittest.TestCase):
                         self.assertEqual(seen_inside, [], (room.x1, room.y1, (x, y)))
                         checked += 1
         self.assertGreater(checked, 100)
+
+    def test_corridors_never_open_a_wall_wider_than_one_tile(self):
+        # Corridors are routed after every room exists and cross walls only
+        # head-on, so every opening is a doorway one door can close.
+        for game_map, rooms in self.maps():
+            for room in rooms:
+                for side in wall_sides(room):
+                    run = 0
+                    for x, y in side:
+                        run = run + 1 if game_map[y][x] != WALL else 0
+                        self.assertLessEqual(run, 1, (room.x1, room.y1, (x, y)))
+
+    def test_every_room_is_reachable_from_the_start(self):
+        for game_map, rooms in self.maps():
+            start = rooms[0].center()
+            seen, stack = {start}, [start]
+            while stack:
+                x, y = stack.pop()
+                for nxt in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                    if nxt not in seen and is_walkable(game_map, *nxt):
+                        seen.add(nxt)
+                        stack.append(nxt)
+            for room in rooms:
+                self.assertIn(room.center(), seen)
 
     def test_place_doors_leaves_wide_openings_alone(self):
         game_map = make_empty_map(12, 9)
