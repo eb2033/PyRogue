@@ -33,69 +33,39 @@ def carve_v_corridor(game_map, y1, y2, x):
         game_map[y][x] = FLOOR
 
 
-def _room_at(x, y, rooms):
+def wall_sides(room):
+    """The four sides of the wall ring around `room`'s floor, as lists of
+    (x, y) running along each side. Corners are left out: a corner tile
+    touches no floor tile of the room orthogonally, so it can't be a doorway."""
+    return [
+        [(x, room.y1 - 1) for x in range(room.x1, room.x2)],  # north
+        [(x, room.y2) for x in range(room.x1, room.x2)],      # south
+        [(room.x1 - 1, y) for y in range(room.y1, room.y2)],  # west
+        [(room.x2, y) for y in range(room.y1, room.y2)],      # east
+    ]
+
+
+def place_doors(game_map, rooms):
+    """Put a door in every doorway: a single-tile gap a corridor has cut
+    through a room's wall ring. The door sits *in* the wall line, flanked by
+    wall on both sides, so with tiles.is_transparent treating DOOR as opaque
+    the room stays hidden until the player steps into the doorway.
+
+    Runs after every corridor is carved, so a later corridor can't carve over
+    an earlier door. A gap wider than one tile is where a corridor runs
+    along the outside of the wall; one door can't close that, so it stays
+    open."""
     for room in rooms:
-        if room.x1 <= x < room.x2 and room.y1 <= y < room.y2:
-            return room
-    return None
-
-
-def _corridor_path(prev_x, prev_y, new_x, new_y, horizontal_first):
-    """The ordered tile-by-tile walk of an L-shaped corridor from (prev_x,
-    prev_y) to (new_x, new_y), matching whichever of carve_h_corridor/
-    carve_v_corridor ran first below.
-
-    Each step must land on a tile adjacent to the previous one -- door
-    placement below relies on that to detect where the path crosses a room
-    boundary. A naive range(min, max) per axis would list a segment in
-    ascending order regardless of which way it's actually walked, which
-    breaks adjacency (and so wrongly detects room boundary crossings, e.g.
-    from a mid-corridor bend that happens to coincide with a room center)
-    whenever a segment runs backwards (new < prev).
-    """
-    path = [(prev_x, prev_y)]
-    x, y = prev_x, prev_y
-
-    def walk_x(x, y, target_x):
-        step = 1 if target_x >= x else -1
-        while x != target_x:
-            x += step
-            path.append((x, y))
-        return x
-
-    def walk_y(x, y, target_y):
-        step = 1 if target_y >= y else -1
-        while y != target_y:
-            y += step
-            path.append((x, y))
-        return y
-
-    if horizontal_first:
-        x = walk_x(x, y, new_x)
-        walk_y(x, y, new_y)
-    else:
-        y = walk_y(x, y, new_y)
-        walk_x(x, y, new_x)
-    return path
-
-
-def _place_doors(game_map, rooms, prev_x, prev_y, new_x, new_y, horizontal_first):
-    """Drop a door at every point where a corridor crosses a room boundary,
-    so each room is sealed off for line-of-sight purposes (tiles.
-    is_transparent treats DOOR as opaque, same as a wall) until the player
-    is standing in the doorway or past it."""
-    path = _corridor_path(prev_x, prev_y, new_x, new_y, horizontal_first)
-    prev_owner = _room_at(path[0][0], path[0][1], rooms)
-    for i in range(1, len(path)):
-        x, y = path[i]
-        owner = _room_at(x, y, rooms)
-        if owner is not prev_owner:
-            if prev_owner is not None:
-                dx, dy = path[i - 1]
-                game_map[dy][dx] = DOOR
-            if owner is not None:
-                game_map[y][x] = DOOR
-        prev_owner = owner
+        for side in wall_sides(room):
+            run = []
+            for pos in side + [None]:
+                if pos is not None and game_map[pos[1]][pos[0]] == FLOOR:
+                    run.append(pos)
+                    continue
+                if len(run) == 1:
+                    dx, dy = run[0]
+                    game_map[dy][dx] = DOOR
+                run = []
 
 
 def generate_dungeon(w, h, min_rooms=4, max_rooms=6, min_size=4, max_size=8,
@@ -144,8 +114,6 @@ def generate_dungeon(w, h, min_rooms=4, max_rooms=6, min_size=4, max_size=8,
                 else:
                     carve_v_corridor(game_map, prev_y, new_y, prev_x)
                     carve_h_corridor(game_map, prev_x, new_x, new_y)
-                _place_doors(game_map, rooms + [new_room], prev_x, prev_y,
-                            new_x, new_y, horizontal_first)
 
             rooms.append(new_room)
 
@@ -154,6 +122,7 @@ def generate_dungeon(w, h, min_rooms=4, max_rooms=6, min_size=4, max_size=8,
         carve_room(game_map, fallback)
         rooms.append(fallback)
 
+    place_doors(game_map, rooms)
     return game_map, rooms
 
 

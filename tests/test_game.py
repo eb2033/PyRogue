@@ -13,7 +13,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from game.dungeon import generate_dungeon, place_stairs
+from game.dungeon import generate_dungeon, make_empty_map, place_doors, place_stairs, wall_sides
 from game.entity import Entity
 from game.fov import compute_fov, update_visibility
 from game.item import (CHEST_COLOR, Chest, ITEM_KIND_WEIGHTS, Item, MAX_SCALING_DEPTH,
@@ -25,7 +25,7 @@ from game.monster import (BOSS_REFERENCE_KIND, MONSTER_TYPES, ORTHOGONAL_STEPS, 
 from game.rect import Rect
 from game.save import apply_dict, load_game, save_game, state_to_dict
 from game.state import GameState
-from game.tiles import FLOOR, STAIRS_DOWN, WALL, is_walkable
+from game.tiles import DOOR, FLOOR, STAIRS_DOWN, WALL, is_walkable
 
 
 class DungeonGenerationTests(unittest.TestCase):
@@ -61,6 +61,72 @@ class DungeonGenerationTests(unittest.TestCase):
         sx, sy = place_stairs(game_map, rooms)
         self.assertEqual(game_map[sy][sx], STAIRS_DOWN)
         self.assertEqual((sx, sy), rooms[-1].center())
+
+
+class DoorPlacementTests(unittest.TestCase):
+    """Doors sit in the doorway -- the gap in a room's wall ring -- never on
+    the room's own floor, and a closed doorway hides the room."""
+
+    def maps(self, count=300):
+        for seed in range(count):
+            random.seed(seed)
+            yield generate_dungeon(40 if seed % 2 else 50, 20)
+
+    @staticmethod
+    def inside(room, x, y):
+        return room.x1 <= x < room.x2 and room.y1 <= y < room.y2
+
+    def test_doors_are_in_a_wall_ring_never_on_room_floor(self):
+        for game_map, rooms in self.maps():
+            ring = {pos for room in rooms for side in wall_sides(room) for pos in side}
+            for y, row in enumerate(game_map):
+                for x, tile in enumerate(row):
+                    if tile == DOOR:
+                        self.assertIn((x, y), ring)
+                        self.assertFalse(any(self.inside(r, x, y) for r in rooms))
+
+    def test_every_single_tile_gap_is_a_door_flanked_by_wall(self):
+        for game_map, rooms in self.maps():
+            for room in rooms:
+                for side in wall_sides(room):
+                    tiles = [game_map[y][x] for x, y in side]
+                    for i, tile in enumerate(tiles):
+                        before = tiles[i - 1] if i > 0 else WALL
+                        after = tiles[i + 1] if i + 1 < len(tiles) else WALL
+                        single_gap = tile != WALL and before == WALL and after == WALL
+                        self.assertEqual(single_gap, tile == DOOR, (side[i], tiles))
+
+    def test_a_closed_doorway_hides_the_room_from_the_corridor(self):
+        checked = 0
+        for game_map, rooms in self.maps(100):
+            h, w = len(game_map), len(game_map[0])
+            for room in rooms:
+                for side, (ox, oy) in zip(wall_sides(room), [(0, -1), (0, 1), (-1, 0), (1, 0)]):
+                    for x, y in side:
+                        if game_map[y][x] != DOOR:
+                            continue
+                        outside = (x + ox, y + oy)  # the corridor side of the door
+                        if any(self.inside(r, *outside) for r in rooms):
+                            continue  # two rooms sharing a wall
+                        visible = [[False] * w for _ in range(h)]
+                        compute_fov(game_map, visible, *outside, 8)
+                        seen_inside = [(rx, ry) for ry in range(room.y1, room.y2)
+                                       for rx in range(room.x1, room.x2) if visible[ry][rx]]
+                        self.assertEqual(seen_inside, [], (room.x1, room.y1, (x, y)))
+                        checked += 1
+        self.assertGreater(checked, 100)
+
+    def test_place_doors_leaves_wide_openings_alone(self):
+        game_map = make_empty_map(12, 9)
+        room = Rect(3, 3, 4, 3)
+        for yy in range(room.y1, room.y2):
+            for xx in range(room.x1, room.x2):
+                game_map[yy][xx] = FLOOR
+        game_map[2][4] = game_map[2][5] = FLOOR  # two-wide gap in the north wall
+        game_map[6][4] = FLOOR                   # one-wide gap in the south wall
+        place_doors(game_map, [room])
+        self.assertEqual((game_map[2][4], game_map[2][5]), (FLOOR, FLOOR))
+        self.assertEqual(game_map[6][4], DOOR)
 
 
 class EntityMovementTests(unittest.TestCase):
