@@ -44,6 +44,17 @@ def paint_menu(canvas, menu, banner_lines, descriptions=None):
     canvas.put_str_centered(rows - 2, MENU_HINT)
 
 
+def option_at(layout, menu, banner_lines, pixel):
+    """Index of the menu option under window pixel `pixel`, or None.
+
+    Hit-testing for mouse hover/click (WS-D owns it; pygame_render's
+    _run_menu calls it). Must agree with paint_menu's geometry for the same
+    `layout`, `menu` and `banner_lines`. P3 stub: no option is ever hit, so
+    the menus stay keyboard-only until WS-D fills this in.
+    """
+    return None
+
+
 def paint_game_over(canvas, state):
     """Overlay drawn on top of the final game frame, centred on the map."""
     text = canvas.text_surface(GAME_OVER_TEXT, palette.DANGER, palette.BACKGROUND)

@@ -103,6 +103,19 @@ class TileLayoutTest(unittest.TestCase):
 
 
 @unittest.skipUnless(pygame, 'pygame-ce not installed')
+class OptionAtTest(unittest.TestCase):
+    """The mouse hit-test contract WS-A's menu loop relies on."""
+
+    def test_returns_none_or_a_valid_index(self):
+        layout = ui.Layout(WIDTH, HEIGHT)
+        layout.fit((1200, 600))
+        menu = Menu(screens.TITLE_OPTIONS)
+        for pixel in [(0, 0), (600, 300), (1199, 599), (-5, -5)]:
+            hit = screens.option_at(layout, menu, ['Banner'], pixel)
+            self.assertTrue(hit is None or 0 <= hit < len(menu.options), hit)
+
+
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
 class PaintTest(unittest.TestCase):
     """Smoke tests: each paint function draws something and doesn't raise."""
 
