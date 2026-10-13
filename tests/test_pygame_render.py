@@ -60,6 +60,36 @@ class PygameRendererTest(unittest.TestCase):
                   for x in range(cell.left, cell.right) for y in range(cell.top, cell.bottom)}
         self.assertTrue(pixels - {BACKGROUND}, 'player cell is blank')
 
+    def test_walking_tilts_alternate_sign(self):
+        state = GameState(WIDTH, HEIGHT)
+        player = state.player
+        self.assertEqual(self.renderer.track_steps([player]), {})
+        self.assertEqual(self.renderer.track_steps([player]), {})   # idle: upright
+        angles = []
+        for _ in range(4):
+            player.x += 1
+            angles.append(self.renderer.track_steps([player]).get(id(player)))
+        self.assertEqual(angles, [15, -15, 15, -15])
+        self.assertEqual(self.renderer.track_steps([player]), {})   # stopped
+
+    def test_a_jump_is_not_a_step_and_gone_entities_are_forgotten(self):
+        state = GameState(WIDTH, HEIGHT)
+        player = state.player
+        self.renderer.track_steps([player])
+        player.x += 5
+        self.assertEqual(self.renderer.track_steps([player]), {})
+        self.renderer.track_steps([])
+        self.assertEqual(self.renderer._gait, {})
+
+    def test_draw_plays_a_step_beat_and_ends_upright(self):
+        state = GameState(WIDTH, HEIGHT)
+        self.renderer.draw(state)
+        state.player.x += 1
+        with mock.patch.object(self.renderer, '_play') as play:
+            self.renderer.draw(state)
+        self.assertEqual(play.call_args[0][0], 110)
+        self.assertEqual(self.renderer._tilts, {})
+
     def test_get_action_maps_keys_like_curses(self):
         self.post(key(pygame.K_w, 'w'), key(pygame.K_s, 'S', shift=True),
                   key(pygame.K_UP), key(pygame.K_PERIOD, '.'))

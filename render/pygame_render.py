@@ -39,6 +39,11 @@ ICON_FILE = 'icon.png'
 ZOOM_MS = 220
 IMPACT_MS = 160
 FRAME_MS = 16
+
+# Walking gait: an entity that just took a step leans this many degrees, the
+# lean alternating left/right with each step, for STEP_MS.
+TILT_DEGREES = 15
+STEP_MS = 110
 IMPACT_FLASH_ALPHA = 170
 
 # Events after which the window contents may be stale: repaint the last frame.
@@ -94,6 +99,13 @@ class PygameRenderer(Renderer):
         self._proj = None
         self._animating = False
         self._zoomed_glyphs = {}
+        # Walking gait: id(entity) -> (last position, steps taken) for every
+        # entity seen last frame, the lean (degrees) each entity has in the
+        # frame being painted, and rotated tiles keyed by (char, colour, size,
+        # dim, angle).
+        self._gait = {}
+        self._tilts = {}
+        self._tilted_tiles = {}
 
     @staticmethod
     def _set_mode(size, flags):
@@ -249,6 +261,7 @@ class PygameRenderer(Renderer):
     def draw(self, state):
         """Play whatever the combat camera stages (impacts, then a pan), then
         show the frame. With nothing to stage this is just the paint."""
+        tilts = self.track_steps(state.visible_entities())
         for beat in self.director.plan(state):
             if isinstance(beat, camera.Impact):
                 self._play(self.impact_ms,
@@ -256,7 +269,29 @@ class PygameRenderer(Renderer):
             elif isinstance(beat, camera.Pan):
                 self._play(self.zoom_ms, lambda t, pan=beat: self._paint_pan(state, pan, t))
         self._view = self.director.view
+        if tilts:
+            self._tilts = tilts
+            try:
+                self._play(STEP_MS, lambda t: self._paint_game(state))
+            finally:
+                self._tilts = {}
         self._show(lambda: self._paint_game(state))
+
+    def track_steps(self, entities):
+        """Compare `entities` with the last frame: {id(entity): degrees} for
+        each one that moved exactly one orthogonal cell. The lean alternates
+        sign with that entity's step count. Entities no longer visible are
+        forgotten; one that jumped further (stairs, a teleport) just resets."""
+        gait, tilts = {}, {}
+        for entity in entities:
+            key, pos = id(entity), (entity.x, entity.y)
+            last, steps = self._gait.get(key, (pos, 0))
+            if abs(pos[0] - last[0]) + abs(pos[1] - last[1]) == 1:
+                steps += 1
+                tilts[key] = TILT_DEGREES if steps % 2 else -TILT_DEGREES
+            gait[key] = (pos, steps)
+        self._gait = gait
+        return tilts
 
     # -- staged beats ---------------------------------------------------------
 
@@ -332,6 +367,7 @@ class PygameRenderer(Renderer):
             screens.paint_game_over(self.canvas, state)
 
     def _paint_entity(self, entity):
+        angle = self._tilts.get(id(entity), 0)
         rgb = palette.color(entity.color, palette.VISIBLE)
         if self._proj is not None and not self.layout.tile:
             # Zoomed glyphs are big enough that the floor dot under them shows.
@@ -339,9 +375,10 @@ class PygameRenderer(Renderer):
                                      self._map_cell_rect(entity.x, entity.y))
         if getattr(entity, 'is_boss', False):
             self._paint_boss(entity.x, entity.y, entity.char, palette.brighten(rgb),
-                             entity.color)
+                             entity.color, angle)
         else:
-            self._paint_cell(entity.x, entity.y, entity.char, rgb, entity.color)
+            self._paint_cell(entity.x, entity.y, entity.char, rgb, entity.color,
+                             angle=angle)
 
     def _paint_impact(self, hit, t):
         """A blow landing on `hit.defender`: its cell flashes red and fades,
@@ -367,25 +404,39 @@ class PygameRenderer(Renderer):
         cell_w, cell_h, ox, oy = self._proj
         return pygame.Rect(ox + x * cell_w, oy + y * cell_h, cell_w, cell_h)
 
-    def _paint_cell(self, x, y, char, rgb, color_index=0, dim=False):
-        if self._paint_tile(x, y, char, color_index, dim):
+    def _paint_cell(self, x, y, char, rgb, color_index=0, dim=False, angle=0):
+        if self._paint_tile(x, y, char, color_index, dim, angle):
             return
-        if self.layout.tile or self._proj is not None:
-            # No tile for this char (or a zoomed glyph map): its glyph, centred.
-            self._blit_centred(self._glyph(char, rgb), x, y)
+        if self.layout.tile or self._proj is not None or angle:
+            # No tile for this char (or a zoomed or leaning glyph): centred.
+            self._blit_centred(self._rotated(self._glyph(char, rgb), angle), x, y)
         else:
             self.canvas.put(x, y, char, rgb)
 
-    def _paint_tile(self, x, y, char, color_index, dim=False):
-        """Blit the tileset's tile for `char` if there is one; True if drawn."""
+    def _paint_tile(self, x, y, char, color_index, dim=False, angle=0):
+        """Blit the tileset's tile for `char` if there is one; True if drawn.
+        `angle`: lean it that many degrees (the walking gait), about its centre."""
         if not self.layout.tile:
             return False
         rect = self._map_cell_rect(x, y)
         tile = self._tile(char, color_index, rect.width, dim)
         if tile is None:
             return False
+        if angle:
+            key = (char, color_index, rect.width, dim, angle)
+            leaning = self._tilted_tiles.get(key)
+            if leaning is None:
+                leaning = pygame.transform.rotate(tile, angle)
+                if not self._animating or rect.width == self.layout.tile:
+                    self._tilted_tiles[key] = leaning
+            tile = leaning
+            rect = tile.get_rect(center=rect.center)
         self.canvas.surface.blit(tile, rect.topleft)
         return True
+
+    @staticmethod
+    def _rotated(surface, angle):
+        return pygame.transform.rotate(surface, angle) if angle else surface
 
     def _tile(self, char, color_index, size, dim):
         """The tile at `size` px. Mid-animation every frame is a different
@@ -422,15 +473,16 @@ class PygameRenderer(Renderer):
         centre = self._map_cell_rect(x, y).center
         self.canvas.surface.blit(surface, surface.get_rect(center=centre))
 
-    def _paint_boss(self, x, y, char, rgb, color_index):
+    def _paint_boss(self, x, y, char, rgb, color_index, angle=0):
         """curses draws a boss A_BOLD | A_UNDERLINE in its pair's colour; here
         that is a brightened colour, a bold face, and an underline. In tile
         mode the boss's own tile (tiles.json gives bosses extra armour) is the
         distinction."""
-        if self._paint_tile(x, y, char, color_index):
+        if self._paint_tile(x, y, char, color_index, angle=angle):
             return
-        if self.layout.tile or self._proj is not None:
-            self._blit_centred(self._glyph(char, rgb, bold=True, underline=True), x, y)
+        if self.layout.tile or self._proj is not None or angle:
+            self._blit_centred(self._rotated(
+                self._glyph(char, rgb, bold=True, underline=True), angle), x, y)
         else:
             self.canvas.put(x, y, char, rgb, underline=True, bold=True)
 
