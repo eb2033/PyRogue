@@ -5,6 +5,7 @@
 # Output (all under dist\, gitignored):
 #   dist\PyRogue\                          the onedir bundle; run dist\PyRogue\PyRogue.exe
 #   dist\PyRogue-windows-<version>.zip     the bundle + LICENSE + README.txt
+#                                          + THIRD_PARTY_NOTICES.txt + licenses\
 #
 # Uses $env:PYTHON if set, else .venv\Scripts\python.exe, else `python` on PATH.
 # The interpreter needs requirements.txt and requirements-dev.txt installed.
@@ -53,6 +54,7 @@ if (-not (Test-Path "$Bundle\PyRogue.exe")) {
 }
 
 Copy-Item LICENSE, packaging\README.txt -Destination $Bundle
+Invoke-Checked $Py @('packaging\collect_licenses.py', $Bundle)
 
 Invoke-Checked $Py @('packaging\make_zip.py', $Bundle, "dist\$ZipName")
 

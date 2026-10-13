@@ -6,31 +6,35 @@ GitHub Release notes.
 
 ## [Unreleased]
 
-### Added
-- Windowed renderer (`--renderer pygame`, pygame-ce): the game in its own OS window.
-- Desktop packaging: a PyInstaller `--onedir` build (`packaging/pyrogue.spec`,
-  `packaging/build.sh`, `packaging/build.ps1`) producing `PyRogue-windows-<version>.zip` and
-  `PyRogue-linux-<version>.zip`.
-- Release automation: pushing a `v*` tag builds both zips on GitHub Actions and publishes them with
-  a `SHA256SUMS` file; optional itch.io upload via butler. Every CI run also builds and
-  smoke-tests the frozen game on Windows and Linux.
-- Tiles: the window draws the map with Kenney's CC0 roguelike art instead of characters, with a
-  map grid that scales to the window. `TILES=0` brings the characters back. The exe has an icon.
-- Potion chests are pink and gear chests cyan, on the map in both renderers.
-- Window HUD: an HP bar, a longer message log that wraps long lines, and a side panel that moves
-  under the map in tall or narrow windows.
-- Mouse support in the window's menus (hover and click). The game itself stays keyboard-only.
-- The window ships its own font (JetBrains Mono, SIL OFL), so it looks the same on every system.
+## [0.1.0] - 2026-10-13
 
-- The window's stats panel is a wooden noticeboard with the stats inked on a page hanging from it.
+The first desktop release: PyRogue in its own window, as a download that needs no Python.
+
+### Added
+- The game in its own window (pygame-ce), with Kenney's CC0 pixel-art tiles. The map scales with
+  the window (40 px tiles at 1080p, 28 px on a 1366x768 laptop); F11 toggles fullscreen and
+  `TILES=0` draws letters instead of tiles. The terminal version still works, with no installs.
+- The stats panel is a wooden noticeboard with the stats inked on a page hanging from it: an HP bar,
+  gear in its rarity colour, and a longer message log that wraps. In a tall or narrow window it
+  moves under the map.
+- Mouse support in the menus (hover and click). The game itself stays keyboard-only.
+- Potion chests are pink and gear chests cyan, so you can tell them apart before opening them.
+- Downloads for Windows and Linux (`PyRogue-<platform>-0.1.0.zip`), with an icon, saves in your
+  user data folder, a `crash.log` if anything goes wrong, and `THIRD_PARTY_NOTICES.txt` plus a
+  `licenses/` folder for every bundled library. The window uses a bundled font (JetBrains Mono,
+  SIL OFL), so it looks the same everywhere.
 
 ### Changed
-- Doors now sit in the doorway (the gap in a room's wall) instead of on the room's edge, so a
-  closed door properly hides the room behind it.
-- The map is drawn bigger in the window (40 px tiles at 1080p, up from 32), because the stats panel
-  is narrower.
-- Weapons and armor only replace what you're wearing when they're better; a worse piece is left
+- Doors sit in the doorway, the one-tile gap in a room's wall, so a closed door really hides the
+  room behind it. Corridors are routed so every opening into a room is such a doorway.
+- Weapons and armour only replace what you're wearing when they're better; a worse piece is left
   behind.
+- The game-over banner sits at the end of the map away from the player, instead of over them.
+
+### For developers
+- Release automation: pushing a `v*` tag builds both zips on GitHub Actions and publishes them with
+  a `SHA256SUMS` file (itch.io upload is wired up but off). Tests run on every push and PR; the
+  frozen Windows and Linux builds run on pushes to `main`, tags, and manual runs.
 
 ## Release checklist
 

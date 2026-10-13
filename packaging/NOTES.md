@@ -9,7 +9,7 @@ the way it does.
 | File | What it does |
 |---|---|
 | `pyrogue.spec` | The PyInstaller build. Committed config, never a remembered CLI line. |
-| `build.sh` / `build.ps1` | Clean `build/` + `dist/`, run the spec, copy `LICENSE` + `README.txt` into the bundle, zip it as `dist/PyRogue-<platform>-<version>.zip`. Keep the two in step. |
+| `build.sh` / `build.ps1` | Clean `build/` + `dist/`, run the spec, copy `LICENSE` + `README.txt` into the bundle, run `collect_licenses.py` (third-party notices + `licenses/`), zip it as `dist/PyRogue-<platform>-<version>.zip`. Keep the two in step. |
 | `version_info.py` | Reads `game/version.py` (the only place the version lives) and generates the Windows file-properties resource at build time. `--print-version` prints just the version for scripts/CI. |
 | `make_zip.py` | Zips the bundle with one top-level `PyRogue/` folder. Shared by both build scripts. |
 | `README.txt` | The player-facing readme that ships inside the zip. |
@@ -127,9 +127,9 @@ Before announcing it:
 - [ ] **Crash path**: a broken build (e.g. a renamed asset) leaves `%APPDATA%\PyRogue\crash.log`.
 - [ ] **Settings defaults**: record which map size / FOV / turn delay the build ships with (see the
       `.env` note above).
-- [ ] **Licences**: the zip has `LICENSE` and `README.txt`. Before the first *public* release, add a
-      third-party notices file covering pygame-ce (LGPL-2.1), SDL2 and its codec libraries, and
-      Python (PSF) — the pygame-ce wheel ships no licence text to copy automatically.
+- [ ] **Licences**: the zip has `LICENSE`, `README.txt`, `THIRD_PARTY_NOTICES.txt` and `licenses/`
+      (added by `collect_licenses.py`). If `requirements.txt` moved to a new pygame-ce, check
+      `NoticesTest` passed on *both* OSes in CI — it only sees the libraries of the OS it runs on.
 - [ ] Linux zip: `unzip` then `./PyRogue/PyRogue` on a desktop with no Python dev setup.
 
 ## Phase 4 (not now)

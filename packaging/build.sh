@@ -6,6 +6,7 @@
 # Output (all under dist/, gitignored):
 #   dist/PyRogue/                         the onedir bundle; run dist/PyRogue/PyRogue
 #   dist/PyRogue-<platform>-<version>.zip the bundle + LICENSE + README.txt
+#                                          + THIRD_PARTY_NOTICES.txt + licenses/
 #
 # Uses $PYTHON if set, else .venv/bin/python, else python3. The interpreter
 # needs requirements.txt and requirements-dev.txt installed. Owned by WS-E;
@@ -45,6 +46,7 @@ if [[ ! -x "$BUNDLE/PyRogue" ]]; then
 fi
 
 cp LICENSE packaging/README.txt "$BUNDLE/"
+"$PY" packaging/collect_licenses.py "$BUNDLE"
 
 "$PY" packaging/make_zip.py "$BUNDLE" "dist/$ZIP_NAME"
 

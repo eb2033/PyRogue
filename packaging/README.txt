@@ -26,10 +26,32 @@ Controls
   Shift+S       save
   Shift+L       load
   q             quit
+  F11           fullscreen
 
-Walk onto a chest (=) to open it. Gear equips automatically.
+The menus also take the mouse.
+
+Walk onto a chest to open it: pink chests hold a healing potion, cyan ones a
+weapon or armour. Gear equips itself if it's better than what you wear.
+
+Saves and crash.log
+-------------------
+  Windows:  %APPDATA%\PyRogue
+  Linux:    ~/.local/share/pyrogue
+
+If the game ever closes by itself, crash.log there says why.
+
+Settings (optional)
+-------------------
+Create a file called .env next to the program, with lines like:
+
+  MAP_WIDTH=40
+  MAP_HEIGHT=20
+  FOV_RADIUS=8
+  TURN_DELAY_MS=0      (monsters move instantly)
+  TILES=0              (letters instead of tiles)
 
 Licence
 -------
-MIT -- see LICENSE in this folder. The bundled Python runtime and
-libraries (pygame-ce, SDL) are distributed under their own licences.
+PyRogue is MIT-licensed -- see LICENSE in this folder. The game also
+contains other people's software, art and fonts under their own licences:
+see THIRD_PARTY_NOTICES.txt and the licenses folder.

@@ -144,5 +144,66 @@ class PackagingTest(unittest.TestCase):
             version_info.version_tuple('v1.0')
 
 
+
+# Which notices entry covers a bundled native library: a substring of the
+# library's lowercased file name -> the component named in the notices.
+# Checked longest key first, so 'sdl2_image' wins over 'sdl2'.
+LIBRARY_COMPONENTS = {
+    'sdl2_image': 'SDL2_image', 'sdl2_mixer': 'SDL2_mixer', 'sdl2_ttf': 'SDL2_ttf',
+    'sdl2': 'SDL2', 'freetype': 'FreeType', 'harfbuzz': 'HarfBuzz', 'png': 'libpng',
+    'jpeg': 'libjpeg-turbo', 'tiff': 'libtiff', 'webp': 'libwebp', 'sharpyuv': 'libwebp',
+    'opusfile': 'opusfile', 'opus': 'Opus', 'ogg': 'libogg', 'vorbis': 'libvorbis',
+    'flac': 'FLAC', 'mpg123': 'mpg123', 'fluidsynth': 'FluidSynth', 'sndfile': 'libsndfile',
+    'wavpack': 'WavPack', 'xmp': 'libxmp', 'portmidi': 'PortMidi', 'brotli': 'Brotli',
+    'asound': 'alsa-lib', 'zlib': 'zlib',
+}
+
+
+class NoticesTest(unittest.TestCase):
+    """packaging/THIRD_PARTY_NOTICES.txt covers what the build ships."""
+
+    NOTICES = ROOT / 'packaging' / 'THIRD_PARTY_NOTICES.txt'
+    LICENSES = ROOT / 'packaging' / 'licenses'
+
+    def test_every_licence_file_is_listed_and_every_listed_file_exists(self):
+        notices = self.NOTICES.read_text(encoding='utf-8')
+        files = {p.name for p in self.LICENSES.glob('*.txt')}
+        self.assertTrue(files)
+        for name in files:
+            self.assertIn(name, notices)
+        import re
+        listed = set(re.findall(r'\b([\w.-]+\.txt)\b', notices))
+        listed -= {'THIRD_PARTY_NOTICES.txt', 'License.txt', 'OFL.txt', 'Python-LICENSE.txt'}
+        self.assertEqual(listed - files, set(), 'named in the notices but missing')
+
+    def test_every_library_pygame_bundles_here_is_in_the_notices(self):
+        try:
+            import pygame
+        except ImportError:
+            self.skipTest('pygame-ce not installed')
+        package = Path(pygame.__file__).parent
+        libs = [p.name for p in package.glob('*.dll')]
+        libs += [p.name for p in package.parent.glob('pygame_ce.libs/*')]
+        libs += [p.name for p in package.glob('.dylibs/*')]
+        if not libs:
+            self.skipTest('this pygame-ce build bundles no native libraries')
+        notices = self.NOTICES.read_text(encoding='utf-8')
+        for lib in libs:
+            key = next((k for k in sorted(LIBRARY_COMPONENTS, key=len, reverse=True)
+                        if k in lib.lower()), None)
+            self.assertIsNotNone(key, f'{lib}: unknown library, add it to the notices')
+            self.assertIn(LIBRARY_COMPONENTS[key], notices, lib)
+
+    def test_build_scripts_ship_the_notices(self):
+        for script in ('build.sh', 'build.ps1'):
+            text = (ROOT / 'packaging' / script).read_text(encoding='utf-8')
+            self.assertIn('collect_licenses.py', text, script)
+
+    @unittest.skipUnless(BUNDLE.is_dir(), 'no build at dist/PyRogue/')
+    def test_a_built_bundle_carries_the_notices(self):
+        self.assertTrue((BUNDLE / 'THIRD_PARTY_NOTICES.txt').is_file())
+        for name in ('pygame-ce.txt', 'SDL2.txt', 'Python-LICENSE.txt'):
+            self.assertTrue((BUNDLE / 'licenses' / name).is_file(), name)
+
 if __name__ == '__main__':
     unittest.main()

@@ -33,8 +33,8 @@ APP_NAME = 'PyRogue'
 # directory doesn't exist until WS-C lands it, so it's optional here.
 datas = []
 # pygame-ce is LGPL-2.1: ship its package metadata (name, version, licence
-# identifier) next to it. The wheel carries no licence *text*; a proper
-# third-party notices file is a pre-public-release item (packaging/NOTES.md).
+# identifier) next to it. The wheel carries no licence *text*; the build
+# scripts add THIRD_PARTY_NOTICES.txt and licenses/ (collect_licenses.py).
 datas += copy_metadata('pygame-ce')
 assets = ROOT / 'assets'
 if assets.is_dir():

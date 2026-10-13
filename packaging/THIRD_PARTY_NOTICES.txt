@@ -1,0 +1,77 @@
+PyRogue -- third-party notices
+==============================
+
+PyRogue itself is MIT-licensed (see LICENSE). This download also contains
+other people's software and art, listed below with their licences. The full
+licence texts are in the licenses/ folder next to this file.
+
+Most of the libraries come bundled inside pygame-ce 2.5.8, the library the
+game window is built on. The list was taken from the pygame-ce 2.5.8 wheels
+for Windows (win_amd64) and Linux (manylinux x86_64); "Linux only" marks the
+ones the Windows build doesn't include. Licence texts were taken from each
+project's official repository on 2026-10-13.
+
+
+Replacing the LGPL libraries
+----------------------------
+pygame-ce, and on Linux also mpg123, FluidSynth, libsndfile and alsa-lib, are
+licensed under the GNU Lesser General Public License v2.1. They are shipped
+as separate files inside the _internal folder (not compiled into the game),
+so you can replace them with your own builds of the same libraries. Their
+source code is available from the URLs below; pygame-ce's is at
+https://github.com/pygame-community/pygame-ce/tree/2.5.8 .
+
+
+Software
+--------
+Component            Licence                        licenses/ file         Source
+pygame-ce 2.5.8      LGPL-2.1                       pygame-ce.txt          https://github.com/pygame-community/pygame-ce
+SDL2                 zlib                           SDL2.txt               https://github.com/libsdl-org/SDL
+SDL2_image           zlib                           SDL2_image.txt         https://github.com/libsdl-org/SDL_image
+SDL2_mixer           zlib                           SDL2_mixer.txt         https://github.com/libsdl-org/SDL_mixer
+SDL2_ttf             zlib                           SDL2_ttf.txt           https://github.com/libsdl-org/SDL_ttf
+FreeType             FreeType License (FTL)         FreeType-FTL.txt       https://freetype.org
+libpng               libpng License                 libpng.txt             https://github.com/pnggroup/libpng
+zlib                 zlib                           zlib.txt               https://zlib.net
+libjpeg-turbo        IJG + BSD-3-Clause + zlib      libjpeg-turbo.txt      https://github.com/libjpeg-turbo/libjpeg-turbo
+libtiff              libtiff (BSD-style)            libtiff.txt            https://gitlab.com/libtiff/libtiff
+libwebp              BSD-3-Clause                   libwebp.txt            https://github.com/webmproject/libwebp
+libogg               BSD-3-Clause                   libogg.txt             https://github.com/xiph/ogg
+Opus                 BSD-3-Clause                   opus.txt               https://github.com/xiph/opus
+opusfile             BSD-3-Clause                   opusfile.txt           https://github.com/xiph/opusfile
+WavPack              BSD-3-Clause                   wavpack.txt            https://github.com/dbry/WavPack
+libxmp               MIT                            libxmp.txt             https://github.com/libxmp/libxmp
+PortMidi             MIT-style                      portmidi.txt           https://github.com/PortMidi/portmidi
+HarfBuzz             Old MIT        (Linux only)    HarfBuzz.txt           https://github.com/harfbuzz/harfbuzz
+Brotli               MIT            (Linux only)    brotli.txt             https://github.com/google/brotli
+libvorbis            BSD-3-Clause   (Linux only)    libvorbis.txt          https://github.com/xiph/vorbis
+FLAC                 BSD-3-Clause   (Linux only)    FLAC.txt               https://github.com/xiph/flac
+mpg123               LGPL-2.1       (Linux only)    mpg123.txt             https://www.mpg123.de
+FluidSynth           LGPL-2.1       (Linux only)    fluidsynth.txt         https://github.com/FluidSynth/fluidsynth
+libsndfile           LGPL-2.1       (Linux only)    libsndfile.txt         https://github.com/libsndfile/libsndfile
+alsa-lib             LGPL-2.1       (Linux only)    alsa-lib.txt           https://github.com/alsa-project/alsa-lib
+Python               PSF License                    Python-LICENSE.txt     https://www.python.org
+PyInstaller          GPL-2.0 with a bootloader      pyinstaller.txt        https://github.com/pyinstaller/pyinstaller
+  (bootloader)       exception that allows
+                     distributing it with any program
+
+Windows builds also include the Microsoft Visual C++ runtime
+(vcruntime140.dll), redistributed with Python under Microsoft's terms.
+
+FreeType: portions of this software are copyright (C) The FreeType Project
+(www.freetype.org). All rights reserved.
+
+libjpeg-turbo: this software is based in part on the work of the Independent
+JPEG Group.
+
+
+Art and fonts (in _internal/assets/)
+------------------------------------
+Kenney Roguelike RPG Pack, Roguelike Characters, Roguelike Caves & Dungeons
+  by Kenney (www.kenney.nl), CC0 1.0 (public domain). Thank you, Kenney.
+  Licence files: assets/kenney/*/License.txt
+
+JetBrains Mono 2.304 by JetBrains, SIL Open Font License 1.1.
+  Licence file: assets/fonts/OFL.txt
+
+Where every asset came from: assets/ASSETS.md
