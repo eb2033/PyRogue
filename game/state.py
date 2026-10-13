@@ -14,6 +14,7 @@ for callers that don't care about the split (tests, headless use).
 """
 
 from game import paths
+from game.combat import Hit
 from game.dungeon import generate_dungeon, place_stairs
 from game.entity import Entity
 from game.fov import update_visibility
@@ -74,6 +75,10 @@ class GameState:
         self.game_over = False
         self.depth = 1
         self.messages = []
+        # This round's blows, oldest first -- see game/combat.py. Cleared when
+        # the player acts; the serial keeps counting across rounds and levels.
+        self.combat_events = []
+        self._hit_serial = 0
 
         self.game_map, self.rooms = generate_dungeon(width, height)
         place_stairs(self.game_map, self.rooms)
@@ -115,6 +120,7 @@ class GameState:
         """Apply one semantic action. Returns True if a turn was consumed."""
         if action is None:
             return False
+        self.combat_events = []
 
         if action == 'quit':
             self.running = False
@@ -243,6 +249,9 @@ class GameState:
         verb = 'hit' if attacker is self.player else 'hits'
         target = 'you' if defender is self.player else defender.name
         self.log(f'{subject} {verb} {target} for {damage}.')
+        self._hit_serial += 1
+        self.combat_events.append(Hit(self._hit_serial, attacker, defender, damage,
+                                      defender.hp <= 0, defender.x, defender.y))
         if defender.hp <= 0:
             defender.alive = False
             if defender is not self.player:
@@ -349,6 +358,13 @@ class GameState:
             if isinstance(e, Monster) and e.alive and e.x == x and e.y == y:
                 return e
         return None
+
+    def melee_opponents(self):
+        """Living monsters in view that are orthogonally adjacent to the
+        player, i.e. close enough that one of the two can hit the other."""
+        return [e for e in self.entities
+                if isinstance(e, Monster) and e.alive and e.is_adjacent(self.player)
+                and self.visible[e.y][e.x]]
 
     def chest_at(self, x, y):
         for e in self.entities:

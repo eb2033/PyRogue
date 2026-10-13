@@ -14,6 +14,8 @@ Division of labour with the other render modules:
   tileset.Tileset        tiles for map chars, None -> draw the glyph (WS-C)
   palette                Entity.color int -> RGB (this stream)
   input_map              key -> Action (this stream)
+  camera.Director        the combat zoom: what part of the map to show, and
+                         the beats (impacts, pans) staged before each frame
 """
 
 import os
@@ -24,13 +26,20 @@ os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
 import pygame
 
 from game.paths import resource_path
-from render import input_map, palette, screens, ui
+from render import camera, input_map, palette, screens, ui
 from render.banner import render_banner
 from render.base import Action, Renderer
 from render.menu import Menu
 from render.tileset import Tileset
 
 ICON_FILE = 'icon.png'
+
+# Combat staging (render/camera.py). How long each beat plays; a key the
+# player has already pressed cuts the rest of a beat short.
+ZOOM_MS = 220
+IMPACT_MS = 160
+FRAME_MS = 16
+IMPACT_FLASH_ALPHA = 170
 
 # Events after which the window contents may be stale: repaint the last frame.
 REPAINT_EVENTS = (
@@ -43,11 +52,15 @@ REPAINT_EVENTS = (
 
 
 class PygameRenderer(Renderer):
-    def __init__(self, width, height, tileset=None, font_path=None):
+    def __init__(self, width, height, tileset=None, font_path=None,
+                 combat_zoom=True, zoom_ms=ZOOM_MS, impact_ms=IMPACT_MS):
         """`tileset`: a tileset.Tileset (None -> an unavailable one, i.e. glyphs).
         An available one puts the layout in tile mode: square map cells.
         `font_path`: a TTF/OTF file for the grid text, handed to ui.Layout
-        (None -> a system monospace font); a bundled font goes through here."""
+        (None -> a system monospace font); a bundled font goes through here.
+        `combat_zoom`: zoom the map in on melee fights (render/camera.py);
+        `zoom_ms` / `impact_ms`: how long a pan / an impact flash plays (0 =
+        no animation, the frame just changes)."""
         pygame.display.init()
         pygame.display.set_caption('PyRogue')
         _set_window_icon()
@@ -70,6 +83,17 @@ class PygameRenderer(Renderer):
         # A window-close seen somewhere we can't return Action.QUIT from
         # (a menu, a pause) is remembered and delivered by get_action.
         self._quit_requested = False
+
+        self.director = camera.Director(zoom=combat_zoom)
+        self.zoom_ms = zoom_ms
+        self.impact_ms = impact_ms
+        # The view being painted (None = the whole map, the unzoomed layout),
+        # its projection for the frame being painted, and whether a beat is
+        # mid-play (in-between sizes are drawn uncached -- see _tile).
+        self._view = None
+        self._proj = None
+        self._animating = False
+        self._zoomed_glyphs = {}
 
     @staticmethod
     def _set_mode(size, flags):
@@ -223,36 +247,132 @@ class PygameRenderer(Renderer):
     # -- game frame -----------------------------------------------------------
 
     def draw(self, state):
+        """Play whatever the combat camera stages (impacts, then a pan), then
+        show the frame. With nothing to stage this is just the paint."""
+        for beat in self.director.plan(state):
+            if isinstance(beat, camera.Impact):
+                self._play(self.impact_ms,
+                           lambda t, hit=beat.hit: self._paint_game(state, impact=(hit, t)))
+            elif isinstance(beat, camera.Pan):
+                self._play(self.zoom_ms, lambda t, pan=beat: self._paint_pan(state, pan, t))
+        self._view = self.director.view
         self._show(lambda: self._paint_game(state))
 
-    def _paint_game(self, state):
-        for y, row in enumerate(state.game_map):
-            for x, tile in enumerate(row):
-                if state.visible[y][x]:
-                    self._paint_cell(x, y, tile, palette.VISIBLE)
-                elif state.seen[y][x]:
-                    self._paint_cell(x, y, tile, palette.SEEN, dim=True)
+    # -- staged beats ---------------------------------------------------------
 
-        for entity in state.visible_entities():
-            rgb = palette.color(entity.color, palette.VISIBLE)
-            if getattr(entity, 'is_boss', False):
-                self._paint_boss(entity.x, entity.y, entity.char, palette.brighten(rgb),
-                                 entity.color)
-            else:
-                self._paint_cell(entity.x, entity.y, entity.char, rgb, entity.color)
+    def _play(self, ms, paint):
+        """Play one beat: `paint(t)` for t running 0 -> 1 over `ms`.
+
+        Like pause(), the window stays serviced and key presses stay queued
+        -- and a queued key (typed ahead, or held down) ends the beat early,
+        so animation never makes the player wait for their next move. The
+        beat's final frame isn't painted here: the next beat, or draw()'s own
+        frame, is that frame.
+        """
+        if ms <= 0:
+            return
+        self._animating = True
+        try:
+            start = pygame.time.get_ticks()
+            while not self._quit_requested and not self._key_waiting():
+                t = (pygame.time.get_ticks() - start) / ms
+                if t >= 1:
+                    break
+                self._show(lambda: paint(t))
+                self._service_window()
+                pygame.time.wait(FRAME_MS)
+        finally:
+            self._animating = False
+
+    @staticmethod
+    def _key_waiting():
+        return pygame.event.peek(pygame.KEYDOWN)
+
+    def _paint_pan(self, state, pan, t):
+        self._view = camera.lerp_view(pan.start, pan.end, camera.ease(t))
+        self._paint_game(state)
+
+    # -- game frame -----------------------------------------------------------
+
+    def _paint_game(self, state, impact=None):
+        """The map at the current view, clipped to the map's area, then the
+        panel. `impact`: (Hit, t) to draw a blow landing, t running 0 -> 1."""
+        surface = self.canvas.surface
+        map_rect = self.layout.map_rect()
+        if self._view is None:
+            self._proj = None
+            cols, rows = range(state.width), range(state.height)
+        else:
+            self._proj = camera.project(self._view, map_rect, self.layout.map_cell_size())
+            cell_w, cell_h, ox, oy = self._proj
+            cols = range(max(0, (map_rect.left - ox) // cell_w),
+                         min(state.width, (map_rect.right - ox) // cell_w + 1))
+            rows = range(max(0, (map_rect.top - oy) // cell_h),
+                         min(state.height, (map_rect.bottom - oy) // cell_h + 1))
+            surface.set_clip(map_rect)
+        try:
+            for y in rows:
+                row = state.game_map[y]
+                for x in cols:
+                    if state.visible[y][x]:
+                        self._paint_cell(x, y, row[x], palette.VISIBLE)
+                    elif state.seen[y][x]:
+                        self._paint_cell(x, y, row[x], palette.SEEN, dim=True)
+
+            for entity in state.visible_entities():
+                self._paint_entity(entity)
+            if impact is not None:
+                self._paint_impact(*impact)
+        finally:
+            surface.set_clip(None)
+            self._proj = None
 
         ui.paint_panel(self.canvas, state)
         if state.game_over:
             screens.paint_game_over(self.canvas, state)
 
+    def _paint_entity(self, entity):
+        rgb = palette.color(entity.color, palette.VISIBLE)
+        if self._proj is not None and not self.layout.tile:
+            # Zoomed glyphs are big enough that the floor dot under them shows.
+            self.canvas.surface.fill(palette.BACKGROUND,
+                                     self._map_cell_rect(entity.x, entity.y))
+        if getattr(entity, 'is_boss', False):
+            self._paint_boss(entity.x, entity.y, entity.char, palette.brighten(rgb),
+                             entity.color)
+        else:
+            self._paint_cell(entity.x, entity.y, entity.char, rgb, entity.color)
+
+    def _paint_impact(self, hit, t):
+        """A blow landing on `hit.defender`: its cell flashes red and fades,
+        and the damage rises off it. A blow that kills is drawn on the victim,
+        who has already left visible_entities()."""
+        if hit.killed:
+            self._paint_entity(hit.defender)
+        rect = self._map_cell_rect(hit.x, hit.y)
+        flash = pygame.Surface(rect.size, pygame.SRCALPHA)
+        flash.fill((*palette.DANGER, round(IMPACT_FLASH_ALPHA * (1 - t))))
+        self.canvas.surface.blit(flash, rect)
+        number = self._glyph(f'-{hit.damage}', palette.brighten(palette.DANGER), bold=True)
+        rise = round(rect.height * 0.5 * t)
+        self.canvas.surface.blit(number, number.get_rect(
+            midbottom=(rect.centerx, rect.top + rect.height // 3 - rise)))
+
+    # -- map cells ------------------------------------------------------------
+
+    def _map_cell_rect(self, x, y):
+        """Pixel rect of map cell (x, y) at the current view."""
+        if self._proj is None:
+            return pygame.Rect(self.layout.map_cell_to_pixel(x, y), self.layout.map_cell_size())
+        cell_w, cell_h, ox, oy = self._proj
+        return pygame.Rect(ox + x * cell_w, oy + y * cell_h, cell_w, cell_h)
+
     def _paint_cell(self, x, y, char, rgb, color_index=0, dim=False):
         if self._paint_tile(x, y, char, color_index, dim):
             return
-        if self.layout.tile:
-            # Tile mode, but no tile for this char: its glyph, centred.
-            glyph = self.canvas.text_surface(char, rgb)
-            rect = pygame.Rect(self.layout.map_cell_to_pixel(x, y), self.layout.map_cell_size())
-            self.canvas.surface.blit(glyph, glyph.get_rect(center=rect.center))
+        if self.layout.tile or self._proj is not None:
+            # No tile for this char (or a zoomed glyph map): its glyph, centred.
+            self._blit_centred(self._glyph(char, rgb), x, y)
         else:
             self.canvas.put(x, y, char, rgb)
 
@@ -260,11 +380,47 @@ class PygameRenderer(Renderer):
         """Blit the tileset's tile for `char` if there is one; True if drawn."""
         if not self.layout.tile:
             return False
-        tile = self.tileset.glyph(char, color_index, self.layout.tile, dim)
+        rect = self._map_cell_rect(x, y)
+        tile = self._tile(char, color_index, rect.width, dim)
         if tile is None:
             return False
-        self.canvas.surface.blit(tile, self.layout.map_cell_to_pixel(x, y))
+        self.canvas.surface.blit(tile, rect.topleft)
         return True
+
+    def _tile(self, char, color_index, size, dim):
+        """The tile at `size` px. Mid-animation every frame is a different
+        size, so those are scaled from the source-size tile each frame rather
+        than filling the tileset's cache with sizes never seen again."""
+        if not self._animating or size == self.layout.tile:
+            return self.tileset.glyph(char, color_index, size, dim)
+        source = self.tileset.glyph(char, color_index, self.tileset.cell, dim)
+        return None if source is None else pygame.transform.scale(source, (size, size))
+
+    def _glyph(self, text, rgb, bold=False, underline=False):
+        """`text` rendered for a map cell at the current view: the layout's
+        font when unzoomed, a proportionally bigger one when zoomed in."""
+        if self._proj is None:
+            return self.canvas.text_surface(text, rgb, bold=bold, underline=underline)
+        zoom = self._proj[1] / self.layout.map_cell_size()[1]
+        size = max(ui.MIN_FONT_SIZE, round(self.layout.font_size * zoom))
+        key = (text, rgb, size, bold, underline)
+        glyph = self._zoomed_glyphs.get(key)
+        if glyph is None:
+            font = self.layout._font(size)
+            font.set_bold(bold)
+            font.set_underline(underline)
+            try:
+                glyph = font.render(text, True, rgb)
+            finally:
+                font.set_bold(False)
+                font.set_underline(False)
+            if not self._animating:
+                self._zoomed_glyphs[key] = glyph
+        return glyph
+
+    def _blit_centred(self, surface, x, y):
+        centre = self._map_cell_rect(x, y).center
+        self.canvas.surface.blit(surface, surface.get_rect(center=centre))
 
     def _paint_boss(self, x, y, char, rgb, color_index):
         """curses draws a boss A_BOLD | A_UNDERLINE in its pair's colour; here
@@ -273,10 +429,8 @@ class PygameRenderer(Renderer):
         distinction."""
         if self._paint_tile(x, y, char, color_index):
             return
-        if self.layout.tile:
-            glyph = self.canvas.text_surface(char, rgb, bold=True, underline=True)
-            rect = pygame.Rect(self.layout.map_cell_to_pixel(x, y), self.layout.map_cell_size())
-            self.canvas.surface.blit(glyph, glyph.get_rect(center=rect.center))
+        if self.layout.tile or self._proj is not None:
+            self._blit_centred(self._glyph(char, rgb, bold=True, underline=True), x, y)
         else:
             self.canvas.put(x, y, char, rgb, underline=True, bold=True)
 
@@ -298,11 +452,14 @@ class PygameRenderer(Renderer):
         if ms <= 0:
             return
         deadline = pygame.time.get_ticks() + ms
-        window_events = (pygame.QUIT,) + REPAINT_EVENTS
         while (remaining := deadline - pygame.time.get_ticks()) > 0:
-            for event in pygame.event.get(eventtype=window_events):
-                self._handle_window_event(event)
+            self._service_window()
             pygame.time.wait(min(remaining, 10))
+
+    def _service_window(self):
+        """Handle pending window events only; key presses stay queued."""
+        for event in pygame.event.get(eventtype=(pygame.QUIT,) + REPAINT_EVENTS):
+            self._handle_window_event(event)
 
     # -- teardown -------------------------------------------------------------
 

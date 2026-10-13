@@ -865,5 +865,44 @@ class SaveLoadTests(unittest.TestCase):
         self.assertEqual((loaded_chests[0].x, loaded_chests[0].y), (chest.x, chest.y))
 
 
+class CombatEventTests(unittest.TestCase):
+    """What GameState records for a renderer to stage (game/combat.py)."""
+
+    def setUp(self):
+        random.seed(7)
+        self.state = GameState(50, 20)
+        p = self.state.player
+        self.goblin = Monster(p.x + 1, p.y, 'goblin')
+        self.state.game_map[p.y][p.x + 1] = FLOOR
+        self.state.entities = [p, self.goblin]
+        self.state.update_fov()
+
+    def test_attack_records_a_hit(self):
+        self.goblin.hp = 2
+        self.state.player.power = 5
+        self.state.attack(self.state.player, self.goblin)
+        (hit,) = self.state.combat_events
+        self.assertIs(hit.attacker, self.state.player)
+        self.assertIs(hit.defender, self.goblin)
+        self.assertEqual((hit.damage, hit.killed), (5, True))
+        self.assertEqual((hit.x, hit.y), (self.goblin.x, self.goblin.y))
+
+    def test_events_last_one_round_but_serials_keep_counting(self):
+        self.state.attack(self.goblin, self.state.player)
+        first = self.state.combat_events[0].serial
+        self.state.handle_action('wait')
+        self.assertTrue(all(h.serial > first for h in self.state.combat_events))
+        self.state.handle_action('descend')  # not on the stairs: no turn, no blows
+        self.assertEqual(self.state.combat_events, [])
+
+    def test_melee_opponents_are_orthogonal_neighbours_only(self):
+        self.assertEqual(self.state.melee_opponents(), [self.goblin])
+        self.goblin.y += 1   # now diagonal
+        self.assertEqual(self.state.melee_opponents(), [])
+        self.goblin.y -= 1
+        self.goblin.alive = False
+        self.assertEqual(self.state.melee_opponents(), [])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -108,6 +108,7 @@ class Layout:
         self.cols, self.rows, _, self.panel_x, self.panel_y = self._glyph_grid(False)
         self.font_path = font_path or _default_font()
         self._fonts = {}
+        self.font_size = START_FONT_SIZE
         self.font = self._font(START_FONT_SIZE)
         self.cell_w, self.cell_h = self._cell_size(self.font)
         self.origin_x = self.origin_y = 0
@@ -158,7 +159,8 @@ class Layout:
         full = self._largest_glyph_font(cols, max_rows, win_w, win_h)
         if full >= START_FONT_SIZE:
             sizes[self.stacked] = full
-        self.font = self._font(sizes[self.stacked])
+        self.font_size = sizes[self.stacked]
+        self.font = self._font(self.font_size)
         self.cell_w, self.cell_h = self._cell_size(self.font)
         # Rows the window has spare go to the message log.
         self.cols = cols
@@ -238,6 +240,7 @@ class Layout:
         win_w, win_h = window_size
         self.stacked, self.tile, size = self._choose_tiles(win_w, win_h)
         size = self._grow_tile_font(size, win_w, win_h)
+        self.font_size = size
         self.font = self._font(size)
         cell_w, cell_h = self.cell_w, self.cell_h = self._cell_size(self.font)
         # The text grid covers the whole window (menus centre in it).

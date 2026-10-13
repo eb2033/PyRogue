@@ -6,6 +6,12 @@ GitHub Release notes.
 
 ## [Unreleased]
 
+### Added
+- Combat zoom in the window: when an enemy steps into melee range the map zooms in on you and it,
+  with two squares of map around the fight, and zooms back out when the fight is over. Blows flash
+  red with the damage rising off the target. Pressing a key skips the animation. Warrior only for
+  now; `COMBAT_ZOOM=0` turns it off.
+
 ## [0.1.0] - 2026-10-13
 
 The first desktop release: PyRogue in its own window, as a download that needs no Python.
