@@ -62,9 +62,12 @@ MIN_FONT_SIZE = 8
 MAX_FONT_SIZE = 48
 START_FONT_SIZE = 18
 
-# Tile mode: on-screen map tile sizes, largest first. Multiples of 8 so the
-# 16px Kenney art scales by whole or half steps (nearest-neighbour).
-TILE_SIZES = (64, 56, 48, 40, 32, 24, 16)
+# Tile mode: on-screen map tile sizes, largest first, in steps of 4 so a
+# window between two multiples of 8 (a portrait 800px, a 1366px laptop)
+# doesn't drop a whole size. The 16px Kenney art is scaled nearest-neighbour;
+# at the quarter steps that duplicates every 4th pixel row/column, which
+# still reads crisper than smoothscale's blur (compared side by side).
+TILE_SIZES = (64, 56, 48, 44, 40, 36, 32, 28, 24, 20, 16)
 # A bigger tile is only worth it while the panel text stays readable.
 MIN_TILE_FONT_SIZE = 12
 MAX_TILE_FONT_SIZE = 20
