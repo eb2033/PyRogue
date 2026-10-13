@@ -26,7 +26,7 @@ from game.state import GameState
 from render.base import Action
 
 if pygame is not None:
-    from render import screens
+    from render import camera, screens
     from render.palette import BACKGROUND
     from render.pygame_render import PygameRenderer
 
@@ -183,6 +183,8 @@ class PygameRendererTest(unittest.TestCase):
         boss = Monster(x, y, 'goblin', is_boss=True)
         state.entities.append(boss)
         cell = self.renderer.layout.cell_rect(x, y)
+        # The boss stands next to the player; this compares the unzoomed cell.
+        self.renderer.director.zoom = False
 
         self.renderer.draw(state)
         boss_pixels = lit_pixels(self.renderer, cell)
@@ -396,6 +398,97 @@ class TileModeTest(unittest.TestCase):
         expected.blit(self.renderer.tileset.glyph('@', state.player.color, layout.tile), (0, 0))
         for point in [(layout.tile // 2, layout.tile // 2), (1, 1), (layout.tile // 3, 2)]:
             self.assertEqual(drawn.get_at(point)[:3], expected.get_at(point)[:3])
+
+    def fight(self):
+        state = GameState(WIDTH, HEIGHT)
+        x, y = open_neighbour(state)
+        goblin = Monster(x, y, 'goblin')
+        state.entities = [state.player, goblin]
+        state.update_fov()
+        return state, goblin
+
+    def test_melee_zooms_in_with_the_fight_centred(self):
+        self.renderer.zoom_ms = self.renderer.impact_ms = 0
+        state, goblin = self.fight()
+        self.renderer.draw(state)
+        layout = self.renderer.layout
+        map_rect = layout.map_rect()
+        # The pair plus 2 squares each side: 6x5 or 5x6 cells fill the map
+        # area on its tighter axis.
+        view = self.renderer._view
+        cell, _, ox, oy = camera.project(view, map_rect, layout.map_cell_size())
+        self.assertGreater(cell, layout.tile)
+        self.assertLessEqual(min(map_rect.w // cell, map_rect.h // cell) - 1,
+                             min(view.width, view.height))
+        # The player's zoomed tile is where the projection says, at the bigger size.
+        rect = pygame.Rect(ox + state.player.x * cell, oy + state.player.y * cell, cell, cell)
+        drawn = pygame.display.get_surface().subsurface(rect)
+        expected = self.renderer.tileset.glyph('.', 0, cell).copy()
+        expected.blit(self.renderer.tileset.glyph('@', state.player.color, cell), (0, 0))
+        for point in [(cell // 2, cell // 2), (1, 1), (cell // 3, 2)]:
+            self.assertEqual(drawn.get_at(point)[:3], expected.get_at(point)[:3])
+        # The midpoint between the two sits on the centre of the map area.
+        mid_x = ox + (state.player.x + goblin.x + 1) / 2 * cell
+        mid_y = oy + (state.player.y + goblin.y + 1) / 2 * cell
+        self.assertLessEqual(abs(mid_x - map_rect.centerx), 1)
+        self.assertLessEqual(abs(mid_y - map_rect.centery), 1)
+
+    def test_zoom_stays_inside_the_map_area(self):
+        self.renderer.zoom_ms = self.renderer.impact_ms = 0
+        state, _ = self.fight()
+        screen = pygame.display.get_surface()
+        self.renderer.draw(state)
+        self.assertIsNotNone(self.renderer._view)
+        zoomed = screen.copy()
+        self.renderer.director = camera.Director(zoom=False)
+        self.renderer.draw(state)
+        # Blank the map area in both: everything else must match exactly.
+        map_rect = self.renderer.layout.map_rect()
+        for surface in (zoomed, screen):
+            surface.fill(BACKGROUND, map_rect)
+        self.assertEqual(pygame.image.tobytes(zoomed, 'RGB'),
+                         pygame.image.tobytes(screen, 'RGB'))
+
+    def test_fight_over_zooms_back_out(self):
+        self.renderer.zoom_ms = self.renderer.impact_ms = 0
+        state, goblin = self.fight()
+        self.renderer.draw(state)
+        self.assertIsNotNone(self.renderer._view)
+        goblin.hp = 1
+        state.attack(state.player, goblin)
+        self.renderer.draw(state)
+        self.assertIsNone(self.renderer._view)
+
+    def test_beats_animate_and_a_queued_key_cuts_them_short(self):
+        self.renderer.zoom_ms = 2000
+        state, _ = self.fight()
+        pygame.event.post(key(pygame.K_d, 'd'))
+        start = pygame.time.get_ticks()
+        self.renderer.draw(state)
+        self.assertLess(pygame.time.get_ticks() - start, 1000)
+        self.assertEqual(self.renderer.get_action(), Action.MOVE_E)  # not swallowed
+
+    def test_a_beat_plays_its_frames(self):
+        self.renderer.zoom_ms = 80
+        state, _ = self.fight()
+        frames = []
+        show = self.renderer._show
+        with mock.patch.object(self.renderer, '_show',
+                               side_effect=lambda paint: (frames.append(1), show(paint))):
+            self.renderer.draw(state)
+        self.assertGreater(len(frames), 2)   # in-between frames, then the final one
+
+    def test_impact_flashes_the_defender(self):
+        self.renderer.zoom_ms = 0
+        state, goblin = self.fight()
+        self.renderer.draw(state)
+        state.attack(goblin, state.player)
+        frames = []
+        with mock.patch.object(self.renderer, '_paint_impact',
+                               side_effect=lambda hit, t: frames.append((hit, t))):
+            self.renderer.draw(state)
+        self.assertTrue(frames)
+        self.assertIs(frames[0][0].defender, state.player)
 
     def test_char_without_a_tile_is_drawn_as_its_glyph(self):
         state = GameState(WIDTH, HEIGHT)

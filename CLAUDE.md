@@ -120,7 +120,8 @@ running the game.
   a source run is a **40x20** map — but the `.env` is **not** bundled into the exe, which therefore
   uses the 50x20 code default. `env_int` falls back to the default on an unparseable value rather
   than crashing. `TURN_DELAY_MS=0` collapses the monster phase back to instant, which is handy for
-  testing. `TILES=0` makes the window draw characters instead of tiles.
+  testing. `TILES=0` makes the window draw characters instead of tiles. `COMBAT_ZOOM=0` (default
+  1) turns off the window's melee zoom.
 
 ## Constraints
 
@@ -343,6 +344,22 @@ Test coverage: `test_game.py` (77 tests) + `test_menu.py` (7) + `test_loop.py` (
 `test_paths.py` (28) + `test_settings.py` (18) + `test_crashlog.py` (7) + `test_main.py` (2) +
 `test_frozen_smoke.py` (7) = 264 unit tests, plus ad hoc fuzz/PTY smoke testing during development — see `agent_log.md` for
 what was run and why.
+
+**Combat zoom** (2026-10-13, `render/camera.py`, window only): when a monster is orthogonally
+adjacent (`GameState.melee_opponents()`), the map zooms in so the player and that monster sit at the
+centre of the map area with 2 squares (`camera.MARGIN`) round them, and zooms back out when the fight
+ends or the player dies. Warriors only (`camera.ZOOM_CLASSES`) — the archer is left out for now.
+It is *staged*: `GameState.attack` appends a `game.combat.Hit` (with an ever-growing `serial`) to
+`state.combat_events` (cleared when the player acts), and `camera.Director.plan(state)` turns what
+is new since the last frame into beats — `Impact(hit)` for each visible blow, then `Pan(start, end)`
+if the view must move. `PygameRenderer.draw` plays each beat via `_play(ms, paint)` (`IMPACT_MS`
+flash + rising damage, `ZOOM_MS` eased pan) before showing the frame, so a killing blow lands
+zoomed-in before the camera pulls out. `_play` services the window like `pause` and never takes
+keys; a queued key cuts the beat short, so animation never delays input. A new effect is a new beat
+type plus a player — `main.py`'s loop and curses are untouched. Views are in map cells and not
+clamped to the map (off-map is dark), `camera.project` fits one into `layout.map_rect()` with
+whole-pixel cells; map cells must go through `_map_cell_rect`, which honours the projection.
+Mid-pan tile sizes are scaled from the source tile each frame rather than cached (`_tile`).
 
 ## Gotchas
 

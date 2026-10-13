@@ -59,8 +59,10 @@ def make_renderer(name, width, height):
         # The bundled font, so Windows and Linux draw the same glyphs; a missing
         # file falls back to a system monospace font.
         font = resource_path('assets', 'fonts', BUNDLED_FONT)
+        # COMBAT_ZOOM=0 keeps the whole map in view during melee fights.
         return PygameRenderer(width, height, tileset=tileset,
-                              font_path=str(font) if font.is_file() else None)
+                              font_path=str(font) if font.is_file() else None,
+                              combat_zoom=bool(env_int('COMBAT_ZOOM', 1)))
     raise SystemExit(f'unknown renderer: {name}')
 
 
