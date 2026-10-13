@@ -49,6 +49,7 @@ Create a file called .env next to the program, with lines like:
   FOV_RADIUS=8
   TURN_DELAY_MS=0      (monsters move instantly)
   TILES=0              (letters instead of tiles)
+  COMBAT_ZOOM=0        (no zooming in on melee fights)
 
 Licence
 -------

@@ -6,12 +6,6 @@ GitHub Release notes.
 
 ## [Unreleased]
 
-### Added
-- Combat zoom in the window: when an enemy steps into melee range the map zooms in on you and it,
-  with two squares of map around the fight, and zooms back out when the fight is over. Blows flash
-  red with the damage rising off the target. Pressing a key skips the animation. Warrior only for
-  now; `COMBAT_ZOOM=0` turns it off.
-
 ## [0.1.0] - 2026-10-13
 
 The first desktop release: PyRogue in its own window, as a download that needs no Python.
@@ -23,6 +17,10 @@ The first desktop release: PyRogue in its own window, as a download that needs n
 - The stats panel is a wooden noticeboard with the stats inked on a page hanging from it: an HP bar,
   gear in its rarity colour, and a longer message log that wraps. In a tall or narrow window it
   moves under the map.
+- Combat zoom in the window: when an enemy steps into melee range the map zooms in on you and it,
+  with two squares of map around the fight, and zooms back out when the fight is over. Blows flash
+  red with the damage rising off the target. Pressing a key skips the animation. Warrior only for
+  now; `COMBAT_ZOOM=0` turns it off.
 - Mouse support in the menus (hover and click). The game itself stays keyboard-only.
 - Potion chests are pink and gear chests cyan, so you can tell them apart before opening them.
 - Downloads for Windows and Linux (`PyRogue-<platform>-0.1.0.zip`), with an icon, saves in your

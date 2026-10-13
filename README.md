@@ -55,6 +55,9 @@ Menus also take the mouse in the window version.
 - **Chests.** Walk onto one to open it. **Pink** chests hold a healing potion, **cyan** ones a
   weapon or armour. Gear comes in four rarities (common, uncommon, rare, epic) and is equipped
   automatically if it's better than what you're wearing. Loot gets better the deeper you go.
+- **Combat zoom.** In the window, a melee fight zooms the map in on you and your opponent, blows
+  flash with the damage, and it zooms back out when the fight ends (Warrior only for now). Any key
+  skips the animation.
 - **Monsters** get tougher every three floors. Every eighth floor has a **boss**, which drops a
   chest with rare or epic gear.
 
@@ -69,6 +72,7 @@ per line:
 | `FOV_RADIUS` | 6 | How far you can see |
 | `TURN_DELAY_MS` | 110 | Pause between monster moves; `0` makes them instant |
 | `TILES` | 1 | `0` draws letters instead of tiles in the window |
+| `COMBAT_ZOOM` | 1 | `0` keeps the whole map in view during melee fights |
 | `RENDERER` | `curses` from source, `pygame` in the download | `curses` or `pygame` |
 
 Saves and `crash.log` go to your user data folder: `%APPDATA%\PyRogue` on Windows,

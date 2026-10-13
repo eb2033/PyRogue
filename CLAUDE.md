@@ -339,10 +339,11 @@ unchanged.
   fonts with tall line heights like this one (see `_place_stacked_tiles`: the panel never overlaps
   the map, even if it has to run off the bottom).
 
-Test coverage: `test_game.py` (77 tests) + `test_menu.py` (7) + `test_loop.py` (7) +
-`test_pygame_render.py` (40) + `test_ui.py` (55) + `test_tileset.py` (12) + `test_parity.py` (4) +
+Test coverage: `test_game.py` (80 tests) + `test_menu.py` (7) + `test_loop.py` (7) +
+`test_pygame_render.py` (46) + `test_ui.py` (55) + `test_tileset.py` (12) + `test_camera.py` (14) +
+`test_parity.py` (4) +
 `test_paths.py` (28) + `test_settings.py` (18) + `test_crashlog.py` (7) + `test_main.py` (2) +
-`test_frozen_smoke.py` (7) = 264 unit tests, plus ad hoc fuzz/PTY smoke testing during development — see `agent_log.md` for
+`test_frozen_smoke.py` (7) = 287 unit tests, plus ad hoc fuzz/PTY smoke testing during development — see `agent_log.md` for
 what was run and why.
 
 **Combat zoom** (2026-10-13, `render/camera.py`, window only): when a monster is orthogonally
