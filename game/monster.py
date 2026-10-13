@@ -10,6 +10,11 @@ player's own movement. They used to move and attack diagonally (Chebyshev
 adjacency), which let a monster sitting on a diagonal hit a player who had
 no legal move to hit back.
 
+Monsters never share a tile: GameState hands take_turn the tiles held by
+the player and every other living monster, and a step into one is skipped.
+A chasing monster that goes GIVE_UP_AFTER (3) turns in a row without seeing
+the player gives up and wanders until it sees the player again.
+
 Difficulty: every 3 floors (a "tier") regular monsters get 1.2x hp and +1
 power, compounding (tier 2 is 1.2x *that*, not 1.2x the base). Every 8th
 floor also spawns exactly one boss: 2x the hp and 1.5x the power of the
@@ -35,6 +40,7 @@ ORTHOGONAL_STEPS = ((0, -1), (0, 1), (-1, 0), (1, 0))
 WANDER_STEPS = ORTHOGONAL_STEPS + ((0, 0),)
 
 CHASE_RANGE = 8
+GIVE_UP_AFTER = 3     # blind chasing turns before a monster gives up
 TIER_SIZE = 3           # floors per difficulty tier
 TIER_HP_MULT = 1.2
 TIER_POWER_BONUS = 1
@@ -78,39 +84,75 @@ class Monster(Entity):
         self.power = power
         self.alive = True
         self.is_boss = is_boss
+        self.chasing = False   # pursuing the player (see take_turn)
+        self.lost_sight = 0    # consecutive chasing turns without sight of the player
 
-    def take_turn(self, player, game_map):
+    def take_turn(self, player, game_map, occupied=(), sees_player=True):
         """Chase or wander. Returns 'attack' when standing orthogonally
         adjacent to the player, else None after (maybe) taking one step.
+
+        `occupied` is the set of (x, y) tiles this monster may not step onto
+        because something else stands there -- other living monsters and the
+        player. A step into one is simply not taken (the chase tries its
+        other axis first; a wander just stays put), so monsters never stack
+        and never swap places.
+
+        `sees_player` is whether the player is in line of sight this turn.
+        GameState passes "the monster's tile is in the player's FOV", so a
+        monster sees you exactly when you see it. The default (True) keeps
+        the old distance-only behaviour for callers that don't track sight.
+
+        Pursuit: a monster starts chasing when it sees the player within
+        CHASE_RANGE. Every turn it spends chasing without seeing the player
+        counts one toward `lost_sight` (it still steps toward the player on
+        that turn); on the GIVE_UP_AFTER-th consecutive blind turn it stops
+        pursuing and wanders until it sees the player again. Seeing the
+        player resets the count.
 
         Because both the adjacency test and every step are orthogonal, a
         step can never land on the player's tile: reaching it would mean
         the monster was already adjacent and had returned 'attack'.
         """
         if self.is_adjacent(player):
+            self.chasing = True
+            self.lost_sight = 0
             return 'attack'
 
-        if self.distance_to(player) <= CHASE_RANGE:
-            step = self._chase_step(player, game_map)
+        sees = sees_player and self.distance_to(player) <= CHASE_RANGE
+        if sees:
+            self.chasing = True
+            self.lost_sight = 0
+        elif self.chasing:
+            self.lost_sight += 1
+
+        if self.chasing:
+            step = self._chase_step(player, game_map, occupied)
+            if self.lost_sight >= GIVE_UP_AFTER:
+                self.chasing = False
+                self.lost_sight = 0
         else:
             step = random.choice(WANDER_STEPS)
+            if (self.x + step[0], self.y + step[1]) in occupied:
+                step = None
 
         if step is not None:
             self.move(step[0], step[1], game_map)
         return None
 
-    def _chase_step(self, player, game_map):
+    def _chase_step(self, player, game_map, occupied=()):
         """Pick a greedy 4-way step toward the player.
 
         Closes the larger of the two gaps first and falls back to the other
-        axis when that step is walled off. The old diagonal step was rejected
-        outright if either component hit a wall, so a monster cut off by a
-        corner just stopped; trying the second axis gets it moving again.
+        axis when that step is walled off or occupied. The old diagonal step
+        was rejected outright if either component hit a wall, so a monster
+        cut off by a corner just stopped; trying the second axis gets it
+        moving again.
 
         This is still the spec's naive chase, not pathfinding: a monster
         lined up with the player on one axis has no second axis to fall back
-        to, so a wall directly between them stalls it until the player moves.
-        Returns None in that case, and whenever both candidates are blocked.
+        to, so a wall (or another monster) directly between them stalls it
+        until the way clears. Returns None in that case, and whenever both
+        candidates are blocked.
         """
         dx = (player.x > self.x) - (player.x < self.x)
         dy = (player.y > self.y) - (player.y < self.y)
@@ -120,7 +162,8 @@ class Monster(Entity):
             candidates = ((0, dy), (dx, 0))
 
         for sx, sy in candidates:
-            if (sx or sy) and is_walkable(game_map, self.x + sx, self.y + sy):
+            tx, ty = self.x + sx, self.y + sy
+            if (sx or sy) and is_walkable(game_map, tx, ty) and (tx, ty) not in occupied:
                 return (sx, sy)
         return None
 
@@ -143,9 +186,16 @@ def spawn_monsters(rooms, depth=1, rng=random):
     return monsters
 
 
-def spawn_boss(rooms, depth, rng=random):
-    """One boss, placed in a room other than the player's start when possible."""
+def spawn_boss(rooms, depth, rng=random, occupied=()):
+    """One boss, placed in a room other than the player's start when possible,
+    and off any tile in `occupied` (the monsters already spawned) when a few
+    tries can find one."""
     room = rng.choice(rooms[1:]) if len(rooms) > 1 else rooms[-1]
     x = rng.randint(room.x1, room.x2 - 1)
     y = rng.randint(room.y1, room.y2 - 1)
+    if (x, y) in occupied:
+        free = [(fx, fy) for fy in range(room.y1, room.y2)
+                for fx in range(room.x1, room.x2) if (fx, fy) not in occupied]
+        if free:
+            x, y = rng.choice(free)
     return Monster(x, y, BOSS_REFERENCE_KIND, depth=depth, is_boss=True)

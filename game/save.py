@@ -21,7 +21,8 @@ def _entity_to_dict(e):
     d = {'x': e.x, 'y': e.y, 'char': e.char, 'color': e.color, 'name': e.name}
     if isinstance(e, Monster):
         d.update(type='monster', kind=e.kind, hp=e.hp, max_hp=e.max_hp,
-                  power=e.power, alive=e.alive, is_boss=e.is_boss)
+                  power=e.power, alive=e.alive, is_boss=e.is_boss,
+                  chasing=e.chasing, lost_sight=e.lost_sight)
     elif isinstance(e, Chest):
         d.update(type='chest', guaranteed_min_rarity=e.guaranteed_min_rarity,
                  kind=e.kind)
@@ -38,6 +39,10 @@ def _entity_from_dict(d):
     if d['type'] == 'monster':
         m = Monster(d['x'], d['y'], d['kind'], is_boss=d.get('is_boss', False))
         m.hp, m.max_hp, m.power, m.alive = d['hp'], d['max_hp'], d['power'], d['alive']
+        # Saves from before pursuit was tracked load as idle (not chasing):
+        # the monster picks the chase back up as soon as it sees the player.
+        m.chasing = bool(d.get('chasing', False))
+        m.lost_sight = int(d.get('lost_sight', 0))
         return m
     if d['type'] == 'chest':
         # A save from before chests had a kind gets one rolled now.
