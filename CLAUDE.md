@@ -23,7 +23,9 @@ Tests: `.venv/bin/python -m unittest discover -s tests -v`. The pygame suites ru
 (`.github/workflows/ci.yml`) runs the suite on Ubuntu + Windows × Python 3.12/3.13/3.14, a
 nothing-installed job that guards the stdlib-only terminal path, and a `frozen-build` job that
 freezes the game on Windows and Linux, smoke-tests it, and keeps the zips as artifacts for 7 days —
-that job is the only place the Windows exe gets built before a release. No automated test touches
+that job is the only place the Windows exe gets built before a release. `frozen-build` runs only for
+pushes to `main`, tags, and manual runs ("Run workflow" on the Actions tab); other branches and PRs
+get the tests alone. No automated test touches
 the curses renderer itself (it needs a real terminal) — verify curses rendering/input changes by
 running the game.
 
@@ -70,6 +72,11 @@ running the game.
   numpy/unittest; bundles `assets/` only if it exists). `build.sh` / `build.ps1` clean, build, and zip
   via `make_zip.py`; `version_info.py` generates the Windows file properties from `game/version.py`.
   `NOTES.md` has the AV rules, how to add a data file, and the release checklist.
+  **Third-party notices:** `THIRD_PARTY_NOTICES.txt` (component, licence, source) and `licenses/`
+  (each project's licence text, fetched from its official repo) are copied into every bundle by
+  `collect_licenses.py`, which also adds the building Python's own `LICENSE.txt`.
+  `tests/test_frozen_smoke.py`'s `NoticesTest` fails if pygame-ce ever bundles a native library the
+  notices don't cover — after a pygame-ce upgrade, add a row and its licence file.
 - `.github/workflows/release.yml` — on a `v*` tag (which must match `game/version.py`): builds both
   zips, smoke-tests them, publishes a GitHub Release with `SHA256SUMS` and the matching
   `CHANGELOG.md` section. Pushes to itch.io only if a `BUTLER_API_KEY` secret is set (plus an
@@ -160,20 +167,27 @@ running the game.
 All of spec §3–§7 and all six §8 stretch goals are implemented:
 - `Rect` with `center()` / `intersects()` (§3)
 - Room-and-corridor dungeon generation (§3): `generate_dungeon` rolls a random target room count in
-  `[min_rooms, max_rooms]` (default 4-6) and keeps placing non-overlapping rooms (`min_size=4,
+  `[min_rooms, max_rooms]` (default 4-6), keeps placing non-overlapping rooms (`min_size=4,
   max_size=8`, the spec's own range) until it hits that target or exhausts `max_attempts`; on
   either the 50x20 code default or the 40x20 the checked-in `.env` produces, this reliably lands at
   4-6 rooms (verified over 400 generations each). Room size is clamped to whatever actually
   fits in `(w, h)`, and generation falls back to a single interior room if nothing fits — so
-  `rooms[0]`/`rooms[-1]` are always safe to use even on tiny maps. Doors (`+`) go *in the
-  doorway*: after every room and corridor is carved, `place_doors` (`game/dungeon.py`) walks each
-  room's wall ring (`wall_sides(room)`, corners excluded) and puts a door on every single-tile gap,
-  flanked by wall on both sides — never on the room's own floor (that was the old bug: doors sat on
-  the room's edge tile, which let sight around them). A gap wider than one tile is a corridor running
-  along the outside of the wall; one door can't close it, so it stays open (~17% of openings).
+  `rooms[0]`/`rooms[-1]` are always safe to use even on tiny maps. **Corridors come after every
+  room is carved** (`connect_rooms`, joining each room to the one placed before it — so no room can
+  land with its wall along an existing corridor), and each is the cheapest 4-way path from
+  `route_corridor`: crossing a wall costs `DOORWAY_COST`, rock `ROCK_COST`, existing floor or an
+  existing doorway `FLOOR_COST`, and it may never walk *along* a wall, step through a ring corner,
+  or open a wall tile next to an existing doorway in the same wall. The spec's L-shaped corridor is
+  only a fallback if routing fails (never seen in 2000 maps; ~8 ms a map). Doors (`+`) go *in the
+  doorway*: `place_doors` then walks each room's wall ring (`wall_sides(room)`, corners excluded)
+  and puts a door on every single-tile gap, flanked by wall on both sides — never on the room's own
+  floor (the old bug: doors sat on the room's edge tile, which let sight around them). Thanks to the
+  routing, every opening is such a gap; `place_doors` would still leave a wider one open, since one
+  door can't close it. Two rooms two tiles apart get a door in each wall (`++`).
   `tiles.is_transparent` treats `+` as opaque like a wall, so a room stays hidden from its corridor
   until the player steps into the doorway — `is_walkable` still allows walking through it.
-  `DoorPlacementTests` checks placement and that a closed doorway hides the room.
+  `DoorPlacementTests` checks placement, that no opening is wider than one tile, that every room is
+  reachable, and that a closed doorway hides the room.
 - `Entity` with collision-checked `move` (§4)
 - Recursive shadowcasting FOV (§5, stretch #6): `game/fov.py`'s `compute_fov` — walls block sight;
   `update_visibility` folds the result into the `seen` fog-of-war grid. Replaced the old radius-only
@@ -285,7 +299,7 @@ underlined, matching curses. Verified in a real window on Linux; on Windows only
 headless tests so far.
 
 **Tiles** (WS-C, 2026-10-13): when the `Tileset` loads, `ui.Layout(..., tiles=True)` gives the map
-its own grid of square cells (`layout.tile` px, picked from `TILE_SIZES` = 64…16 — the largest that
+its own grid of square cells (`layout.tile` px, picked from `TILE_SIZES` = 64…16 in steps of 4, scaled nearest-neighbour — the largest that
 leaves the panel a font of at least 12) at `layout.map_origin`, beside the text panel at
 `panel_x`/`panel_y`; draw map cells through `layout.map_cell_to_pixel`, never `cell_to_pixel`.
 The text grid then spans the whole window, so menus centre in it. Remembered cells are the tile
@@ -311,6 +325,8 @@ unchanged.
 - **Tall/narrow windows:** `Layout.stacked` puts the panel *under* the map when that gives a bigger
   font (glyph mode) or tile (tile mode); every other `Layout` name keeps its meaning.
 - **`Canvas.put`/`put_str`/`text_surface` take `bold=`**; bosses are drawn through it.
+- **Game-over banner:** `screens.game_over_rect` puts a framed box at the end of the map (top or
+  bottom) farther from the player, split over two lines on a map narrower than the text.
 - **Mouse in menus only:** hover moves the highlight and a left click selects, via
   `screens.option_at(layout, menu, banner_lines, pixel)`, which shares `paint_menu`'s geometry.
   `_wait_input(mouse=True)` is the menu wait; `get_action` uses `_wait_key()`, which skips mouse
@@ -322,10 +338,10 @@ unchanged.
   fonts with tall line heights like this one (see `_place_stacked_tiles`: the panel never overlaps
   the map, even if it has to run off the bottom).
 
-Test coverage: `test_game.py` (75 tests) + `test_menu.py` (7) + `test_loop.py` (7) +
-`test_pygame_render.py` (40) + `test_ui.py` (53) + `test_tileset.py` (12) + `test_parity.py` (4) +
+Test coverage: `test_game.py` (77 tests) + `test_menu.py` (7) + `test_loop.py` (7) +
+`test_pygame_render.py` (40) + `test_ui.py` (55) + `test_tileset.py` (12) + `test_parity.py` (4) +
 `test_paths.py` (28) + `test_settings.py` (18) + `test_crashlog.py` (7) + `test_main.py` (2) +
-`test_frozen_smoke.py` (3) = 256 unit tests, plus ad hoc fuzz/PTY smoke testing during development — see `agent_log.md` for
+`test_frozen_smoke.py` (7) = 264 unit tests, plus ad hoc fuzz/PTY smoke testing during development — see `agent_log.md` for
 what was run and why.
 
 ## Gotchas

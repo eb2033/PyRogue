@@ -6,6 +6,7 @@ name: ci
 on:
   push:
   pull_request:
+  workflow_dispatch:   # "Run workflow" on the Actions tab: tests + both frozen builds
 
 jobs:
   test:
@@ -47,8 +48,14 @@ jobs:
   # can't cross-compile from the Linux dev box -- so a PR that breaks the
   # spec, a hidden import or a bundled file fails here, not at tag time.
   # The zips are kept for a week for anyone who wants to try a PR build.
+  # The slow part: freeze and smoke-test the exe on both OSes. Only for main,
+  # tags and manual runs -- branches and PRs get the tests alone.
   frozen-build:
     needs: test
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' &&
+       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')))
     strategy:
       fail-fast: false
       matrix:
