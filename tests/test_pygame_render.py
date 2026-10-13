@@ -5,6 +5,7 @@ has a green suite. Events are injected with pygame.event.post, which is the same
 queue a real window feeds -- so these exercise the actual blocking wait.
 """
 
+import collections
 import os
 import sys
 import unittest
@@ -190,10 +191,13 @@ class PygameRendererTest(unittest.TestCase):
         plain_pixels = lit_pixels(self.renderer, cell)
 
         self.assertGreater(len(boss_pixels), len(plain_pixels))
-        # Brightest *red* pixel: the grey floor dot under the glyph is in both.
-        def brightest_red(pixels):
-            return max(sum(p) for p in pixels if p[0] > p[1] + 40)
-        self.assertGreater(brightest_red(boss_pixels), brightest_red(plain_pixels))
+        # The glyph's solid core -- its most common red pixel -- is the colour
+        # it was drawn in. (Not the brightest: an anti-aliased edge blended
+        # over the white floor dot under the glyph can outshine the core.)
+        def core_red(pixels):
+            reds = [tuple(p[:3]) for p in pixels if p[0] > p[1] + 40]
+            return sum(collections.Counter(reds).most_common(1)[0][0])
+        self.assertGreater(core_red(boss_pixels), core_red(plain_pixels))
 
     def test_font_path_reaches_the_layout(self):
         font = os.path.join(os.path.dirname(pygame.__file__), pygame.font.get_default_font())

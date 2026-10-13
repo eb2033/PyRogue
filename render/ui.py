@@ -22,6 +22,7 @@ import textwrap
 
 import pygame
 
+from game.paths import resource_path
 from render import noticeboard, palette
 
 # -- panel geometry -----------------------------------------------------------
@@ -52,6 +53,10 @@ HP_BAR_COLS = PANEL_TEXT_COLS - HP_BAR_COL
 HP_BAR_COLOR = palette.HP_BAR_FILL  # palette.INK_DANGER at or below 1/3 max
 HP_BAR_TRACK = palette.HP_BAR_TRACK
 
+# The bundled font (assets/fonts, SIL OFL) is the default everywhere, so the
+# layout -- and the tests that pin it -- see the same metrics on every OS.
+# System fonts are only the fallback for a build without it.
+BUNDLED_FONT = resource_path('assets', 'fonts', 'JetBrainsMono-Regular.ttf')
 FONT_NAMES = 'dejavusansmono,liberationmono,consolas,menlo,couriernew,monospace'
 MIN_FONT_SIZE = 8
 MAX_FONT_SIZE = 48
@@ -98,8 +103,7 @@ class Layout:
         self.tile = None
         self.stacked = False
         self.cols, self.rows, _, self.panel_x, self.panel_y = self._glyph_grid(False)
-        # None -> pygame's default font. A bundled one comes in via font_path.
-        self.font_path = font_path or pygame.font.match_font(FONT_NAMES)
+        self.font_path = font_path or _default_font()
         self._fonts = {}
         self.font = self._font(START_FONT_SIZE)
         self.cell_w, self.cell_h = self._cell_size(self.font)
@@ -146,6 +150,11 @@ class Layout:
             sizes[stacked] = self._largest_glyph_font(cols, min_rows, win_w, win_h)
         self.stacked = sizes[True] > sizes[False]
         cols, min_rows, max_rows, self.panel_x, self.panel_y = self._glyph_grid(self.stacked)
+        # Once the text is already large, a full-length log beats a slightly
+        # bigger font (fonts with tall line heights would otherwise cut it).
+        full = self._largest_glyph_font(cols, max_rows, win_w, win_h)
+        if full >= START_FONT_SIZE:
+            sizes[self.stacked] = full
         self.font = self._font(sizes[self.stacked])
         self.cell_w, self.cell_h = self._cell_size(self.font)
         # Rows the window has spare go to the message log.
@@ -178,6 +187,9 @@ class Layout:
                                                 stacked)
             return min(1.0, win_w / block_w, win_h / block_h)
 
+        def height_fits(tile, size):
+            return self._block_size(tile, self._cell_size(self._font(size)), stacked)[1] <= win_h
+
         for tile in TILE_SIZES:
             for size in range(MAX_TILE_FONT_SIZE, MIN_TILE_FONT_SIZE - 1, -1):
                 if coverage(tile, size) == 1.0:
@@ -189,8 +201,10 @@ class Layout:
         # Nothing fits (the map alone may be wider than the window): the
         # biggest font among those that overflow the least, since shrinking
         # the text doesn't help when the map is what overflows.
+        # A font whose panel still fits the window's height wins a tie, so
+        # an over-wide map doesn't drag the panel off the bottom too.
         best = max(range(MAX_TILE_FONT_SIZE, MIN_FONT_SIZE - 1, -1),
-                   key=lambda size: (coverage(tile, size), size))
+                   key=lambda size: (coverage(tile, size), height_fits(tile, size), size))
         return tile, best, coverage(tile, best)
 
     def _choose_tiles(self, win_w, win_h):
@@ -259,12 +273,18 @@ class Layout:
                            max(0, round((block_left - self.origin_x) / cell_w)))
         map_left = max(0, min(self.origin_x + self.panel_x * cell_w, win_w - map_w))
         # First whole text row below the map, plus the gap.
-        map_bottom = block_top + map_h
-        panel_y = -(-(map_bottom - self.origin_y) // cell_h) + STACK_GAP
-        self.panel_y = max(0, min(panel_y, self.rows - PANEL_ROWS))
+        def row_below(map_top):
+            return -(-(map_top + map_h - self.origin_y) // cell_h) + STACK_GAP
+
+        # Pull the panel up to keep it inside the window, but never above the
+        # row below a map at the very top: overlapping the map is worse than
+        # running off the bottom of a window too small for both.
+        panel_y = min(row_below(block_top), self.rows - PANEL_ROWS)
+        self.panel_y = max(0, panel_y, row_below(0))
         panel_top = self.origin_y + self.panel_y * cell_h
         # If the panel had to move up, the map moves up with it.
-        self.map_origin = (map_left, max(0, min(block_top, panel_top - map_h)))
+        map_top = min(block_top, panel_top - STACK_GAP * cell_h - map_h)
+        self.map_origin = (map_left, max(0, map_top))
 
     # -- public geometry ------------------------------------------------------
 
@@ -512,3 +532,10 @@ def _desktop_size():
     except pygame.error:
         sizes = None
     return sizes[0] if sizes else FALLBACK_DESKTOP
+
+
+def _default_font():
+    """The bundled font if it's there, else a system monospace font."""
+    if BUNDLED_FONT.is_file():
+        return str(BUNDLED_FONT)
+    return pygame.font.match_font(FONT_NAMES)

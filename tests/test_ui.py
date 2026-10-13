@@ -621,8 +621,11 @@ class PanelParityTest(unittest.TestCase):
             for i in range(lines):
                 self.assertGreater(self.pixels(self.row_rect(ui.LOG_TOP + 1 + i)), 0)
             below = ui.LOG_TOP + 1 + lines
-            if self.layout.text_y + below < self.layout.rows:
-                self.assertEqual(self.pixels(self.row_rect(below), palette.INK), 0)
+            # The row under the last log line is paper (or, on a short board,
+            # the frame, whose dark wood is close to ink): no text on paper.
+            paper = self.row_rect(below).clip(self.layout.page_rect().inflate(-8, -8))
+            if paper.height == self.layout.cell_h:
+                self.assertEqual(self.pixels(paper, palette.INK), 0)
 
     def test_long_messages_wrap_inside_the_panel(self):
         def make():

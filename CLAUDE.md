@@ -315,8 +315,12 @@ unchanged.
   `screens.option_at(layout, menu, banner_lines, pixel)`, which shares `paint_menu`'s geometry.
   `_wait_input(mouse=True)` is the menu wait; `get_action` uses `_wait_key()`, which skips mouse
   events — gameplay stays keyboard-only, and `pause` still leaves keys queued.
-- **Bundled font:** `assets/fonts/JetBrainsMono-Regular.ttf` (SIL OFL 1.1), passed as `font_path`
-  by `main.make_renderer`; `ui.FONT_NAMES` (system fonts) is only the fallback when it's missing.
+- **Bundled font:** `assets/fonts/JetBrainsMono-Regular.ttf` (SIL OFL 1.1) is `ui.Layout`'s default
+  font (`ui.BUNDLED_FONT`), so the game *and the tests* use the same metrics on every OS;
+  `ui.FONT_NAMES` (system fonts) is only the fallback when it's missing. Layout tests used to run on
+  whatever system font CI had (Consolas on Windows) and broke there; the layout code must hold for
+  fonts with tall line heights like this one (see `_place_stacked_tiles`: the panel never overlaps
+  the map, even if it has to run off the bottom).
 
 Test coverage: `test_game.py` (75 tests) + `test_menu.py` (7) + `test_loop.py` (7) +
 `test_pygame_render.py` (40) + `test_ui.py` (53) + `test_tileset.py` (12) + `test_parity.py` (4) +
