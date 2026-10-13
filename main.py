@@ -48,8 +48,12 @@ def make_renderer(name, width, height):
         from render.curses_render import CursesRenderer
         return CursesRenderer()
     if name == 'pygame':
+        from game.paths import resource_path
         from render.pygame_render import PygameRenderer
-        return PygameRenderer(width, height)
+        from render.tileset import Tileset
+        # TILES=0 keeps the window drawing characters, like the terminal.
+        tileset = Tileset(resource_path('assets')) if env_int('TILES', 1) else None
+        return PygameRenderer(width, height, tileset=tileset)
     raise SystemExit(f'unknown renderer: {name}')
 
 

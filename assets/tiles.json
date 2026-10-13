@@ -1,0 +1,24 @@
+{
+  "tile_size": 16,
+  "margin": 1,
+  "sheets": {
+    "rpg": "kenney/roguelike-rpg-pack/roguelikeSheet_transparent.png",
+    "dungeon": "kenney/roguelike-caves-dungeons/roguelikeDungeon_transparent.png",
+    "chars": "kenney/roguelike-characters/roguelikeChar_transparent.png"
+  },
+  "tiles": {
+    "#": {"layers": [["rpg", 6, 2]]},
+    ".": {"layers": [["dungeon", 16, 12]]},
+    "+": {"layers": [["dungeon", 16, 12], ["rpg", 33, 0]]},
+    ">": {"layers": [["dungeon", 16, 12], ["rpg", 20, 18]]},
+    "@": {"layers": [["chars", 0, 11]]},
+    "g": {"layers": [["chars", 0, 3], ["chars", 6, 1], ["chars", 42, 7]]},
+    "G": {"layers": [["chars", 0, 3], ["chars", 6, 1], ["chars", 28, 6], ["chars", 44, 6]]},
+    "o": {"layers": [["chars", 1, 3], ["chars", 14, 5], ["chars", 47, 1]]},
+    "O": {"layers": [["chars", 1, 3], ["chars", 14, 5], ["chars", 30, 7], ["chars", 51, 1]]},
+    "=": {"layers": [["rpg", 37, 9]], "tint": 0.6},
+    "!": {"layers": [["rpg", 55, 11]], "backdrop": true},
+    "/": {"layers": [["chars", 44, 6]], "backdrop": true},
+    "[": {"layers": [["chars", 12, 4]], "backdrop": true}
+  }
+}

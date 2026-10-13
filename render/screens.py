@@ -45,6 +45,6 @@ def paint_menu(canvas, menu, banner_lines, descriptions=None):
 
 
 def paint_game_over(canvas, state):
-    """Overlay drawn on top of the final game frame."""
-    x = max(0, (state.width - len(GAME_OVER_TEXT)) // 2)
-    canvas.put_str(x, state.height // 2, GAME_OVER_TEXT, palette.DANGER, palette.BACKGROUND)
+    """Overlay drawn on top of the final game frame, centred on the map."""
+    text = canvas.text_surface(GAME_OVER_TEXT, palette.DANGER, palette.BACKGROUND)
+    canvas.surface.blit(text, text.get_rect(center=canvas.layout.map_rect().center))

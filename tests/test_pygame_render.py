@@ -286,6 +286,75 @@ class PygameRendererTest(unittest.TestCase):
         self.assertNotEqual(with_overlay, without)
 
 
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
+class TileModeTest(unittest.TestCase):
+    """The bundled tileset puts the window in tile mode: square map cells."""
+
+    def setUp(self):
+        from game.paths import resource_path
+        from render.tileset import Tileset
+        self.renderer = PygameRenderer(WIDTH, HEIGHT, tileset=Tileset(resource_path('assets')))
+        self.renderer._set_mode((1600, 900), pygame.RESIZABLE)
+        self.renderer._relayout()
+
+    def tearDown(self):
+        self.renderer.close()
+
+    def test_layout_is_in_tile_mode(self):
+        self.assertTrue(self.renderer.layout.tiles)
+        self.assertIsNotNone(self.renderer.layout.tile)
+
+    def test_draw_paints_the_players_tile_over_the_floor(self):
+        state = GameState(WIDTH, HEIGHT)
+        self.renderer.draw(state)
+        layout = self.renderer.layout
+        rect = pygame.Rect(layout.map_cell_to_pixel(state.player.x, state.player.y),
+                           layout.map_cell_size())
+        drawn = pygame.display.get_surface().subsurface(rect)
+        expected = self.renderer.tileset.glyph('.', 0, layout.tile).copy()
+        expected.blit(self.renderer.tileset.glyph('@', state.player.color, layout.tile), (0, 0))
+        for point in [(layout.tile // 2, layout.tile // 2), (1, 1), (layout.tile // 3, 2)]:
+            self.assertEqual(drawn.get_at(point)[:3], expected.get_at(point)[:3])
+
+    def test_char_without_a_tile_is_drawn_as_its_glyph(self):
+        state = GameState(WIDTH, HEIGHT)
+        stranger = Monster(state.player.x + 1, state.player.y, 'goblin')
+        stranger.char = 'Z'  # no tiles.json entry
+        state.entities.append(stranger)
+        state.update_fov()
+        self.renderer.draw(state)  # must not raise
+
+    def test_game_over_overlay_is_drawn_on_the_map(self):
+        state = GameState(WIDTH, HEIGHT)
+        self.renderer.draw(state)
+        before = pygame.display.get_surface().copy()
+        state.game_over = True
+        self.renderer.draw(state)
+        band = self.renderer.layout.map_rect()
+        band.height = self.renderer.layout.cell_h
+        band.centery = self.renderer.layout.map_rect().centery
+        after = pygame.display.get_surface()
+        self.assertNotEqual(pygame.image.tobytes(after.subsurface(band), 'RGB'),
+                            pygame.image.tobytes(before.subsurface(band), 'RGB'))
+
+    def test_tiles_env_zero_keeps_glyph_mode(self):
+        with mock.patch.dict(os.environ, {'TILES': '0'}):
+            renderer = main.make_renderer('pygame', WIDTH, HEIGHT)
+        try:
+            self.assertFalse(renderer.layout.tiles)
+        finally:
+            renderer.close()
+
+    def test_make_renderer_uses_the_bundled_tiles_by_default(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop('TILES', None)
+            renderer = main.make_renderer('pygame', WIDTH, HEIGHT)
+        try:
+            self.assertTrue(renderer.layout.tiles)
+        finally:
+            renderer.close()
+
+
 class DefaultRendererTest(unittest.TestCase):
     """main.default_renderer: a frozen (--windowed) exe has no terminal."""
 

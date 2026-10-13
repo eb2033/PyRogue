@@ -23,11 +23,14 @@ os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
 
 import pygame
 
+from game.paths import resource_path
 from render import input_map, palette, screens, ui
 from render.banner import render_banner
 from render.base import Action, Renderer
 from render.menu import Menu
 from render.tileset import Tileset
+
+ICON_FILE = 'icon.png'
 
 # Events after which the window contents may be stale: repaint the last frame.
 REPAINT_EVENTS = (
@@ -42,15 +45,18 @@ REPAINT_EVENTS = (
 class PygameRenderer(Renderer):
     def __init__(self, width, height, tileset=None, font_path=None):
         """`tileset`: a tileset.Tileset (None -> an unavailable one, i.e. glyphs).
+        An available one puts the layout in tile mode: square map cells.
         `font_path`: a TTF/OTF file for the grid text, handed to ui.Layout
         (None -> a system monospace font); a bundled font goes through here."""
         pygame.display.init()
         pygame.display.set_caption('PyRogue')
+        _set_window_icon()
         # Hold-to-repeat, like a terminal's autorepeat.
         pygame.key.set_repeat(300, 60)
 
-        self.layout = ui.Layout(width, height, font_path=font_path)
         self.tileset = tileset or Tileset()
+        self.layout = ui.Layout(width, height, font_path=font_path,
+                                tiles=self.tileset.available)
         self.fullscreen = False
         # Size to go back to when leaving fullscreen.
         self._windowed_size = self.layout.preferred_window_size()
@@ -201,7 +207,7 @@ class PygameRenderer(Renderer):
                 if state.visible[y][x]:
                     self._paint_cell(x, y, tile, palette.VISIBLE)
                 elif state.seen[y][x]:
-                    self._paint_cell(x, y, tile, palette.SEEN)
+                    self._paint_cell(x, y, tile, palette.SEEN, dim=True)
 
         for entity in state.visible_entities():
             rgb = palette.color(entity.color, palette.VISIBLE)
@@ -215,21 +221,34 @@ class PygameRenderer(Renderer):
         if state.game_over:
             screens.paint_game_over(self.canvas, state)
 
-    def _paint_cell(self, x, y, char, rgb, color_index=0):
-        tile = self.tileset.glyph(char, color_index)
-        if tile is not None:
-            self.canvas.surface.blit(tile, self.layout.cell_to_pixel(x, y))
+    def _paint_cell(self, x, y, char, rgb, color_index=0, dim=False):
+        if self._paint_tile(x, y, char, color_index, dim):
+            return
+        if self.layout.tile:
+            # Tile mode, but no tile for this char: its glyph, centred.
+            glyph = self.canvas.text_surface(char, rgb)
+            rect = pygame.Rect(self.layout.map_cell_to_pixel(x, y), self.layout.map_cell_size())
+            self.canvas.surface.blit(glyph, glyph.get_rect(center=rect.center))
         else:
             self.canvas.put(x, y, char, rgb)
+
+    def _paint_tile(self, x, y, char, color_index, dim=False):
+        """Blit the tileset's tile for `char` if there is one; True if drawn."""
+        if not self.layout.tile:
+            return False
+        tile = self.tileset.glyph(char, color_index, self.layout.tile, dim)
+        if tile is None:
+            return False
+        self.canvas.surface.blit(tile, self.layout.map_cell_to_pixel(x, y))
+        return True
 
     def _paint_boss(self, x, y, char, rgb, color_index):
         """curses draws a boss A_BOLD | A_UNDERLINE in its pair's colour; here
         that is a brightened colour, a bold face, and an underline. Not
         cached (there is at most one boss on screen), and not via Canvas.put,
-        which has no bold."""
-        tile = self.tileset.glyph(char, color_index)
-        if tile is not None:
-            self.canvas.surface.blit(tile, self.layout.cell_to_pixel(x, y))
+        which has no bold. In tile mode the boss's own tile (tiles.json gives
+        bosses extra armour) is the distinction."""
+        if self._paint_tile(x, y, char, color_index):
             return
         font = self.layout.font
         font.set_bold(True)
@@ -239,7 +258,11 @@ class PygameRenderer(Renderer):
         finally:
             font.set_bold(False)
             font.set_underline(False)
-        self.canvas.surface.blit(glyph, self.layout.cell_to_pixel(x, y))
+        if self.layout.tile:
+            rect = pygame.Rect(self.layout.map_cell_to_pixel(x, y), self.layout.map_cell_size())
+            self.canvas.surface.blit(glyph, glyph.get_rect(center=rect.center))
+        else:
+            self.canvas.surface.blit(glyph, self.layout.cell_to_pixel(x, y))
 
     # -- input ----------------------------------------------------------------
 
@@ -269,3 +292,15 @@ class PygameRenderer(Renderer):
 
     def close(self):
         pygame.quit()
+
+
+def _set_window_icon():
+    """The SDL window/taskbar icon, if assets/icon.png is bundled. Must run
+    before the first set_mode on some platforms."""
+    path = resource_path('assets', ICON_FILE)
+    if not path.is_file():
+        return
+    try:
+        pygame.display.set_icon(pygame.image.load(str(path)))
+    except pygame.error:
+        pass

@@ -14,6 +14,13 @@ GitHub Release notes.
 - Release automation: pushing a `v*` tag builds both zips on GitHub Actions and publishes them with
   a `SHA256SUMS` file; optional itch.io upload via butler. Every CI run also builds and
   smoke-tests the frozen game on Windows and Linux.
+- Tiles: the window draws the map with Kenney's CC0 roguelike art instead of characters, with a
+  map grid that scales to the window. `TILES=0` brings the characters back. The exe has an icon.
+- Potion chests are pink and gear chests cyan, on the map in both renderers.
+
+### Changed
+- Weapons and armor only replace what you're wearing when they're better; a worse piece is left
+  behind.
 
 ## Release checklist
 

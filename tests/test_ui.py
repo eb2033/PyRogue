@@ -1,5 +1,5 @@
-"""Headless tests for render/ui.py, render/screens.py and render/tileset.py
-(desktop_build_plan.md WS-D / WS-C). Skip cleanly without pygame-ce."""
+"""Headless tests for render/ui.py and render/screens.py (desktop_build_plan.md
+WS-D). Skip cleanly without pygame-ce. render/tileset.py: tests/test_tileset.py."""
 
 import os
 import unittest
@@ -15,21 +15,11 @@ except ImportError:  # pragma: no cover - terminal-only checkout
 
 from game.state import GameState
 from render.menu import Menu
-from render.tileset import Tileset
 
 if pygame is not None:
     from render import palette, screens, ui
 
 WIDTH, HEIGHT = 40, 20
-
-
-class TilesetStubTest(unittest.TestCase):
-    """The fallback contract: no assets means 'draw the glyph', never an error."""
-
-    def test_missing_assets_fall_back_to_glyphs(self):
-        tileset = Tileset(path=None)
-        self.assertFalse(tileset.available)
-        self.assertIsNone(tileset.glyph('@', 1))
 
 
 @unittest.skipUnless(pygame, 'pygame-ce not installed')
@@ -58,6 +48,58 @@ class LayoutTest(unittest.TestCase):
     def test_map_and_panel_rects_do_not_overlap(self):
         self.layout.fit((1200, 600))
         self.assertFalse(self.layout.map_rect().colliderect(self.layout.panel_rect()))
+
+
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
+class TileLayoutTest(unittest.TestCase):
+    """tiles=True: a square-celled map beside a text panel, both in the window."""
+
+    def setUp(self):
+        self.layout = ui.Layout(WIDTH, HEIGHT, tiles=True)
+
+    def assertFitsInside(self, size):
+        window = pygame.Rect((0, 0), size)
+        map_rect, panel_rect = self.layout.map_rect(), self.layout.panel_rect()
+        self.assertTrue(window.contains(map_rect), (map_rect, size))
+        panel_text = pygame.Rect(panel_rect.topleft,
+                                 (panel_rect.w, self.layout.cell_h * ui.PANEL_ROWS))
+        self.assertTrue(window.contains(panel_text), (panel_text, size))
+        self.assertFalse(map_rect.colliderect(panel_rect))
+
+    def test_map_cells_are_square_tiles(self):
+        self.layout.fit((1600, 900))
+        self.assertIn(self.layout.tile, ui.TILE_SIZES)
+        self.assertEqual(self.layout.map_cell_size(), (self.layout.tile, self.layout.tile))
+        self.assertEqual(self.layout.map_rect().size,
+                         (WIDTH * self.layout.tile, HEIGHT * self.layout.tile))
+        x0, y0 = self.layout.map_cell_to_pixel(0, 0)
+        self.assertEqual(self.layout.map_cell_to_pixel(3, 2),
+                         (x0 + 3 * self.layout.tile, y0 + 2 * self.layout.tile))
+
+    def test_bigger_window_never_gets_smaller_tiles(self):
+        sizes = [(1024, 600), (1280, 720), (1600, 900), (1920, 1080), (3840, 2160)]
+        tiles = []
+        for size in sizes:
+            self.layout.fit(size)
+            self.assertFitsInside(size)
+            tiles.append(self.layout.tile)
+        self.assertEqual(tiles, sorted(tiles))
+        self.assertGreater(tiles[-1], tiles[0])
+
+    def test_panel_font_stays_readable_when_tiles_grow(self):
+        self.layout.fit((1920, 1080))
+        self.assertGreaterEqual(self.layout.font.get_height(),
+                                self.layout._font(ui.MIN_TILE_FONT_SIZE).get_height())
+
+    def test_tiny_window_does_not_raise(self):
+        self.layout.fit((200, 100))
+        self.assertEqual(self.layout.tile, ui.TILE_SIZES[-1])
+
+    def test_preferred_size_fits_the_desktop(self):
+        width, height = self.layout.preferred_window_size()
+        desktop_w, desktop_h = ui._desktop_size()
+        self.assertLessEqual(width, desktop_w)
+        self.assertLessEqual(height, desktop_h)
 
 
 @unittest.skipUnless(pygame, 'pygame-ce not installed')

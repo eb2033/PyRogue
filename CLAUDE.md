@@ -57,8 +57,14 @@ running the game.
   F11) + `input_map.py` + `palette.py` (Entity.color int → RGB) are WS-A; `ui.py` (`Layout` — the
   single source of truth for geometry — `Canvas` for grid text, `paint_panel`) and `screens.py`
   (paint-only menu/game-over frames; the menu *event loop* stays in `pygame_render.py`) are WS-D;
-  `tileset.py` (`Tileset.glyph()` → `None` means "draw the character"; still a stub that is always
-  unavailable, so the window draws glyphs) is WS-C.
+  `tileset.py` (`Tileset.glyph(char, color, size, dim)` → a tile Surface, or `None` meaning "draw
+  the character"; reads `assets/tiles.json`) and `assets/` are WS-C.
+- `assets/` — bundled art: three Kenney CC0 roguelike sheets (`assets/kenney/*/`, each with its
+  `License.txt`), `tiles.json` (game char → a stack of sheet cells — a goblin is body + clothes +
+  dagger from the characters pack's paper-doll kit; `backdrop`/`tint` colour an item or chest by
+  its `Entity.color`), and `icon.png`/`icon.ico` (generated from the `@` tile by
+  `packaging/make_icon.py`). **`assets/ASSETS.md` must list every file with its source and
+  licence** — `tests/test_tileset.py` enforces it, and the 10 MB budget.
 - `packaging/` — `pyrogue.spec` is the committed source of truth for the PyInstaller build
   (**onedir and `upx=False`, never onefile** — antivirus; `console=False`; excludes curses/tkinter/
   numpy/unittest; bundles `assets/` only if it exists). `build.sh` / `build.ps1` clean, build, and zip
@@ -74,8 +80,10 @@ running the game.
   adjacency, turn phases, classes, items, save/load), `test_menu.py` (menu/banner helpers),
   `test_loop.py` (`main.resolve_monster_phase` with a recording stand-in renderer, asserting the
   frame-by-frame ordering of a round), `test_pygame_render.py` (renderer, events, fullscreen,
-  game over, a full scripted run through `main.run`, default-renderer choice), `test_ui.py`
-  (`Layout`, paint smoke tests, `Tileset` fallback), `test_parity.py` (both renderers' key tables
+  game over, a full scripted run through `main.run`, default-renderer choice, tile mode),
+  `test_ui.py` (`Layout` in both modes, paint smoke tests), `test_tileset.py` (fallback on
+  missing/corrupt assets, every drawable char has a tile, chest colours, `ASSETS.md` provenance),
+  `test_parity.py` (both renderers' key tables
   reach every `Action`), `test_paths.py` / `test_settings.py` / `test_crashlog.py` (platform
   layer), `test_main.py` (`main.py` as a subprocess: config loading, crash logging),
   `test_frozen_smoke.py` (launches `dist/PyRogue/` if it exists). There is intentionally no test
@@ -94,18 +102,18 @@ running the game.
   runner, split into seven workstreams with exclusive file ownership so agents can run in parallel.
   **Read this before starting any graphical or packaging work.** §4.1 records the status. Done: the
   §3.1 spike, P0, P1 (window parity), and P2's build pipeline — P2 is only *done* once a Windows
-  exe from CI has been launched on a real Windows machine. Open: WS-C (art), WS-D (HUD polish),
-  both P3. If you are one of several agents, edit only the files your workstream owns (§5) — and
+  exe from CI has been launched on a real Windows machine — and WS-C's tiles (2026-10-13).
+  Open: the rest of P3 (WS-D HUD polish, mouse menus). If you are one of several agents, edit only the files your workstream owns (§5) — and
   `CLAUDE.md` belongs to WS-G.
 - `.env` — read by `game/settings.py` (`KEY=VALUE`, `#` comments, optional quotes; a real
   environment variable always wins). Search order: `$PYROGUE_CONFIG` → `.env` next to the exe (or
   next to `main.py` from source) → `.env` in the CWD. `main.py` looks for `MAP_WIDTH`,
-  `MAP_HEIGHT`, `FOV_RADIUS`, `RENDERER` and `TURN_DELAY_MS`, each with a code default (50 / 20 / 6
-  / curses-or-pygame / 110); the checked-in `.env` only sets `MAP_WIDTH=40` and `MAP_HEIGHT=20`, so
+  `MAP_HEIGHT`, `FOV_RADIUS`, `RENDERER`, `TURN_DELAY_MS` and `TILES`, each with a code default (50 /
+  20 / 6 / curses-or-pygame / 110 / 1); the checked-in `.env` only sets `MAP_WIDTH=40` and `MAP_HEIGHT=20`, so
   a source run is a **40x20** map — but the `.env` is **not** bundled into the exe, which therefore
   uses the 50x20 code default. `env_int` falls back to the default on an unparseable value rather
   than crashing. `TURN_DELAY_MS=0` collapses the monster phase back to instant, which is handy for
-  testing.
+  testing. `TILES=0` makes the window draw characters instead of tiles.
 
 ## Constraints
 
@@ -272,10 +280,20 @@ window; that call is deprecated in pygame-ce 2.4+ (its warning is silenced) — 
 underlined, matching curses. Verified in a real window on Linux; on Windows only via CI's
 headless tests so far.
 
+**Tiles** (WS-C, 2026-10-13): when the `Tileset` loads, `ui.Layout(..., tiles=True)` gives the map
+its own grid of square cells (`layout.tile` px, picked from `TILE_SIZES` = 64…16 — the largest that
+leaves the panel a font of at least 12) at `layout.map_origin`, beside the text panel at
+`panel_x`/`panel_y`; draw map cells through `layout.map_cell_to_pixel`, never `cell_to_pixel`.
+The text grid then spans the whole window, so menus centre in it. Remembered cells are the tile
+multiplied darker (`dim=True`); bosses are told apart by their own `tiles.json` entry (a helmet and
+a bigger weapon), not by bold/underline. A char with no entry falls back to its glyph centred in
+the tile. The first window is sized to 85% of the desktop. Glyph mode (`TILES=0`, or no assets) is
+unchanged.
+
 Test coverage: `test_game.py` (71 tests) + `test_menu.py` (7) + `test_loop.py` (7) +
-`test_pygame_render.py` (24) + `test_ui.py` (8) + `test_parity.py` (4) + `test_paths.py` (28) +
-`test_settings.py` (18) + `test_crashlog.py` (7) + `test_main.py` (2) + `test_frozen_smoke.py` (3)
-= 179 unit tests, plus ad hoc fuzz/PTY smoke testing during development — see `agent_log.md` for
+`test_pygame_render.py` (30) + `test_ui.py` (12) + `test_tileset.py` (12) + `test_parity.py` (4) +
+`test_paths.py` (28) + `test_settings.py` (18) + `test_crashlog.py` (7) + `test_main.py` (2) +
+`test_frozen_smoke.py` (3) = 201 unit tests, plus ad hoc fuzz/PTY smoke testing during development — see `agent_log.md` for
 what was run and why.
 
 ## Gotchas
