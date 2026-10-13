@@ -268,25 +268,17 @@ class PygameRenderer(Renderer):
 
     def _paint_boss(self, x, y, char, rgb, color_index):
         """curses draws a boss A_BOLD | A_UNDERLINE in its pair's colour; here
-        that is a brightened colour, a bold face, and an underline. Not
-        cached (there is at most one boss on screen), and not via Canvas.put,
-        which has no bold. In tile mode the boss's own tile (tiles.json gives
-        bosses extra armour) is the distinction."""
+        that is a brightened colour, a bold face, and an underline. In tile
+        mode the boss's own tile (tiles.json gives bosses extra armour) is the
+        distinction."""
         if self._paint_tile(x, y, char, color_index):
             return
-        font = self.layout.font
-        font.set_bold(True)
-        font.set_underline(True)
-        try:
-            glyph = font.render(char, True, rgb)
-        finally:
-            font.set_bold(False)
-            font.set_underline(False)
         if self.layout.tile:
+            glyph = self.canvas.text_surface(char, rgb, bold=True, underline=True)
             rect = pygame.Rect(self.layout.map_cell_to_pixel(x, y), self.layout.map_cell_size())
             self.canvas.surface.blit(glyph, glyph.get_rect(center=rect.center))
         else:
-            self.canvas.surface.blit(glyph, self.layout.cell_to_pixel(x, y))
+            self.canvas.put(x, y, char, rgb, underline=True, bold=True)
 
     # -- input ----------------------------------------------------------------
 

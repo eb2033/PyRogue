@@ -102,8 +102,8 @@ running the game.
   runner, split into seven workstreams with exclusive file ownership so agents can run in parallel.
   **Read this before starting any graphical or packaging work.** §4.1 records the status. Done: the
   §3.1 spike, P0, P1 (window parity), and P2's build pipeline — P2 is only *done* once a Windows
-  exe from CI has been launched on a real Windows machine — and WS-C's tiles (2026-10-13).
-  Open: the rest of P3 (WS-D HUD polish, mouse menus). If you are one of several agents, edit only the files your workstream owns (§5) — and
+  exe from CI has been launched on a real Windows machine — WS-C's tiles, and P3's HUD, mouse
+  menus and bundled font (2026-10-13). P3 is done; the P2 Windows launch is the open gate. If you are one of several agents, edit only the files your workstream owns (§5) — and
   `CLAUDE.md` belongs to WS-G.
 - `.env` — read by `game/settings.py` (`KEY=VALUE`, `#` comments, optional quotes; a real
   environment variable always wins). Search order: `$PYROGUE_CONFIG` → `.env` next to the exe (or
@@ -290,10 +290,26 @@ a bigger weapon), not by bold/underline. A char with no entry falls back to its 
 the tile. The first window is sized to 85% of the desktop. Glyph mode (`TILES=0`, or no assets) is
 unchanged.
 
+**P3 window polish** (2026-10-13, two agents in worktrees, merged by a coordinator):
+- **Panel** (`render/ui.py`): an HP bar on the HP row (red at or below a third, like the text), and
+  a message log of `MIN_LOG_LINES` (4) up to `LOG_LINES` (12) lines — `Layout.log_lines()` derives
+  the count from the rows the panel has, and `ui.log_rows()` word-wraps messages to the panel width
+  (a message is shown whole or not at all). `tests/test_ui.py`'s `PanelParityTest` is the parity
+  checklist against `curses_render._draw_panel`, run in four layouts.
+- **Tall/narrow windows:** `Layout.stacked` puts the panel *under* the map when that gives a bigger
+  font (glyph mode) or tile (tile mode); every other `Layout` name keeps its meaning.
+- **`Canvas.put`/`put_str`/`text_surface` take `bold=`**; bosses are drawn through it.
+- **Mouse in menus only:** hover moves the highlight and a left click selects, via
+  `screens.option_at(layout, menu, banner_lines, pixel)`, which shares `paint_menu`'s geometry.
+  `_wait_input(mouse=True)` is the menu wait; `get_action` uses `_wait_key()`, which skips mouse
+  events — gameplay stays keyboard-only, and `pause` still leaves keys queued.
+- **Bundled font:** `assets/fonts/JetBrainsMono-Regular.ttf` (SIL OFL 1.1), passed as `font_path`
+  by `main.make_renderer`; `ui.FONT_NAMES` (system fonts) is only the fallback when it's missing.
+
 Test coverage: `test_game.py` (71 tests) + `test_menu.py` (7) + `test_loop.py` (7) +
-`test_pygame_render.py` (30) + `test_ui.py` (12) + `test_tileset.py` (12) + `test_parity.py` (4) +
+`test_pygame_render.py` (40) + `test_ui.py` (50) + `test_tileset.py` (12) + `test_parity.py` (4) +
 `test_paths.py` (28) + `test_settings.py` (18) + `test_crashlog.py` (7) + `test_main.py` (2) +
-`test_frozen_smoke.py` (3) = 201 unit tests, plus ad hoc fuzz/PTY smoke testing during development — see `agent_log.md` for
+`test_frozen_smoke.py` (3) = 249 unit tests, plus ad hoc fuzz/PTY smoke testing during development — see `agent_log.md` for
 what was run and why.
 
 ## Gotchas

@@ -17,6 +17,10 @@ GitHub Release notes.
 - Tiles: the window draws the map with Kenney's CC0 roguelike art instead of characters, with a
   map grid that scales to the window. `TILES=0` brings the characters back. The exe has an icon.
 - Potion chests are pink and gear chests cyan, on the map in both renderers.
+- Window HUD: an HP bar, a longer message log that wraps long lines, and a side panel that moves
+  under the map in tall or narrow windows.
+- Mouse support in the window's menus (hover and click). The game itself stays keyboard-only.
+- The window ships its own font (JetBrains Mono, SIL OFL), so it looks the same on every system.
 
 ### Changed
 - Weapons and armor only replace what you're wearing when they're better; a worse piece is left
