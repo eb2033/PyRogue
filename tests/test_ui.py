@@ -393,6 +393,36 @@ class PaintTest(unittest.TestCase):
 
 
 @unittest.skipUnless(pygame, 'pygame-ce not installed')
+class GameOverBannerTest(unittest.TestCase):
+    """The banner sits at the end of the map away from the player."""
+
+    def test_banner_never_covers_the_player(self):
+        for tiles in (False, True):
+            for width, height in [(WIDTH, HEIGHT), (20, 10)]:
+                layout = ui.Layout(width, height, tiles=tiles)
+                layout.fit((1280, 720))
+                state = GameState(width, height)
+                for y in (1, height // 2 - 1, height // 2, height - 2):
+                    with self.subTest(tiles=tiles, map=(width, height), player_y=y):
+                        state.player.y = y
+                        box = screens.game_over_rect(layout, state)
+                        player = pygame.Rect(layout.map_cell_to_pixel(state.player.x, y),
+                                             layout.map_cell_size())
+                        self.assertFalse(box.colliderect(player))
+                        self.assertTrue(layout.map_rect().contains(box))
+
+    def test_banner_goes_to_the_far_end(self):
+        layout = fitted((1280, 720), tiles=True)
+        state = GameState(WIDTH, HEIGHT)
+        state.player.y = 2
+        self.assertGreater(screens.game_over_rect(layout, state).centery,
+                           layout.map_rect().centery)
+        state.player.y = HEIGHT - 3
+        self.assertLess(screens.game_over_rect(layout, state).centery,
+                        layout.map_rect().centery)
+
+
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
 class NoticeboardTest(unittest.TestCase):
     """The panel is a wooden board with a parchment page, kept narrow so the
     map gets bigger tiles."""

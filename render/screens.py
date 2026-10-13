@@ -9,6 +9,8 @@ calls; it shares paint_menu's geometry. Keyboard stays mandatory.
 
 import textwrap
 
+import pygame
+
 from render import palette
 
 TITLE_OPTIONS = ['Start', 'Quit']
@@ -19,6 +21,7 @@ CLASS_DESCRIPTIONS = {
 }
 MENU_HINT = 'up/down or w/s to choose, enter to select, q to quit'
 GAME_OVER_TEXT = 'YOU DIED -- press q to quit'
+GAME_OVER_SHORT = ['YOU DIED', 'press q to quit']  # for maps narrower than that
 
 
 def _menu_geometry(layout, options, banner_lines):
@@ -88,7 +91,42 @@ def option_at(layout, menu, banner_lines, pixel):
     return index if x0 <= px < x1 else None
 
 
+def _game_over_lines(layout):
+    """GAME_OVER_TEXT on one line, or split in two if the map is narrower."""
+    if layout.font.size(GAME_OVER_TEXT)[0] + 2 * layout.cell_w <= layout.map_rect().width:
+        return [GAME_OVER_TEXT]
+    return GAME_OVER_SHORT
+
+
+def game_over_rect(layout, state):
+    """Pixel rect of the game-over banner: a box across the map, at the end
+    of the map (top or bottom) farther from the player, so it doesn't hide
+    the player or what killed them."""
+    lines = _game_over_lines(layout)
+    text_w = max(layout.font.size(line)[0] for line in lines)
+    box = pygame.Rect(0, 0, text_w + 2 * layout.cell_w,
+                      len(lines) * layout.font.get_linesize() + layout.cell_h // 2)
+    area = layout.map_rect()
+    cell_h = layout.map_cell_size()[1]
+    player_y = layout.map_cell_to_pixel(state.player.x, state.player.y)[1] + cell_h // 2
+    box.centerx = area.centerx
+    if player_y < area.centery:
+        box.bottom = area.bottom - cell_h
+    else:
+        box.top = area.top + cell_h
+    return box
+
+
 def paint_game_over(canvas, state):
-    """Overlay drawn on top of the final game frame, centred on the map."""
-    text = canvas.text_surface(GAME_OVER_TEXT, palette.DANGER, palette.BACKGROUND)
-    canvas.surface.blit(text, text.get_rect(center=canvas.layout.map_rect().center))
+    """Overlay drawn on top of the final game frame: GAME_OVER_TEXT in a
+    framed box placed by game_over_rect."""
+    layout = canvas.layout
+    box = game_over_rect(layout, state)
+    canvas.surface.fill(palette.BACKGROUND, box)
+    pygame.draw.rect(canvas.surface, palette.DANGER, box, max(1, layout.cell_h // 12))
+    lines = _game_over_lines(layout)
+    line_h = layout.font.get_linesize()
+    top = box.centery - len(lines) * line_h // 2
+    for i, line in enumerate(lines):
+        text = canvas.text_surface(line, palette.DANGER)
+        canvas.surface.blit(text, text.get_rect(centerx=box.centerx, top=top + i * line_h))
