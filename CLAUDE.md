@@ -165,11 +165,15 @@ All of spec §3–§7 and all six §8 stretch goals are implemented:
   either the 50x20 code default or the 40x20 the checked-in `.env` produces, this reliably lands at
   4-6 rooms (verified over 400 generations each). Room size is clamped to whatever actually
   fits in `(w, h)`, and generation falls back to a single interior room if nothing fits — so
-  `rooms[0]`/`rooms[-1]` are always safe to use even on tiny maps. Every corridor gets a door
-  (`+`) dropped at each point it crosses a room boundary (`_place_doors` in `game/dungeon.py`);
-  `tiles.is_transparent` treats `+` as opaque like a wall (`!=` `+` and `!=` `#`), so a room's
-  interior stays hidden from its corridor/neighbors until the player is in the doorway or past it
-  — `is_walkable` still allows walking through it, only line-of-sight is affected.
+  `rooms[0]`/`rooms[-1]` are always safe to use even on tiny maps. Doors (`+`) go *in the
+  doorway*: after every room and corridor is carved, `place_doors` (`game/dungeon.py`) walks each
+  room's wall ring (`wall_sides(room)`, corners excluded) and puts a door on every single-tile gap,
+  flanked by wall on both sides — never on the room's own floor (that was the old bug: doors sat on
+  the room's edge tile, which let sight around them). A gap wider than one tile is a corridor running
+  along the outside of the wall; one door can't close it, so it stays open (~17% of openings).
+  `tiles.is_transparent` treats `+` as opaque like a wall, so a room stays hidden from its corridor
+  until the player steps into the doorway — `is_walkable` still allows walking through it.
+  `DoorPlacementTests` checks placement and that a closed doorway hides the room.
 - `Entity` with collision-checked `move` (§4)
 - Recursive shadowcasting FOV (§5, stretch #6): `game/fov.py`'s `compute_fov` — walls block sight;
   `update_visibility` folds the result into the `seen` fog-of-war grid. Replaced the old radius-only
@@ -291,6 +295,14 @@ the tile. The first window is sized to 85% of the desktop. Glyph mode (`TILES=0`
 unchanged.
 
 **P3 window polish** (2026-10-13, two agents in worktrees, merged by a coordinator):
+- **Noticeboard** (2026-10-13, `render/noticeboard.py`): the panel is drawn as a framed wooden board
+  with a parchment page hanging from a nail, cached per size. Text on it is ink: `palette.INK`,
+  `INK_DANGER` and `palette.ink(color)` (the rarity ladder's darker twins — common is plain ink,
+  since white vanishes on paper). The paper under the text is one flat colour (`palette.PAGE`) so
+  tests can tell ink from paper. Text starts at `layout.text_x`/`text_y` (`PANEL_PAD_X`/`_TOP`
+  inside the board); `page_rect()`/`text_rect()` give the page and its text area. The board is
+  `PANEL_COLS = 34` wide with gear slots split over two rows — every column it takes is map width,
+  and this is what gives 40 px tiles at 1080p, 32 at 900p, 24 at 720p.
 - **Panel** (`render/ui.py`): an HP bar on the HP row (red at or below a third, like the text), and
   a message log of `MIN_LOG_LINES` (4) up to `LOG_LINES` (12) lines — `Layout.log_lines()` derives
   the count from the rows the panel has, and `ui.log_rows()` word-wraps messages to the panel width
@@ -306,10 +318,10 @@ unchanged.
 - **Bundled font:** `assets/fonts/JetBrainsMono-Regular.ttf` (SIL OFL 1.1), passed as `font_path`
   by `main.make_renderer`; `ui.FONT_NAMES` (system fonts) is only the fallback when it's missing.
 
-Test coverage: `test_game.py` (71 tests) + `test_menu.py` (7) + `test_loop.py` (7) +
-`test_pygame_render.py` (40) + `test_ui.py` (50) + `test_tileset.py` (12) + `test_parity.py` (4) +
+Test coverage: `test_game.py` (75 tests) + `test_menu.py` (7) + `test_loop.py` (7) +
+`test_pygame_render.py` (40) + `test_ui.py` (53) + `test_tileset.py` (12) + `test_parity.py` (4) +
 `test_paths.py` (28) + `test_settings.py` (18) + `test_crashlog.py` (7) + `test_main.py` (2) +
-`test_frozen_smoke.py` (3) = 249 unit tests, plus ad hoc fuzz/PTY smoke testing during development — see `agent_log.md` for
+`test_frozen_smoke.py` (3) = 256 unit tests, plus ad hoc fuzz/PTY smoke testing during development — see `agent_log.md` for
 what was run and why.
 
 ## Gotchas

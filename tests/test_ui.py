@@ -18,7 +18,7 @@ from game.state import GameState
 from render.menu import Menu
 
 if pygame is not None:
-    from render import palette, screens, ui
+    from render import noticeboard, palette, screens, ui
 
 WIDTH, HEIGHT = 40, 20
 
@@ -157,7 +157,7 @@ class StackedLayoutTest(unittest.TestCase):
 
     def test_portrait_and_narrow_stack_the_panel_under_the_map(self):
         for tiles in (False, True):
-            for size in [(800, 1200), (700, 900)]:
+            for size in [(800, 1200), (600, 1000)]:
                 with self.subTest(tiles=tiles, size=size):
                     layout = fitted(size, tiles)
                     self.assertTrue(layout.stacked)
@@ -346,10 +346,10 @@ class OptionAtTest(unittest.TestCase):
                                             (warrior.right + 1, archer.centery)))
 
     def test_hint_wraps_in_a_narrow_grid(self):
-        layout = fitted((700, 900))
+        layout = fitted((600, 1000))
         self.assertTrue(layout.stacked)
         self.assertLess(layout.cols, len(screens.MENU_HINT))
-        canvas = ui.Canvas(pygame.Surface((700, 900)), layout)
+        canvas = ui.Canvas(pygame.Surface((600, 1000)), layout)
         canvas.clear()
         screens.paint_menu(canvas, Menu(screens.TITLE_OPTIONS), ['x'])
         for row in (layout.rows - 3, layout.rows - 2):
@@ -393,19 +393,64 @@ class PaintTest(unittest.TestCase):
 
 
 @unittest.skipUnless(pygame, 'pygame-ce not installed')
+class NoticeboardTest(unittest.TestCase):
+    """The panel is a wooden board with a parchment page, kept narrow so the
+    map gets bigger tiles."""
+
+    def test_common_window_sizes_get_bigger_tiles(self):
+        for size, tile in [((1280, 720), 24), ((1600, 900), 32), ((1920, 1080), 40)]:
+            with self.subTest(size=size):
+                self.assertGreaterEqual(fitted(size, tiles=True).tile, tile)
+
+    def test_board_and_page_are_drawn_behind_the_text(self):
+        for tiles, size in [(False, (1280, 720)), (True, (1920, 1080)), (True, (600, 1000))]:
+            with self.subTest(tiles=tiles, size=size):
+                layout = fitted(size, tiles)
+                surface = pygame.Surface(size)
+                canvas = ui.Canvas(surface, layout)
+                canvas.clear()
+                ui.paint_panel(canvas, GameState(WIDTH, HEIGHT))
+                board, page = layout.panel_rect(), layout.page_rect()
+                self.assertTrue(board.contains(page))
+                self.assertTrue(page.contains(layout.text_rect()))
+                frame = surface.get_at((board.left + 1, board.centery))[:3]
+                self.assertNotEqual(frame, palette.BACKGROUND)
+                self.assertNotEqual(frame, palette.PAGE)
+                # Paper under the text is flat: a blank row reads as pure PAGE.
+                blank = pygame.Rect(layout.cell_to_pixel(layout.text_x, layout.text_y + 5),
+                                    (layout.text_width() * layout.cell_w, layout.cell_h))
+                area = surface.subsurface(blank)
+                paper = pygame.mask.from_threshold(area, palette.PAGE, (1, 1, 1, 255))
+                self.assertEqual(paper.count(), area.get_width() * area.get_height())
+
+    def test_board_is_cached_between_frames(self):
+        layout = fitted((1920, 1080), tiles=True)
+        surface = pygame.Surface((1920, 1080))
+        noticeboard._cache.clear()
+        for _ in range(3):
+            noticeboard.paint(surface, layout.panel_rect(), layout.page_rect())
+        self.assertEqual(len(noticeboard._cache), 1)
+
+
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
 class PanelParityTest(unittest.TestCase):
     """Task 6: the WS-D acceptance checklist. Every item
     curses_render._draw_panel shows is painted, on its row, in its colour,
     in side-by-side, stacked, and tile layouts; plus the pixel extras (HP bar,
     longer wrapped log).
 
-    Checklist (rows relative to layout.panel_y, same as curses' rows):
+    The panel is ink on a parchment page (render/noticeboard.py), so
+    "painted" means pixels that aren't the flat page colour, and colours are
+    the palette's ink twins. Same items and order as curses; each gear slot
+    takes two rows here (name, then bonus + rarity) to keep the board narrow.
+
+    Checklist (rows relative to layout.text_y):
       [x] 0  title                        [x] 6  '-- gear --'
-      [x] 1  'Class - Depth: n' (live)    [x] 7  weapon, rarity colour / (none)
-      [x] 2  HP, red at <= 1/3 max        [x] 8  armor, rarity colour / (none)
-          + bar beside it (extra)         [x] 10 class-dependent controls line
-      [x] 3  ATK / DEF                    [x] 11-13 shared controls
-      [x] 4  item count (live)            [x] 15 '-- log --', 16+ newest messages
+      [x] 1  'Class - Depth: n' (live)    [x] 7-8  weapon, rarity ink / (none)
+      [x] 2  HP, red at <= 1/3 max        [x] 9-10 armor, rarity ink / (none)
+          + bar beside it (extra)         [x] 12 class-dependent controls line
+      [x] 3  ATK / DEF                    [x] 13-15 shared controls
+      [x] 4  item count (live)            [x] 17 '-- log --', 18+ newest messages
     """
 
     LAYOUTS = [(False, (1280, 720)), (False, (800, 1200)), (True, (1920, 1080)),
@@ -419,17 +464,23 @@ class PanelParityTest(unittest.TestCase):
 
     def row_rect(self, row, first_col=0, cols=None):
         layout = self.layout
-        cols = ui.PANEL_COLS if cols is None else cols
-        return pygame.Rect(layout.cell_to_pixel(layout.panel_x + first_col, layout.panel_y + row),
+        cols = layout.text_width() - first_col if cols is None else cols
+        return pygame.Rect(layout.cell_to_pixel(layout.text_x + first_col, layout.text_y + row),
                            (cols * layout.cell_w, layout.cell_h))
 
     def pixels(self, rect, color=None):
-        """Non-background pixels in `rect`, or pixels close to `color`."""
+        """Ink (non-page) pixels in `rect`, or pixels close to `color`."""
         area = self.canvas.surface.subsurface(rect)
         if color is None:
-            untouched = pygame.mask.from_threshold(area, palette.BACKGROUND, (1, 1, 1, 255))
-            return area.get_width() * area.get_height() - untouched.count()
+            paper = pygame.mask.from_threshold(area, palette.PAGE, (1, 1, 1, 255))
+            return area.get_width() * area.get_height() - paper.count()
         return pygame.mask.from_threshold(area, color, (12, 12, 12, 255)).count()
+
+    def drawn(self, rect):
+        """Pixels in `rect` that aren't the window background."""
+        area = self.canvas.surface.subsurface(rect)
+        untouched = pygame.mask.from_threshold(area, palette.BACKGROUND, (1, 1, 1, 255))
+        return area.get_width() * area.get_height() - untouched.count()
 
     def row_bytes(self, row):
         return pygame.image.tobytes(self.canvas.surface.subsurface(self.row_rect(row)), 'RGB')
@@ -449,19 +500,23 @@ class PanelParityTest(unittest.TestCase):
             state.player.hp = hp
         return state
 
-    def test_curses_rows_line_up_with_the_constants(self):
+    def test_rows_follow_curses_with_two_row_gear_slots(self):
         # _draw_panel: HP on row 2, gear_start = 6, controls_start =
-        # gear_start + 4, log_start = controls_start + 5.
-        self.assertEqual((ui.HP_ROW, ui.GEAR_TOP, ui.CONTROLS_TOP, ui.LOG_TOP), (2, 6, 10, 15))
+        # gear_start + 4, log_start = controls_start + 5 -- here each of the
+        # two gear slots takes one extra row.
+        self.assertEqual((ui.HP_ROW, ui.GEAR_TOP, ui.CONTROLS_TOP, ui.LOG_TOP),
+                         (2, 6, 6 + 4 + 2, 6 + 4 + 2 + 5))
 
     def test_every_text_row_is_painted_and_the_gaps_are_not(self):
-        rows = [0, 1, ui.HP_ROW, 3, 4, ui.GEAR_TOP, ui.GEAR_TOP + 1, ui.GEAR_TOP + 2,
+        rows = [0, 1, ui.HP_ROW, 3, 4, ui.GEAR_TOP, ui.GEAR_TOP + 1, ui.GEAR_TOP + 3,
                 ui.CONTROLS_TOP, ui.CONTROLS_TOP + 1, ui.CONTROLS_TOP + 2,
                 ui.CONTROLS_TOP + 3, ui.LOG_TOP, ui.LOG_TOP + 1, ui.LOG_TOP + 2]
         for _ in self.each_layout():
             for row in rows:
                 self.assertGreater(self.pixels(self.row_rect(row)), 0, f'row {row} blank')
-            for blank in (5, ui.GEAR_TOP + 3, ui.CONTROLS_TOP + 4, ui.LOG_TOP + 3):
+            # No gear: a slot's stats row stays empty.
+            for blank in (5, ui.GEAR_TOP + 2, ui.GEAR_TOP + 4, ui.GEAR_TOP + 5,
+                          ui.CONTROLS_TOP + 4, ui.LOG_TOP + 3):
                 self.assertEqual(self.pixels(self.row_rect(blank)), 0, f'row {blank} drawn')
 
     def hp_colours(self, hp):
@@ -469,7 +524,7 @@ class PanelParityTest(unittest.TestCase):
         for _ in self.each_layout(lambda: self.state(hp=hp)):
             text = self.row_rect(ui.HP_ROW, 0, ui.HP_BAR_COL)
             bar = self.row_rect(ui.HP_ROW, ui.HP_BAR_COL, ui.HP_BAR_COLS)
-            yield (self.pixels(text, palette.DANGER), self.pixels(bar, palette.DANGER),
+            yield (self.pixels(text, palette.INK_DANGER), self.pixels(bar, palette.INK_DANGER),
                    self.pixels(bar, ui.HP_BAR_COLOR), self.pixels(bar, ui.HP_BAR_TRACK))
 
     def test_full_hp_is_plain_text_and_a_full_green_bar(self):
@@ -514,21 +569,22 @@ class PanelParityTest(unittest.TestCase):
             state.player.armor = Item(0, 0, 'armor', 'uncommon')
             return state
         for state in self.each_layout(make):
-            weapon, armor = self.row_rect(ui.GEAR_TOP + 1), self.row_rect(ui.GEAR_TOP + 2)
-            epic = palette.color(state.player.weapon.color)
-            uncommon = palette.color(state.player.armor.color)
-            self.assertGreater(self.pixels(weapon, epic), 0)
-            self.assertEqual(self.pixels(weapon, uncommon), 0)
-            self.assertGreater(self.pixels(armor, uncommon), 0)
-            self.assertEqual(self.pixels(armor, epic), 0)
+            epic = palette.ink(state.player.weapon.color)
+            uncommon = palette.ink(state.player.armor.color)
+            for weapon in (self.row_rect(ui.GEAR_TOP + 1), self.row_rect(ui.GEAR_TOP + 2)):
+                self.assertGreater(self.pixels(weapon, epic), 0)
+                self.assertEqual(self.pixels(weapon, uncommon), 0)
+            for armor in (self.row_rect(ui.GEAR_TOP + 3), self.row_rect(ui.GEAR_TOP + 4)):
+                self.assertGreater(self.pixels(armor, uncommon), 0)
+                self.assertEqual(self.pixels(armor, epic), 0)
 
     def test_no_gear_is_plain_text(self):
         for _ in self.each_layout():
-            for row in (ui.GEAR_TOP + 1, ui.GEAR_TOP + 2):
+            for row in (ui.GEAR_TOP + 1, ui.GEAR_TOP + 3):
                 rect = self.row_rect(row)
-                self.assertGreater(self.pixels(rect, palette.TEXT), 0)
+                self.assertGreater(self.pixels(rect, palette.INK), 0)
                 for rarity_colour in (4, 5, 6):
-                    self.assertEqual(self.pixels(rect, palette.color(rarity_colour)), 0)
+                    self.assertEqual(self.pixels(rect, palette.ink(rarity_colour)), 0)
 
     def test_controls_depend_on_the_class(self):
         for tiles, size in self.LAYOUTS:
@@ -565,8 +621,8 @@ class PanelParityTest(unittest.TestCase):
             for i in range(lines):
                 self.assertGreater(self.pixels(self.row_rect(ui.LOG_TOP + 1 + i)), 0)
             below = ui.LOG_TOP + 1 + lines
-            if self.layout.panel_y + below < self.layout.rows:
-                self.assertEqual(self.pixels(self.row_rect(below)), 0)
+            if self.layout.text_y + below < self.layout.rows:
+                self.assertEqual(self.pixels(self.row_rect(below), palette.INK), 0)
 
     def test_long_messages_wrap_inside_the_panel(self):
         def make():
@@ -578,12 +634,12 @@ class PanelParityTest(unittest.TestCase):
             right = pygame.Rect(panel.right, panel.top,
                                 self.canvas.surface.get_width() - panel.right, panel.height)
             if right.width > 0:
-                self.assertEqual(self.pixels(right), 0, 'text overran the panel')
+                self.assertEqual(self.drawn(right), 0, 'text overran the panel')
             self.assertGreater(self.pixels(self.row_rect(ui.LOG_TOP + 2)), 0, 'not wrapped')
 
     def test_panel_paints_nothing_on_the_map(self):
         for _ in self.each_layout():
-            self.assertEqual(self.pixels(self.layout.map_rect()), 0)
+            self.assertEqual(self.drawn(self.layout.map_rect()), 0)
 
 
 if __name__ == '__main__':

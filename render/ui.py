@@ -10,7 +10,10 @@ message log.
 The panel sits right of the map, or under it when that gives the map bigger
 cells (a portrait or narrow window) -- `Layout.stacked`. Either way it is the
 `PANEL_COLS`-wide block at grid cell (`panel_x`, `panel_y`), so callers never
-need to know which.
+need to know which. It is drawn as a wooden noticeboard (render/noticeboard.py)
+with the stats inked on a parchment page hanging from it: text starts at
+(`text_x`, `text_y`), `PANEL_PAD_X` columns and `PANEL_PAD_TOP` rows in, so the
+frame, the nail and the page's margins fit around it.
 
 Reads GameState; never mutates it.
 """
@@ -19,30 +22,35 @@ import textwrap
 
 import pygame
 
-from render import palette
+from render import noticeboard, palette
 
-# -- panel geometry (rows relative to the panel's top) ------------------------
-# The side panel starts two columns right of the map, as in curses; this many
-# columns fit the widest gear line ("Wpn: <name> (+7 atk) [uncommon]").
-PANEL_GAP = 2
-PANEL_COLS = 44
+# -- panel geometry -----------------------------------------------------------
+# The board starts one column right of the map. It is kept narrow -- gear
+# lines are split over two rows rather than widening it -- because every
+# column it takes is map width: 34 columns is what lets a 1080p window use
+# 40px tiles. Text rows below are relative to the text's top (`text_y`).
+PANEL_GAP = 1
+PANEL_COLS = 34
+PANEL_PAD_X = 3                   # frame + board + page margin, each side
+PANEL_PAD_TOP = 3                 # frame, the nail and string, the page margin
+PANEL_PAD_BOTTOM = 2              # page margin, frame
+PANEL_TEXT_COLS = PANEL_COLS - 2 * PANEL_PAD_X
 HP_ROW = 2
-GEAR_TOP = 6
-CONTROLS_TOP = GEAR_TOP + 4
+GEAR_TOP = 6                      # header; weapon name + stats, armor name + stats
+CONTROLS_TOP = GEAR_TOP + 6
 LOG_TOP = CONTROLS_TOP + 5        # the '-- log --' header; messages start below it
 MIN_LOG_LINES = 4                 # the terminal's count: always room for this many
 LOG_LINES = 12                    # shown when the window has the rows for them
-LOG_SPARE_ROWS = 1                # blank row kept under the log
-PANEL_ROWS = LOG_TOP + 1 + MIN_LOG_LINES + LOG_SPARE_ROWS   # 21: the minimum
-PANEL_MAX_ROWS = LOG_TOP + 1 + LOG_LINES + LOG_SPARE_ROWS   # what a full log uses
+PANEL_ROWS = PANEL_PAD_TOP + LOG_TOP + 1 + MIN_LOG_LINES + PANEL_PAD_BOTTOM  # the minimum
+PANEL_MAX_ROWS = PANEL_PAD_TOP + LOG_TOP + 1 + LOG_LINES + PANEL_PAD_BOTTOM  # a full log
 # Stacked (panel under the map): blank text rows between map and panel.
 STACK_GAP = 1
 
 # The HP bar sits right of the 'HP: x/max' text, in panel columns.
 HP_BAR_COL = 12                   # 'HP: 999/999' is 11 wide
-HP_BAR_COLS = 20
-HP_BAR_COLOR = palette.COLORS[4]  # green; palette.DANGER at or below 1/3 max
-HP_BAR_TRACK = palette.SEEN
+HP_BAR_COLS = PANEL_TEXT_COLS - HP_BAR_COL
+HP_BAR_COLOR = palette.HP_BAR_FILL  # palette.INK_DANGER at or below 1/3 max
+HP_BAR_TRACK = palette.HP_BAR_TRACK
 
 FONT_NAMES = 'dejavusansmono,liberationmono,consolas,menlo,couriernew,monospace'
 MIN_FONT_SIZE = 8
@@ -222,7 +230,12 @@ class Layout:
         self.origin_y = max(0, (win_h - cell_h * self.rows) // 2)
         # Centre map + panel as one block, then snap the panel onto the text
         # grid and place the map against it.
-        block_w, block_h = self._block_size(self.tile, (cell_w, cell_h), self.stacked)
+        # Centre on the board with a full log when that fits, so the log
+        # isn't cut short by a panel that starts too low.
+        block_w, block_h = self._block_size(self.tile, (cell_w, cell_h), self.stacked,
+                                            panel_rows=PANEL_MAX_ROWS)
+        if block_w > win_w or block_h > win_h:
+            block_w, block_h = self._block_size(self.tile, (cell_w, cell_h), self.stacked)
         map_w, map_h = self.map_width * self.tile, self.map_height * self.tile
         block_left = max(0, (win_w - block_w) // 2)
         block_top = max(0, (win_h - block_h) // 2)
@@ -299,19 +312,51 @@ class Layout:
         cell_w, cell_h = self.map_cell_size()
         return pygame.Rect(*self.map_origin, cell_w * self.map_width, cell_h * self.map_height)
 
+    def panel_rows(self):
+        """Rows the board takes: padding, the stats, and the log at this size."""
+        rows = PANEL_PAD_TOP + LOG_TOP + 1 + self.log_lines() + PANEL_PAD_BOTTOM
+        return max(1, min(rows, self.rows - self.panel_y))
+
     def panel_rect(self):
-        """Pixel rect of the panel, from its top to the bottom of the grid."""
+        """Pixel rect of the noticeboard."""
         return pygame.Rect(*self.cell_to_pixel(self.panel_x, self.panel_y),
-                           self.cell_w * PANEL_COLS, self.cell_h * (self.rows - self.panel_y))
+                           self.cell_w * self.panel_width(), self.cell_h * self.panel_rows())
 
     def panel_width(self):
-        """Columns of panel text that fit: PANEL_COLS unless the grid is narrower."""
+        """Columns of panel that fit: PANEL_COLS unless the grid is narrower."""
         return max(0, min(PANEL_COLS, self.cols - self.panel_x))
+
+    @property
+    def text_x(self):
+        """Grid column where the panel's text starts."""
+        return self.panel_x + PANEL_PAD_X
+
+    @property
+    def text_y(self):
+        """Grid row where the panel's text starts (its row 0)."""
+        return self.panel_y + PANEL_PAD_TOP
+
+    def text_width(self):
+        """Columns of text the page holds."""
+        return max(0, self.panel_width() - 2 * PANEL_PAD_X)
+
+    def text_rect(self):
+        """Pixel rect of the page's text area (flat paper under the ink)."""
+        return pygame.Rect(*self.cell_to_pixel(self.text_x, self.text_y),
+                           self.cell_w * self.text_width(),
+                           self.cell_h * (LOG_TOP + 1 + self.log_lines()))
+
+    def page_rect(self):
+        """Pixel rect of the parchment page: the text area plus a margin of
+        most of a column / row, inside the board."""
+        text = self.text_rect()
+        page = text.inflate(2 * self.cell_w + 4, self.cell_h * 6 // 5)
+        return page.clip(self.panel_rect().inflate(-2, -2))
 
     def log_lines(self):
         """How many message-log rows the panel has at this size: as many as
         the grid's rows allow under the log header, up to LOG_LINES."""
-        free = self.rows - (self.panel_y + LOG_TOP + 1) - LOG_SPARE_ROWS
+        free = self.rows - (self.text_y + LOG_TOP + 1) - PANEL_PAD_BOTTOM
         return max(1, min(LOG_LINES, free))
 
 
@@ -369,28 +414,35 @@ class Canvas:
 # -- the panel ----------------------------------------------------------------
 
 def paint_panel(canvas, state):
-    """Every item of curses_render._draw_panel, on the same rows relative to
-    the panel's top (`layout.panel_y`), clipped to the panel's width; plus an
-    HP bar beside the HP text and a message log as long as the rows allow."""
+    """The noticeboard, then every item of curses_render._draw_panel inked on
+    its page, in the same order (gear lines take two rows each here), clipped
+    to the page's width; plus an HP bar beside the HP text and a message log
+    as long as the rows allow."""
     layout = canvas.layout
+    if layout.panel_width() > 0:
+        noticeboard.paint(canvas.surface, layout.panel_rect(), layout.page_rect())
     player = state.player
-    x, top = layout.panel_x, layout.panel_y
-    width = layout.panel_width()
+    x, top = layout.text_x, layout.text_y
+    width = layout.text_width()
 
-    def put(row, text, color=palette.TEXT):
-        canvas.put_str(x, top + row, text[:width], color)
+    def put(row, text, color=palette.INK, bold=False):
+        canvas.put_str(x, top + row, text[:width], color, bold=bold)
 
-    put(0, 'PythonRogue')
+    put(0, 'PythonRogue', bold=True)
     put(1, f'{player.char_class.capitalize()} - Depth: {state.depth}')
     danger = player.hp <= player.max_hp // 3
-    put(HP_ROW, f'HP: {player.hp}/{player.max_hp}', palette.DANGER if danger else palette.TEXT)
+    put(HP_ROW, f'HP: {player.hp}/{player.max_hp}', palette.INK_DANGER if danger else palette.INK)
     _paint_hp_bar(canvas, x, top + HP_ROW, width, player.hp, player.max_hp, danger)
     put(3, f'ATK {player.power}   DEF {player.defense}')
     put(4, f'Items: {len(player.inventory)}')
 
-    put(GEAR_TOP, '-- gear --')
-    put(GEAR_TOP + 1, *_gear_line('Wpn', player.weapon, 'atk'))
-    put(GEAR_TOP + 2, *_gear_line('Arm', player.armor, 'def'))
+    put(GEAR_TOP, '-- gear --', bold=True)
+    for row, (label, item, stat) in enumerate([('Wpn', player.weapon, 'atk'),
+                                               ('Arm', player.armor, 'def')]):
+        name, stats, color = _gear_lines(label, item, stat)
+        put(GEAR_TOP + 1 + 2 * row, name, color)
+        if stats:
+            put(GEAR_TOP + 2 + 2 * row, stats, color)
 
     if player.char_class == 'archer':
         put(CONTROLS_TOP, 'wasd move, arrows shoot')
@@ -400,7 +452,7 @@ def paint_panel(canvas, state):
     put(CONTROLS_TOP + 2, 'S  save   L  load')
     put(CONTROLS_TOP + 3, 'q  quit')
 
-    put(LOG_TOP, '-- log --')
+    put(LOG_TOP, '-- log --', bold=True)
     for i, line in enumerate(log_rows(state.messages, width, layout.log_lines())):
         put(LOG_TOP + 1 + i, line)
 
@@ -439,16 +491,18 @@ def _paint_hp_bar(canvas, x, y, width, hp, max_hp, danger):
     if hp > 0:
         filled = max(1, filled)
     if filled:
-        canvas.surface.fill(palette.DANGER if danger else HP_BAR_COLOR,
+        canvas.surface.fill(palette.INK_DANGER if danger else HP_BAR_COLOR,
                             (track.left, track.top, filled, track.height))
 
 
-def _gear_line(label, item, stat_label):
-    """(text, colour) of a gear line: the item in its rarity colour, or none."""
+def _gear_lines(label, item, stat_label):
+    """(name line, stats line, ink) for an equipment slot: the item's name,
+    then its bonus and rarity indented under it, in its rarity's ink; or
+    '(none)' and no stats line."""
     if item is None:
-        return f'{label}: (none)', palette.TEXT
-    return (f'{label}: {item.name} (+{item.bonus} {stat_label}) [{item.rarity}]',
-            palette.color(item.color))
+        return f'{label}: (none)', '', palette.INK
+    return (f'{label}: {item.name}', f'     +{item.bonus} {stat_label}  [{item.rarity}]',
+            palette.ink(item.color))
 
 
 def _desktop_size():

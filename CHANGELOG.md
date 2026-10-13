@@ -22,7 +22,13 @@ GitHub Release notes.
 - Mouse support in the window's menus (hover and click). The game itself stays keyboard-only.
 - The window ships its own font (JetBrains Mono, SIL OFL), so it looks the same on every system.
 
+- The window's stats panel is a wooden noticeboard with the stats inked on a page hanging from it.
+
 ### Changed
+- Doors now sit in the doorway (the gap in a room's wall) instead of on the room's edge, so a
+  closed door properly hides the room behind it.
+- The map is drawn bigger in the window (40 px tiles at 1080p, up from 32), because the stats panel
+  is narrower.
 - Weapons and armor only replace what you're wearing when they're better; a worse piece is left
   behind.
 

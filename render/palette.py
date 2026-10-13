@@ -25,6 +25,30 @@ SEEN = (90, 90, 90)         # curses A_DIM -- remembered, not currently in view
 BACKGROUND = (0, 0, 0)
 
 
+# The side panel is a parchment page on a wooden noticeboard
+# (render/noticeboard.py): text there is ink, not light-on-black, so the
+# rarity ladder has darker twins that read on paper. Same Entity.color keys.
+PAGE = (236, 224, 194)        # flat under the text, so ink is easy to tell apart
+PAGE_EDGE = (214, 196, 156)
+INK = (52, 38, 26)
+INK_DANGER = (178, 34, 30)
+INK_COLORS = {
+    2: INK_DANGER,
+    3: (20, 110, 120),     # cyan
+    4: (34, 118, 46),      # uncommon (green)
+    5: (36, 76, 176),      # rare (blue)
+    6: (136, 42, 156),     # epic (magenta)
+    7: INK,                # common: plain ink, as white would vanish on paper
+}
+HP_BAR_FILL = (58, 140, 62)
+HP_BAR_TRACK = (204, 186, 148)
+
+
+def ink(index, default=INK):
+    """Ink colour for an Entity.color int, for text on the panel's page."""
+    return INK_COLORS.get(index, default)
+
+
 def color(index, default=TEXT):
     """RGB for an Entity.color int, falling back for unknown values."""
     return COLORS.get(index, default)
