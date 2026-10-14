@@ -653,6 +653,67 @@ class TileModeChestChoiceScreenTest(ChestChoiceScreenTest):
     tiles = True
 
 
+class NewWeaponChoiceScreenTest(ChestChoiceScreenTest):
+    """The same overlay with the longest weapon-type cards on it."""
+
+    def setUp(self):
+        super().setUp()
+        from game.item import Item, JUNK
+        self.items = [Item(0, 0, 'great_sword', 'rare'), Item(0, 0, 'rapier', 'epic'),
+                      Item(0, 0, JUNK)]
+        self.state.pending_choice = list(self.items)
+
+
+class ChoiceCardTextTest(unittest.TestCase):
+    """render/choice.py's card text (stdlib only: no pygame needed)."""
+
+    def text(self, kind, rarity='common'):
+        from game.item import Item
+        from render import choice
+        return choice.stat_text(Item(0, 0, kind, rarity))
+
+    def test_each_kind_at_each_rarity(self):
+        expected = {
+            'weapon': ['+1 damage', '+2 damage', '+4 damage', '+7 damage'],
+            'armor': ['+3 defence', '+6 defence', '+12 defence', '+21 defence'],
+            'war_axe': ['+0 damage, +3 HP', '+1 damage, +6 HP', '+3 damage, +9 HP',
+                        '+6 damage, +15 HP'],
+            'rapier': ['-1 damage, strikes twice', '+0 damage, strikes twice',
+                       '+2 damage, strikes twice', '+5 damage, strikes twice'],
+            'great_sword': ['+2 damage, hits a 2nd adjacent foe',
+                            '+3 damage, hits a 2nd adjacent foe',
+                            '+5 damage, hits a 2nd adjacent foe',
+                            '+8 damage, hits a 2nd adjacent foe'],
+            'sword_shield': ['+1 damage, +3 defence', '+2 damage, +6 defence',
+                             '+4 damage, +9 defence', '+7 damage, +12 defence'],
+            'dagger': ['+0 damage, +5% crit', '+1 damage, +10% crit', '+3 damage, +15% crit',
+                       '+6 damage, +20% crit'],
+            'spear': ['+1 damage, reach 2', '+2 damage, reach 2', '+4 damage, reach 2',
+                      '+7 damage, reach 2'],
+        }
+        from game.item import GEAR_KINDS, RARITIES
+        self.assertEqual(set(expected), set(GEAR_KINDS))
+        for kind, lines in expected.items():
+            self.assertEqual([self.text(kind, r) for r in RARITIES], lines, kind)
+
+    def test_junk_still_shows_nothing_useful(self):
+        from game.item import Item, JUNK
+        from render import choice
+        junk = Item(0, 0, JUNK)
+        self.assertEqual(choice.stat_text(junk), 'nothing useful')
+        self.assertEqual(choice.card_lines(3, junk), ['[3]', 'Rusty scrap', 'junk',
+                                                     'nothing useful'])
+
+    def test_cards_name_and_rarity_for_a_new_kind(self):
+        from game.item import Item
+        from render import choice
+        item = Item(0, 0, 'dagger', 'rare')
+        self.assertEqual(choice.card_lines(1, item),
+                         ['[1]', item.name, 'rare', '+3 damage, +15% crit'])
+        self.assertIn('+15% crit', choice.tight_line(1, item))
+        self.assertIn('+15% crit', choice.compact_lines(1, item)[1])
+
+
 class DefaultRendererTest(unittest.TestCase):
     """main.default_renderer: a frozen (--windowed) exe has no terminal."""
 

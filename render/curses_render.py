@@ -213,7 +213,8 @@ class CursesRenderer(Renderer):
         if item is None:
             self._put_str(y, x, f'{label}: (none)')
             return
-        text = f'{label}: {item.name} (+{item.bonus} {stat_label}) [{item.rarity}]'
+        # :+d, not a literal '+': a rapier's common bonus is -1.
+        text = f'{label}: {item.name} ({item.bonus:+d} {stat_label}) [{item.rarity}]'
         self._put_str(y, x, text, curses.color_pair(item.color))
 
     def _draw_game_over(self, state):

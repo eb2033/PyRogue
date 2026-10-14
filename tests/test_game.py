@@ -18,9 +18,10 @@ from game.dungeon import generate_dungeon, make_empty_map, place_doors, place_st
 from game.entity import Entity
 from game.fov import compute_fov, update_visibility
 from game.item import (ARMOR_DEFENSE, CHEST_COLOR, Chest, GEAR_BONUS, GEAR_CHEST_DROPS,
-                       GEAR_KINDS, Item, JUNK, JUNK_CHANCE, JUNK_NAME, MAX_SCALING_DEPTH,
-                       POTION_CHEST_COLOR, RARITIES, rarity_weights_for_depth, roll_rarity,
-                       spawn_boss_chest, spawn_chests)
+                       GEAR_DROP_KINDS, GEAR_KINDS, GEAR_SLOTS, ITEM_CHARS, Item, JUNK,
+                       JUNK_CHANCE, JUNK_NAME, MAX_SCALING_DEPTH, POTION_CHEST_COLOR, RARITIES,
+                       WEAPON_TYPES, rarity_weights_for_depth, roll_rarity, spawn_boss_chest,
+                       spawn_chests)
 from game.monster import (BOSS_REFERENCE_KIND, MONSTER_TYPES, ORTHOGONAL_STEPS, Monster,
                           is_boss_level, scale_stats, spawn_boss, spawn_monsters,
                           tier_for_depth)
@@ -1288,6 +1289,402 @@ class CritAndReductionTests(unittest.TestCase):
         with mock.patch('game.state.BASE_CRIT_CHANCE', 1.0):
             self.state.shoot_arrow(1, 0)
         self.assertTrue(self.state.combat_events[-1].crit)
+
+
+class WeaponTypeTests(unittest.TestCase):
+    """The six weapon types (game/item.py WEAPON_TYPES) and their effects."""
+
+    EXPECTED_BONUS = {
+        'war_axe': {'common': 0, 'uncommon': 1, 'rare': 3, 'epic': 6},
+        'rapier': {'common': -1, 'uncommon': 0, 'rare': 2, 'epic': 5},
+        'great_sword': {'common': 2, 'uncommon': 3, 'rare': 5, 'epic': 8},
+        'sword_shield': {'common': 1, 'uncommon': 2, 'rare': 4, 'epic': 7},
+        'dagger': {'common': 0, 'uncommon': 1, 'rare': 3, 'epic': 6},
+        'spear': {'common': 1, 'uncommon': 2, 'rare': 4, 'epic': 7},
+    }
+
+    def setUp(self):
+        random.seed(90)
+        self.state = GameState(50, 20, char_class='warrior')
+        # An open arena: floor everywhere inside the border, player at (10, 10).
+        for y in range(1, 19):
+            for x in range(1, 49):
+                self.state.game_map[y][x] = FLOOR
+        p = self.state.player
+        p.x, p.y = 10, 10
+        p.hp = p.max_hp = 1000
+        self.state.entities = [p]
+        self.state.update_fov()
+
+    def equip(self, kind, rarity='common'):
+        item = Item(0, 0, kind, rarity)
+        item.apply(self.state.player, self.state.log)
+        return item
+
+    def monster(self, x, y, hp=1000):
+        m = Monster(x, y, 'goblin')
+        m.hp = m.max_hp = hp
+        self.state.entities.append(m)
+        self.state.update_fov()
+        return m
+
+    def no_crit(self):
+        return mock.patch('game.state.BASE_CRIT_CHANCE', 0.0)
+
+    # -- data ----------------------------------------------------------------
+
+    def test_six_new_kinds_are_weapon_slot_gear_and_drop(self):
+        self.assertEqual(set(WEAPON_TYPES), set(self.EXPECTED_BONUS))
+        for kind in WEAPON_TYPES:
+            self.assertEqual(GEAR_SLOTS[kind], 'weapon')
+            self.assertIn(kind, GEAR_KINDS)
+            self.assertIn(kind, GEAR_DROP_KINDS)
+            for rarity in RARITIES:
+                item = Item(0, 0, kind, rarity)
+                self.assertTrue(item.is_gear)
+                self.assertTrue(item.name)
+                self.assertEqual(item.char, ITEM_CHARS['weapon'])
+        self.assertIn('armor', GEAR_DROP_KINDS)
+        self.assertIn('weapon', GEAR_DROP_KINDS)
+
+    def test_damage_bonus_by_rarity(self):
+        for kind, table in self.EXPECTED_BONUS.items():
+            for rarity, bonus in table.items():
+                self.assertEqual(Item(0, 0, kind, rarity).bonus, bonus, (kind, rarity))
+        # Each is GEAR_BONUS with an offset.
+        for rarity in RARITIES:
+            self.assertEqual(Item(0, 0, 'spear', rarity).bonus, GEAR_BONUS[rarity])
+
+    def test_effect_values_by_rarity(self):
+        for rarity, hp, shield, crit in zip(RARITIES, (3, 6, 9, 15), (3, 6, 9, 12),
+                                            (0.05, 0.10, 0.15, 0.20)):
+            self.assertEqual(Item(0, 0, 'war_axe', rarity).max_hp_bonus, hp)
+            self.assertEqual(Item(0, 0, 'sword_shield', rarity).defense_bonus, shield)
+            self.assertAlmostEqual(Item(0, 0, 'dagger', rarity).crit_bonus, crit)
+            self.assertEqual(Item(0, 0, 'rapier', rarity).strikes, 2)
+            self.assertTrue(Item(0, 0, 'great_sword', rarity).cleave)
+            self.assertEqual(Item(0, 0, 'spear', rarity).reach, 2)
+        plain = Item(0, 0, 'weapon', 'epic')
+        self.assertEqual((plain.max_hp_bonus, plain.strikes, plain.cleave,
+                          plain.defense_bonus, plain.crit_bonus, plain.reach),
+                         (0, 1, False, 0, 0.0, 1))
+
+    def test_power_uses_the_bonus_at_each_rarity(self):
+        p = self.state.player
+        for kind, table in self.EXPECTED_BONUS.items():
+            for rarity, bonus in table.items():
+                self.equip(kind, rarity)
+                self.assertEqual(p.power, p.base_power + bonus, (kind, rarity))
+
+    def test_power_never_drops_below_one(self):
+        p = self.state.player
+        p.base_power = 1
+        self.equip('rapier', 'common')          # 1 - 1 = 0
+        self.assertEqual(p.power, 1)
+        p.base_power = 0
+        self.equip('dagger', 'common')          # 0 + 0 = 0
+        self.assertEqual(p.power, 1)
+        p.base_power = 4
+        self.equip('rapier', 'common')
+        self.assertEqual(p.power, 3)
+
+    # -- War Axe -------------------------------------------------------------
+
+    def test_war_axe_adds_hp_and_replacing_it_removes_it(self):
+        p = self.state.player
+        p.hp, p.max_hp = 20, 25
+        self.equip('war_axe', 'rare')                      # +9
+        self.assertEqual((p.hp, p.max_hp), (29, 34))
+        self.equip('war_axe', 'epic')                      # -9 +15
+        self.assertEqual((p.hp, p.max_hp), (35, 40))
+        self.equip('spear', 'common')                      # -15
+        self.assertEqual((p.hp, p.max_hp), (20, 25))
+        self.assertEqual(p.power, p.base_power + 1)
+
+    def test_losing_the_axe_never_kills_or_overfills(self):
+        p = self.state.player
+        p.hp, p.max_hp = 25, 25
+        self.equip('war_axe', 'epic')
+        self.assertEqual((p.hp, p.max_hp), (40, 40))
+        p.hp = 5
+        self.equip('weapon', 'common')
+        self.assertEqual((p.hp, p.max_hp), (1, 25))        # 5 - 15 floors at 1
+        for rarity, hp in zip(RARITIES, (3, 6, 9, 15)):
+            p.hp, p.max_hp = 25, 25
+            p.weapon = None
+            self.equip('war_axe', rarity)
+            self.assertEqual((p.hp, p.max_hp), (25 + hp, 25 + hp))
+            self.assertLessEqual(p.hp, p.max_hp)
+
+    # -- Rapier --------------------------------------------------------------
+
+    def test_rapier_strikes_twice_each_reduced_separately(self):
+        self.equip('rapier', 'epic')
+        p = self.state.player
+        p.power = 7
+        goblin = self.monster(11, 10)
+        goblin.defense = 10                                # 50%: 7 -> 3.5
+        random.seed(5)
+        probe = random.Random()
+        probe.setstate(random.getstate())
+        expected = []
+        for _ in range(2):
+            probe.random()                                 # the crit roll
+            expected.append(round_damage(mitigate(7, 10), probe))
+        before = len(self.state.messages)
+        with self.no_crit():
+            self.state.handle_action('move_e')
+        hits = [h for h in self.state.combat_events if h.attacker is p]
+        self.assertEqual(len(hits), 2)
+        self.assertEqual([h.damage for h in hits], expected)
+        self.assertEqual(len({h.serial for h in hits}), 2)
+        lines = [m for m in self.state.messages[before:] if m.startswith('You hit goblin')]
+        self.assertEqual(lines, [f'You hit goblin for {d}.' for d in expected])
+        self.assertEqual(goblin.hp, 1000 - sum(expected))
+        self.assertEqual((p.x, p.y), (10, 10))
+
+    def test_rapier_crits_roll_per_strike(self):
+        self.equip('rapier', 'epic')
+        self.state.player.power = 4
+        goblin = self.monster(11, 10)
+        goblin.defense = 0                                 # whole damage: no rounding roll
+        for rolls, crits in (([0.0, 0.99], [True, False]), ([0.99, 0.0], [False, True])):
+            with mock.patch('game.state.random.random', side_effect=rolls):
+                self.state.handle_action('move_e')
+            hits = [h for h in self.state.combat_events if h.attacker is self.state.player]
+            self.assertEqual([h.crit for h in hits], crits)
+            self.assertEqual([h.damage for h in hits], [6 if c else 4 for c in crits])
+
+    def test_rapier_stops_when_the_first_strike_kills(self):
+        self.equip('rapier', 'epic')
+        goblin = self.monster(11, 10, hp=1)
+        with self.no_crit():
+            self.state.melee(goblin)
+        self.assertEqual(len(self.state.combat_events), 1)
+        self.assertFalse(goblin.alive)
+
+    # -- Great Sword ---------------------------------------------------------
+
+    def test_great_sword_hits_a_second_monster_next_to_the_player(self):
+        self.equip('great_sword', 'rare')
+        target = self.monster(11, 10)
+        other = self.monster(10, 9)                        # north of the player
+        with self.no_crit():
+            self.state.handle_action('move_e')
+        defenders = [h.defender for h in self.state.combat_events
+                     if h.attacker is self.state.player]
+        self.assertEqual(defenders, [target, other])
+        self.assertLess(other.hp, 1000)
+        self.assertTrue(any('carries on into goblin' in m for m in self.state.messages))
+
+    def test_great_sword_ignores_monsters_not_orthogonally_next_to_the_player(self):
+        self.equip('great_sword', 'rare')
+        target = self.monster(11, 10)
+        diagonal = self.monster(11, 9)
+        two_away = self.monster(8, 10)
+        beside_target = self.monster(12, 10)               # next to the target only
+        with self.no_crit():
+            self.state.handle_action('move_e')
+        player_hits = [h for h in self.state.combat_events if h.attacker is self.state.player]
+        self.assertEqual([h.defender for h in player_hits], [target])
+        for m in (diagonal, two_away, beside_target):
+            self.assertEqual(m.hp, 1000)
+
+    def test_great_sword_hits_only_one_extra_monster(self):
+        self.equip('great_sword', 'rare')
+        target = self.monster(11, 10)
+        self.monster(10, 9)
+        self.monster(10, 11)
+        with self.no_crit():
+            self.state.melee(target)
+        self.assertEqual(len(self.state.combat_events), 2)
+
+    def test_other_weapons_do_not_cleave(self):
+        self.equip('spear', 'rare')
+        target = self.monster(11, 10)
+        other = self.monster(10, 9)
+        self.state.melee(target)
+        self.assertEqual(other.hp, 1000)
+
+    # -- Sword & Shield ------------------------------------------------------
+
+    def test_sword_and_shield_defense_stacks_with_armor(self):
+        p = self.state.player
+        armor = self.equip('armor', 'rare')                # 12
+        shield = self.equip('sword_shield', 'rare')        # +9 defence, +4 damage
+        self.assertIs(p.weapon, shield)
+        self.assertIs(p.armor, armor)
+        self.assertEqual(p.defense, ARMOR_DEFENSE['rare'] + 9)
+        self.assertEqual(p.power, p.base_power + GEAR_BONUS['rare'])
+        self.equip('armor', 'epic')
+        self.assertEqual(p.defense, 21 + 9)
+        self.equip('spear', 'common')                      # the shield goes with it
+        self.assertEqual(p.defense, 21)
+
+    def test_sword_and_shield_alone_gives_defense(self):
+        for rarity, shield in zip(RARITIES, (3, 6, 9, 12)):
+            self.equip('sword_shield', rarity)
+            self.assertEqual(self.state.player.defense, shield)
+            self.assertIsNone(self.state.player.armor)
+
+    # -- Dagger --------------------------------------------------------------
+
+    def test_dagger_raises_crit_chance_by_rarity(self):
+        p = self.state.player
+        self.assertEqual(crit_chance(p), BASE_CRIT_CHANCE)
+        chances = []
+        for rarity, bonus in zip(RARITIES, (0.05, 0.10, 0.15, 0.20)):
+            self.equip('dagger', rarity)
+            self.assertAlmostEqual(crit_chance(p), BASE_CRIT_CHANCE + bonus)
+            chances.append(crit_chance(p))
+        self.assertEqual(chances, sorted(chances))
+        self.equip('spear', 'epic')
+        self.assertEqual(crit_chance(p), BASE_CRIT_CHANCE)
+
+    def test_crit_chance_is_capped_at_one(self):
+        self.equip('dagger', 'epic')
+        with mock.patch('game.state.BASE_CRIT_CHANCE', 0.95):
+            self.assertEqual(crit_chance(self.state.player), 1.0)
+
+    def test_dagger_crit_shows_up_in_attacks(self):
+        self.equip('dagger', 'epic')                       # 30%
+        goblin = self.monster(11, 10, hp=10 ** 9)
+        random.seed(321)
+        n = 3000
+        crits = 0
+        for _ in range(n):
+            self.state.attack(self.state.player, goblin)
+            crits += self.state.combat_events[-1].crit
+        self.assertTrue(0.26 < crits / n < 0.34, crits / n)
+
+    def test_monsters_do_not_get_the_dagger_bonus(self):
+        self.assertEqual(crit_chance(Monster(0, 0, 'goblin')), BASE_CRIT_CHANCE)
+
+    # -- Spear ---------------------------------------------------------------
+
+    def test_spear_reaches_a_monster_two_tiles_away(self):
+        self.equip('spear', 'rare')
+        far = self.monster(12, 10)
+        with self.no_crit():
+            self.assertTrue(self.state.handle_action('move_e'))
+        self.assertEqual((self.state.player.x, self.state.player.y), (10, 10))
+        self.assertLess(far.hp, 1000)
+        (hit,) = self.state.combat_events
+        self.assertIs(hit.defender, far)
+
+    def test_spear_reaches_in_every_direction(self):
+        self.equip('spear', 'rare')
+        for action, (x, y) in (('move_n', (10, 8)), ('move_s', (10, 12)),
+                               ('move_w', (8, 10)), ('shoot_e', (12, 10))):
+            m = self.monster(x, y)
+            self.state.handle_action(action)
+            self.assertLess(m.hp, 1000, action)
+            self.assertEqual((self.state.player.x, self.state.player.y), (10, 10))
+            m.alive = False
+
+    def test_spear_with_a_monster_in_the_middle_bumps_that_one(self):
+        self.equip('spear', 'rare')
+        near = self.monster(11, 10)
+        far = self.monster(12, 10)
+        self.state.handle_action('move_e')
+        self.assertLess(near.hp, 1000)
+        self.assertEqual(far.hp, 1000)
+
+    def test_spear_with_a_wall_in_the_middle_is_a_normal_move(self):
+        self.equip('spear', 'rare')
+        self.state.game_map[10][11] = WALL
+        far = self.monster(12, 10)
+        self.state.handle_action('move_e')
+        self.assertEqual(far.hp, 1000)
+        self.assertEqual((self.state.player.x, self.state.player.y), (10, 10))
+
+    def test_spear_does_not_reach_diagonally(self):
+        self.equip('spear', 'rare')
+        for x, y in ((12, 11), (12, 12), (11, 11)):
+            m = self.monster(x, y)
+            self.state.player.x, self.state.player.y = 10, 10
+            self.state.update_fov()
+            self.state.handle_action('move_e')
+            self.assertEqual(m.hp, 1000)
+            self.assertEqual((self.state.player.x, self.state.player.y), (11, 10))
+            m.alive = False
+
+    def test_spear_does_not_reach_three_tiles_or_an_unseen_monster(self):
+        self.equip('spear', 'rare')
+        far = self.monster(13, 10)
+        self.state.handle_action('move_e')
+        self.assertEqual(far.hp, 1000)
+        self.assertEqual(self.state.player.x, 11)
+        # A door in between hides what is behind it: move into the doorway.
+        self.state.player.x = 10
+        far.x = 12
+        self.state.game_map[10][11] = DOOR
+        self.state.update_fov()
+        self.state.handle_action('move_e')
+        self.assertEqual(far.hp, 1000)
+        self.assertEqual(self.state.player.x, 11)
+
+    def test_without_a_spear_two_away_is_just_a_move(self):
+        self.equip('weapon', 'rare')
+        far = self.monster(12, 10)
+        self.state.handle_action('move_e')
+        self.assertEqual(far.hp, 1000)
+        self.assertEqual(self.state.player.x, 11)
+
+    # -- save/load -----------------------------------------------------------
+
+    def round_trip(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'save.json')
+            save_game(self.state, path)
+            fresh = GameState(50, 20)
+            apply_dict(fresh, load_game(path))
+        return fresh
+
+    def test_each_new_kind_round_trips(self):
+        p = self.state.player
+        self.equip('armor', 'uncommon')
+        for kind in WEAPON_TYPES:
+            for rarity in ('common', 'epic'):
+                p.hp, p.max_hp = 30, 30
+                p.weapon = None
+                weapon = self.equip(kind, rarity)
+                fresh = self.round_trip()
+                fp = fresh.player
+                self.assertEqual((fp.weapon.kind, fp.weapon.rarity), (kind, rarity))
+                self.assertEqual((fp.power, fp.defense, fp.hp, fp.max_hp),
+                                 (p.power, p.defense, p.hp, p.max_hp), kind)
+                self.assertEqual(crit_chance(fp), crit_chance(p))
+                for attr in ('max_hp_bonus', 'strikes', 'cleave', 'defense_bonus',
+                             'crit_bonus', 'reach'):
+                    self.assertEqual(getattr(fp.weapon, attr), getattr(weapon, attr))
+                # Replacing the loaded axe takes off exactly what it gave.
+                Item(0, 0, 'weapon', 'common').apply(fp, fresh.log)
+                self.assertEqual(fp.max_hp, 30)
+
+    def test_new_kinds_round_trip_in_a_pending_choice(self):
+        self.state.pending_choice = [Item(0, 0, 'rapier', 'rare'), Item(0, 0, 'spear', 'epic'),
+                                     Item(0, 0, 'sword_shield', 'common')]
+        fresh = self.round_trip()
+        self.assertEqual([(i.kind, i.rarity) for i in fresh.pending_choice],
+                         [('rapier', 'rare'), ('spear', 'epic'), ('sword_shield', 'common')])
+        fresh.choose(2)
+        self.assertEqual(fresh.player.defense, 3)
+
+    def test_old_save_with_the_old_weapon_kind_loads(self):
+        data = state_to_dict(self.state)
+        del data['pending_choice']
+        data['player']['weapon'] = {'kind': 'weapon', 'rarity': 'rare'}
+        data['player']['power'] = data['player']['base_power'] + 4
+        data['player']['defense'] = 0
+        fresh = GameState(50, 20)
+        apply_dict(fresh, data)
+        fp = fresh.player
+        self.assertEqual((fp.weapon.kind, fp.weapon.bonus), ('weapon', 4))
+        self.assertEqual(fp.power, fp.base_power + 4)
+        self.assertEqual(fp.defense, 0)
+        self.assertEqual(crit_chance(fp), BASE_CRIT_CHANCE)
+        self.assertEqual((fp.weapon.strikes, fp.weapon.reach, fp.weapon.cleave), (1, 1, False))
 
 
 if __name__ == '__main__':

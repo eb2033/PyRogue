@@ -83,14 +83,20 @@ def _describe(item):
     return f'{item.name} ({item.rarity})'
 
 
-# Chance that a player hit is critical; weapon bonuses (dagger) add to this later.
+# Chance that a player hit is critical; an equipped weapon's crit_bonus
+# (the dagger's) adds to it.
 BASE_CRIT_CHANCE = 0.10
 # A crit multiplies raw damage by this BEFORE defense reduction.
 CRIT_MULTIPLIER = 1.5
+MAX_CRIT_CHANCE = 1.0
 
 
 def crit_chance(attacker):
-    return BASE_CRIT_CHANCE
+    """BASE_CRIT_CHANCE plus the attacker's weapon's crit_bonus, capped at
+    MAX_CRIT_CHANCE. Only ever rolled for the player (see attack)."""
+    weapon = getattr(attacker, 'weapon', None)
+    bonus = weapon.crit_bonus if weapon is not None else 0.0
+    return min(MAX_CRIT_CHANCE, BASE_CRIT_CHANCE + bonus)
 
 
 class GameState:
@@ -222,7 +228,12 @@ class GameState:
 
         monster = self.monster_at(nx, ny)
         if monster is not None:
-            self.attack(self.player, monster)
+            self.melee(monster)
+            return
+
+        reach_target = self._reach_target(dx, dy)
+        if reach_target is not None:
+            self.melee(reach_target)
             return
 
         self.player.move(dx, dy, self.game_map)
@@ -230,6 +241,62 @@ class GameState:
         chest = self.chest_at(self.player.x, self.player.y)
         if chest is not None:
             self.open_chest(chest)
+
+    def _reach_target(self, dx, dy):
+        """The monster a reach weapon (the spear, reach 2) hits when the
+        player presses (dx, dy) and the adjacent tile holds no monster, or
+        None to move as usual.
+
+        Only exactly `reach` tiles away, straight along the pressed
+        direction (so never diagonally -- movement is 4-way). Every tile in
+        between must be walkable and unoccupied: no wall, no monster (the
+        player is behind, never in between; a chest is not an obstacle). The
+        target must also be in the player's view, so a spear can't strike an
+        unseen monster through a closed door (doors are walkable but opaque).
+        """
+        weapon = self.player.weapon
+        reach = weapon.reach if weapon is not None else 1
+        if reach < 2:
+            return None
+        px, py = self.player.x, self.player.y
+        for step in range(1, reach):
+            x, y = px + dx * step, py + dy * step
+            if not is_walkable(self.game_map, x, y) or self.monster_at(x, y) is not None:
+                return None
+        tx, ty = px + dx * reach, py + dy * reach
+        if not (0 <= ty < self.height and 0 <= tx < self.width) or not self.visible[ty][tx]:
+            return None
+        return self.monster_at(tx, ty)
+
+    def melee(self, target):
+        """The player's melee attack on `target` (a bump, or a spear's
+        reach), with the equipped weapon's effects. Arrows don't come
+        through here: a bow shot is one plain attack().
+
+        - strikes (the rapier's 2): that many separate attack() calls --
+          each its own crit roll, damage reduction, log line and Hit --
+          stopping early if the target dies.
+        - cleave (the Great Sword): one more living monster is hit by the
+          same blow, with its own attack(). "Nearby" means ORTHOGONALLY
+          ADJACENT TO THE PLAYER (Entity.is_adjacent) -- not to the target,
+          and never diagonal or two tiles off -- i.e. a monster the player
+          could have bumped instead. If several qualify, only the first in
+          entity order is hit ("a 2nd adjacent foe"). It still swings
+          through if the main target died.
+        """
+        weapon = self.player.weapon
+        strikes = weapon.strikes if weapon is not None else 1
+        for _ in range(strikes):
+            if not target.alive:
+                break
+            self.attack(self.player, target)
+        if weapon is not None and weapon.cleave:
+            other = next((e for e in self.entities
+                          if isinstance(e, Monster) and e.alive and e is not target
+                          and e.is_adjacent(self.player)), None)
+            if other is not None:
+                self.log(f'Your swing carries on into {other.name}.')
+                self.attack(self.player, other)
 
     def open_chest(self, chest):
         """Open a chest and remove it from the map. Its contents are rolled

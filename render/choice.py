@@ -7,6 +7,7 @@ same numbers, in the same order. Geometry is each renderer's own business
 cell version, which curses uses.
 """
 
+from game.item import GEAR_SLOTS
 from render.base import Action
 
 TITLE = 'Choose one'
@@ -14,17 +15,39 @@ HINT = 'press 1, 2 or 3'
 # Action -> index into pending_choice; GameState.handle_action uses the same order.
 CHOOSE_ACTIONS = (Action.CHOOSE_1, Action.CHOOSE_2, Action.CHOOSE_3)
 
-STAT_WORDS = {'weapon': 'damage', 'armor': 'defence'}
 JUNK_STAT = 'nothing useful'
 JUNK_RARITY = 'junk'
 
 
+def _effect_text(item):
+    """The weapon type's special effect, or None for a plain weapon/armor."""
+    if item.max_hp_bonus:
+        return f'+{item.max_hp_bonus} HP'
+    if item.strikes > 1:
+        return 'strikes twice' if item.strikes == 2 else f'strikes {item.strikes}x'
+    if item.cleave:
+        return 'hits a 2nd adjacent foe'
+    if item.defense_bonus:
+        return f'+{item.defense_bonus} defence'
+    if item.crit_bonus:
+        return f'+{round(item.crit_bonus * 100)}% crit'
+    if item.reach > 1:
+        return f'reach {item.reach}'
+    return None
+
+
 def stat_text(item):
-    """'+N damage' / '+N defence', or 'nothing useful' for junk."""
-    word = STAT_WORDS.get(item.kind)
-    if word is None or item.bonus is None:
+    """'+N damage' (with the weapon type's effect after a comma, e.g.
+    '-1 damage, strikes twice') / '+N defence', or 'nothing useful' for junk.
+    Every kind in the weapon slot reads 'damage'; armor reads 'defence'."""
+    slot = GEAR_SLOTS.get(item.kind)
+    if slot is None or item.bonus is None:
         return JUNK_STAT
-    return f'+{item.bonus} {word}'
+    if slot == 'armor':
+        return f'+{item.bonus} defence'
+    effect = _effect_text(item)
+    damage = f'{item.bonus:+d} damage'
+    return damage if effect is None else f'{damage}, {effect}'
 
 
 def rarity_text(item):

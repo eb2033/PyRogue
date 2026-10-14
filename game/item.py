@@ -1,8 +1,9 @@
 """Items (spec §6, stretch goal #4) plus a gear/rarity system and chests.
 
 Item kinds: potions (drunk on the spot), gear for the equipment slots --
-weapon (bonus power) and armor (defense, see ARMOR_DEFENSE) -- and junk (a
-dud drop with no stats). Every potion and gear item is tiered Common ->
+the weapon slot (bonus power: the plain 'weapon' kind and the six
+WEAPON_TYPES, each with a special effect from WEAPON_EFFECTS) and armor
+(defense, see ARMOR_DEFENSE) -- and junk (a dud drop with no stats). Every potion and gear item is tiered Common ->
 Uncommon -> Rare -> Epic; rarity drives both the visual color (an int
 color-pair number, same convention Entity.color already uses for
 players/monsters) and the stat payoff.
@@ -45,12 +46,56 @@ GEAR_BONUS = {'common': 1, 'uncommon': 2, 'rare': 4, 'epic': 7}
 # reads from player.defense.
 ARMOR_DEFENSE = {'common': 3, 'uncommon': 6, 'rare': 12, 'epic': 21}
 
-# Gear kinds a gear-chest drop can be, the player slot each one fills, and
-# the rarity -> stat table it uses. Adding a gear kind is data: an entry in
-# each of these, plus its GEAR_NAMES and ITEM_CHARS rows.
-GEAR_KINDS = ['weapon', 'armor']
+# The six weapon types (each fills the weapon slot). Their damage bonus is the
+# GEAR_BONUS table plus a per-kind offset; their special effect is data in
+# WEAPON_EFFECTS below. The plain 'weapon' kind is the original sword line
+# with no effect (old saves hold it, and it still drops).
+WEAPON_TYPES = ['war_axe', 'rapier', 'great_sword', 'sword_shield', 'dagger', 'spear']
+WEAPON_DAMAGE_OFFSET = {'war_axe': -1, 'rapier': -2, 'great_sword': 1,
+                        'sword_shield': 0, 'dagger': -1, 'spear': 0}
+AXE_MAX_HP = {'common': 3, 'uncommon': 6, 'rare': 9, 'epic': 15}
+# The requested 1/2/3 shield defense, x3 for the ARMOR_DEFENSE rescale, with
+# epic continuing the step as the 4th value.
+SHIELD_DEFENSE = {'common': 3, 'uncommon': 6, 'rare': 9, 'epic': 12}
+# Added to the player's crit chance (game.state.crit_chance), capped at 1.0 there.
+DAGGER_CRIT = {'common': 0.05, 'uncommon': 0.10, 'rare': 0.15, 'epic': 0.20}
+RAPIER_STRIKES = 2
+SPEAR_REACH = 2
+# Whatever the weapon's bonus, the player's power never drops below this.
+MIN_POWER = 1
+
+# What a weapon does beyond its damage bonus. Every Item carries all of
+# these attributes (EFFECT_DEFAULTS for anything not listed), so code reads
+# player.weapon.reach and friends directly. A value is either a constant or a
+# rarity table. Effects come from (kind, rarity) when the Item is built, so
+# a save only needs the kind and rarity.
+EFFECT_DEFAULTS = {'max_hp_bonus': 0, 'strikes': 1, 'cleave': False,
+                   'defense_bonus': 0, 'crit_bonus': 0.0, 'reach': 1}
+WEAPON_EFFECTS = {
+    'war_axe': {'max_hp_bonus': AXE_MAX_HP},
+    'rapier': {'strikes': RAPIER_STRIKES},
+    'great_sword': {'cleave': True},
+    'sword_shield': {'defense_bonus': SHIELD_DEFENSE},
+    'dagger': {'crit_bonus': DAGGER_CRIT},
+    'spear': {'reach': SPEAR_REACH},
+}
+
+# Gear kinds, the player slot each one fills, and the rarity -> stat table it
+# uses (for anything in the weapon slot, the stat is its power bonus). Adding
+# a gear kind is data: an entry in each of these, plus its GEAR_NAMES and
+# ITEM_CHARS rows.
+GEAR_KINDS = ['weapon', 'armor'] + WEAPON_TYPES
 GEAR_SLOTS = {'weapon': 'weapon', 'armor': 'armor'}
+GEAR_SLOTS.update({kind: 'weapon' for kind in WEAPON_TYPES})
 GEAR_STATS = {'weapon': GEAR_BONUS, 'armor': ARMOR_DEFENSE}
+GEAR_STATS.update({kind: {r: GEAR_BONUS[r] + WEAPON_DAMAGE_OFFSET[kind] for r in RARITIES}
+                   for kind in WEAPON_TYPES})
+
+# The kinds a gear-chest (or boss-chest) drop picks from, uniformly. This is
+# the one place to rebalance drops: repeat a kind to weight it up, or leave
+# one out to stop it dropping (it still loads from a save). Uniform over the
+# 8 GEAR_KINDS makes armor 1 drop in 8.
+GEAR_DROP_KINDS = list(GEAR_KINDS)
 
 GEAR_NAMES = {
     ('weapon', 'common'): 'Rusty Dagger',
@@ -61,6 +106,30 @@ GEAR_NAMES = {
     ('armor', 'uncommon'): 'Leather Armor',
     ('armor', 'rare'): 'Chainmail',
     ('armor', 'epic'): 'Plate of the Ancients',
+    ('war_axe', 'common'): 'Worn War Axe',
+    ('war_axe', 'uncommon'): 'Iron War Axe',
+    ('war_axe', 'rare'): 'Steel War Axe',
+    ('war_axe', 'epic'): 'Skullsplitter Axe',
+    ('rapier', 'common'): 'Bent Rapier',
+    ('rapier', 'uncommon'): 'Iron Rapier',
+    ('rapier', 'rare'): "Duelist's Rapier",
+    ('rapier', 'epic'): 'Whisperthorn Rapier',
+    ('great_sword', 'common'): 'Notched Great Sword',
+    ('great_sword', 'uncommon'): 'Iron Great Sword',
+    ('great_sword', 'rare'): 'Steel Great Sword',
+    ('great_sword', 'epic'): 'Oathbreaker Great Sword',
+    ('sword_shield', 'common'): 'Sword & Buckler',
+    ('sword_shield', 'uncommon'): 'Sword & Shield',
+    ('sword_shield', 'rare'): "Knight's Sword & Shield",
+    ('sword_shield', 'epic'): 'Aegis Sword & Shield',
+    ('dagger', 'common'): 'Chipped Dagger',
+    ('dagger', 'uncommon'): 'Iron Dagger',
+    ('dagger', 'rare'): "Assassin's Dagger",
+    ('dagger', 'epic'): 'Nightfang Dagger',
+    ('spear', 'common'): 'Wooden Spear',
+    ('spear', 'uncommon'): 'Iron Spear',
+    ('spear', 'rare'): 'Steel Spear',
+    ('spear', 'epic'): 'Skypiercer Spear',
 }
 POTION_NAMES = {
     'common': 'potion of healing',
@@ -68,7 +137,10 @@ POTION_NAMES = {
     'rare': 'superior potion of healing',
     'epic': 'elixir of vitality',
 }
+# The weapon types never lie on the map (they only appear in a chest's
+# choice), but share the weapon glyph so every Item still has a tiled char.
 ITEM_CHARS = {'potion': '!', 'weapon': '/', 'armor': '['}
+ITEM_CHARS.update({kind: '/' for kind in WEAPON_TYPES})
 
 # Junk: a dud chest drop. No rarity, no stats; picking it only logs a line.
 # Its char is deliberately not in ITEM_CHARS -- junk only ever appears in a
@@ -116,21 +188,43 @@ def roll_kind(rng=random):
 
 
 def roll_gear_drop(depth=1, rng=random):
-    """One gear-chest drop: junk with JUNK_CHANCE, else a random GEAR_KINDS
-    piece at a depth-scaled rarity."""
+    """One gear-chest drop: junk with JUNK_CHANCE, else a random
+    GEAR_DROP_KINDS piece at a depth-scaled rarity."""
     if rng.random() < JUNK_CHANCE:
         return Item(0, 0, JUNK)
-    return Item(0, 0, rng.choice(GEAR_KINDS), roll_rarity(depth, rng))
+    return Item(0, 0, rng.choice(GEAR_DROP_KINDS), roll_rarity(depth, rng))
 
 
 def roll_boss_drop(rng=random):
     """One boss-chest drop: always gear, always rare or epic, never junk."""
     rarity = rng.choices(BOSS_CHEST_MIN_RARITIES, weights=BOSS_CHEST_MIN_WEIGHTS)[0]
-    return Item(0, 0, rng.choice(GEAR_KINDS), rarity)
+    return Item(0, 0, rng.choice(GEAR_DROP_KINDS), rarity)
+
+
+def _effect_value(value, rarity):
+    return value[rarity] if isinstance(value, dict) else value
+
+
+def gear_defense(player):
+    """The player's defense from what is equipped: the armor's, plus a
+    shield's (Sword & Shield, weapon slot) -- the two stack."""
+    armor = player.armor.bonus if player.armor is not None else 0
+    shield = player.weapon.defense_bonus if player.weapon is not None else 0
+    return armor + shield
+
+
+def gear_power(player):
+    """base_power plus the weapon's bonus (which can be negative: rapier,
+    dagger and war axe), never below MIN_POWER."""
+    bonus = player.weapon.bonus if player.weapon is not None else 0
+    return max(MIN_POWER, player.base_power + bonus)
 
 
 class Item(Entity):
     def __init__(self, x, y, kind='potion', rarity='common'):
+        # Weapon effects, defaulted for every item (see WEAPON_EFFECTS).
+        for attr, default in EFFECT_DEFAULTS.items():
+            setattr(self, attr, default)
         if kind == JUNK:
             # Junk has no rarity and no stats, whatever rarity was passed.
             super().__init__(x, y, JUNK_CHAR, color=JUNK_COLOR, name=JUNK_NAME)
@@ -150,6 +244,8 @@ class Item(Entity):
         super().__init__(x, y, char, color=RARITY_COLOR[rarity], name=name)
         self.kind = kind
         self.rarity = rarity
+        for attr, value in WEAPON_EFFECTS.get(kind, {}).items():
+            setattr(self, attr, _effect_value(value, rarity))
 
     @property
     def is_gear(self):
@@ -173,10 +269,18 @@ class Item(Entity):
         slot = GEAR_SLOTS[self.kind]
         old = getattr(player, slot)
         setattr(player, slot, self)
-        if slot == 'weapon':
-            player.power = player.base_power + self.bonus
-        else:
-            player.defense = self.bonus
+        # Max HP (War Axe): the old piece's bonus comes off and the new one's
+        # goes on, to max_hp and to hp alike, so swapping is never a heal.
+        # hp is then clamped to [1, max_hp]: losing an axe can't kill.
+        delta = self.max_hp_bonus - (old.max_hp_bonus if old is not None else 0)
+        if delta:
+            player.max_hp += delta
+            player.hp = max(1, min(player.max_hp, player.hp + delta))
+        # Power and defense are recomputed from everything equipped, so no
+        # effect of the replaced piece lingers. Crit, reach, strikes and
+        # cleave are read off player.weapon when they are used.
+        player.power = gear_power(player)
+        player.defense = gear_defense(player)
         player.inventory.append(self.name)
         if old is not None:
             log(f'You swap {old.name} for {self.name} ({self.rarity}).')
