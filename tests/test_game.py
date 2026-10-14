@@ -992,6 +992,53 @@ class ChestChoiceTests(unittest.TestCase):
         state.handle_action('quit')
         self.assertFalse(state.running)
 
+    def test_digit_while_choosing_picks_that_card(self):
+        items = [Item(0, 0, 'armor', 'rare'), Item(0, 0, 'weapon', 'epic'), Item(0, 0, JUNK)]
+        state = self.state_with_choice(list(items))
+        self.assertFalse(state.handle_action('choose_2'))  # takes no turn
+        self.assertFalse(state.is_choosing)
+        self.assertIs(state.player.weapon, items[1])
+        self.assertIsNone(state.player.armor)
+        self.assertFalse(state.monster_phase_pending())
+
+        state = self.state_with_choice(list(items))
+        state.handle_action('choose_1')
+        self.assertIs(state.player.armor, items[0])
+
+    def test_digit_while_not_choosing_does_nothing(self):
+        random.seed(65)
+        state = GameState(50, 20)
+        start = (state.player.x, state.player.y, state.player.weapon, len(state.messages))
+        for action in ('choose_1', 'choose_2', 'choose_3'):
+            self.assertFalse(state.handle_action(action))
+        self.assertEqual((state.player.x, state.player.y, state.player.weapon,
+                          len(state.messages)), start)
+        self.assertFalse(state.monster_phase_pending())
+
+    def test_bad_index_from_input_is_harmless(self):
+        # Fewer offers than keys: '3' must not raise out of handle_action.
+        state = self.state_with_choice([Item(0, 0, JUNK), Item(0, 0, JUNK)])
+        self.assertFalse(state.handle_action('choose_3'))
+        self.assertTrue(state.is_choosing)
+        with self.assertRaises(ValueError):
+            state.choose(2)  # direct callers still get the error
+
+    def test_save_and_load_still_work_while_choosing(self):
+        import tempfile
+        from game import state as state_module
+        with tempfile.TemporaryDirectory() as tmp:
+            old = state_module.SAVE_PATH
+            state_module.SAVE_PATH = os.path.join(tmp, 'save.json')
+            try:
+                state = self.state_with_choice([Item(0, 0, JUNK)] * 3)
+                state.handle_action('save')
+                self.assertEqual(state.messages[-1], 'Game saved.')
+                state.handle_action('load')
+                self.assertEqual(state.messages[-1], 'Game loaded.')
+                self.assertTrue(state.is_choosing)
+            finally:
+                state_module.SAVE_PATH = old
+
     def test_boss_chest_in_play_offers_rare_or_epic_without_junk(self):
         random.seed(64)
         state = GameState(50, 20)

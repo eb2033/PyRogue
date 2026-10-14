@@ -60,6 +60,13 @@ SHOOT_DELTAS = {
     'shoot_e': (1, 0),
 }
 
+# Keys 1-3 on a chest's choice screen -> index into pending_choice.
+CHOOSE_INDEX = {
+    'choose_1': 0,
+    'choose_2': 1,
+    'choose_3': 2,
+}
+
 # class name -> (hp, power). Archers hit softer but get a free ranged option;
 # warriors are the straightforward melee bruiser the spec describes.
 CLASS_STATS = {
@@ -172,6 +179,13 @@ class GameState:
             return False
 
         if self.game_over:
+            return False
+
+        if action in CHOOSE_INDEX:
+            # Only means something on a choice screen; never takes a turn.
+            index = CHOOSE_INDEX[action]
+            if self.is_choosing and index < len(self.pending_choice):
+                self.choose(index)
             return False
 
         if self.is_choosing:

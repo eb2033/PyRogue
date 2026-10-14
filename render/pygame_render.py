@@ -26,7 +26,7 @@ os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
 import pygame
 
 from game.paths import resource_path
-from render import camera, input_map, palette, screens, ui
+from render import camera, choice, input_map, palette, screens, ui
 from render.banner import render_banner
 from render.base import Action, Renderer
 from render.menu import Menu
@@ -99,6 +99,9 @@ class PygameRenderer(Renderer):
         self._proj = None
         self._animating = False
         self._zoomed_glyphs = {}
+        # The state last drawn: get_action needs to know whether a chest's
+        # choice is on screen, the one time a mouse click means something.
+        self._state = None
 
     @staticmethod
     def _set_mode(size, flags):
@@ -254,6 +257,7 @@ class PygameRenderer(Renderer):
     def draw(self, state):
         """Play whatever the combat camera stages (impacts, then a pan), then
         show the frame. With nothing to stage this is just the paint."""
+        self._state = state
         for beat in self.director.plan(state):
             if isinstance(beat, camera.Impact):
                 self._play(self.impact_ms,
@@ -333,6 +337,8 @@ class PygameRenderer(Renderer):
             self._proj = None
 
         ui.paint_panel(self.canvas, state)
+        if state.is_choosing:
+            screens.paint_choice(self.canvas, state)
         if state.game_over:
             screens.paint_game_over(self.canvas, state)
 
@@ -458,10 +464,21 @@ class PygameRenderer(Renderer):
     # -- input ----------------------------------------------------------------
 
     def get_action(self):
-        event = self._wait_key()
-        if event is None:
-            return Action.QUIT
-        return input_map.lookup(event)
+        """The next key's Action. Gameplay is keyboard-only; the exception is
+        a chest's choice on screen, where a left click on a card is that
+        card's CHOOSE_* (a click anywhere else, or a motion, is ignored)."""
+        while True:
+            state = self._state
+            choosing = state is not None and state.is_choosing
+            event = self._wait_input(mouse=choosing) if choosing else self._wait_key()
+            if event is None:
+                return Action.QUIT
+            if event.type == pygame.KEYDOWN:
+                return input_map.lookup(event)
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                hit = screens.choice_card_at(self.layout, state, event.pos)
+                if hit is not None and hit < len(choice.CHOOSE_ACTIONS):
+                    return choice.CHOOSE_ACTIONS[hit]
 
     def pause(self, ms):
         """Hold the frame for `ms` while keeping the window serviced.

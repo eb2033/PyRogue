@@ -550,6 +550,109 @@ class TileModeTest(unittest.TestCase):
             renderer.close()
 
 
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
+class ChestChoiceScreenTest(unittest.TestCase):
+    """The "choose one of three" overlay: drawn while state.is_choosing,
+    answered with 1/2/3 or a left click on a card."""
+
+    tiles = False
+
+    def setUp(self):
+        import random
+        from game.item import Item, JUNK
+        tileset = None
+        if self.tiles:
+            from game.paths import resource_path
+            from render.tileset import Tileset
+            tileset = Tileset(resource_path('assets'))
+        self.renderer = PygameRenderer(WIDTH, HEIGHT, tileset=tileset)
+        self.renderer._set_mode((1600, 900), pygame.RESIZABLE)
+        self.renderer._relayout()
+        pygame.event.clear()
+        random.seed(70)
+        self.state = GameState(WIDTH, HEIGHT)
+        self.items = [Item(0, 0, 'armor', 'rare'), Item(0, 0, 'weapon', 'epic'),
+                      Item(0, 0, JUNK)]
+        self.state.pending_choice = list(self.items)
+
+    def tearDown(self):
+        self.renderer.close()
+
+    def click(self, pos, button=1):
+        pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=pos, button=button))
+
+    def cards(self):
+        return screens.choice_rects(self.renderer.layout, self.state)[1]
+
+    def test_frame_while_choosing_differs_from_one_without(self):
+        box = screens.choice_rects(self.renderer.layout, self.state)[0]
+        self.renderer.draw(self.state)
+        with_choice = cell_pixels(self.renderer, box, as_list=True)
+        pending, self.state.pending_choice = self.state.pending_choice, None
+        self.renderer.draw(self.state)
+        without = cell_pixels(self.renderer, box, as_list=True)
+        self.state.pending_choice = pending
+        self.assertNotEqual(with_choice, without)
+
+    def test_three_cards_inside_the_box_and_apart(self):
+        box, cards, _ = screens.choice_rects(self.renderer.layout, self.state)
+        self.assertEqual(len(cards), 3)
+        for i, card in enumerate(cards):
+            self.assertTrue(box.contains(card))
+            for other in cards[i + 1:]:
+                self.assertFalse(card.colliderect(other))
+
+    def test_clicking_a_card_chooses_it(self):
+        self.renderer.draw(self.state)
+        self.click(self.cards()[1].center)
+        action = self.renderer.get_action()
+        self.assertEqual(action, Action.CHOOSE_2)
+        self.state.handle_action(action)
+        self.assertFalse(self.state.is_choosing)
+        self.assertIs(self.state.player.weapon, self.items[1])
+
+    def test_clicking_outside_the_cards_does_nothing(self):
+        self.renderer.draw(self.state)
+        box = screens.choice_rects(self.renderer.layout, self.state)[0]
+        self.click((box.left + 2, box.top + 2))          # the box, not a card
+        self.click((0, 0))                              # off the box entirely
+        self.click(self.cards()[0].center, button=3)    # right click
+        pygame.event.post(pygame.event.Event(pygame.MOUSEMOTION, pos=self.cards()[0].center,
+                                             rel=(1, 1), buttons=(0, 0, 0)))
+        pygame.event.post(key(pygame.K_PERIOD, '.'))
+        self.assertEqual(self.renderer.get_action(), Action.WAIT)
+        self.assertTrue(self.state.is_choosing)
+
+    def test_keyboard_2_chooses_the_second_item(self):
+        self.renderer.draw(self.state)
+        pygame.event.post(key(pygame.K_2, '2'))
+        self.state.handle_action(self.renderer.get_action())
+        self.assertIs(self.state.player.weapon, self.items[1])
+        self.assertIsNone(self.state.player.armor)
+
+    def test_card_clicks_mean_nothing_once_the_choice_is_made(self):
+        self.renderer.draw(self.state)
+        center = self.cards()[0].center
+        self.state.choose(2)
+        self.renderer.draw(self.state)
+        self.click(center)
+        pygame.event.post(key(pygame.K_d, 'd'))
+        self.assertEqual(self.renderer.get_action(), Action.MOVE_E)
+
+    def test_narrow_map_stacks_the_cards(self):
+        renderer = self.renderer
+        renderer._set_mode((420, 700), pygame.RESIZABLE)
+        renderer._relayout()
+        box, cards, compact = screens.choice_rects(renderer.layout, self.state)
+        if compact:
+            self.assertTrue(cards[0].bottom <= cards[1].top <= cards[1].bottom <= cards[2].top)
+        renderer.draw(self.state)  # paints without error either way
+
+
+class TileModeChestChoiceScreenTest(ChestChoiceScreenTest):
+    tiles = True
+
+
 class DefaultRendererTest(unittest.TestCase):
     """main.default_renderer: a frozen (--windowed) exe has no terminal."""
 

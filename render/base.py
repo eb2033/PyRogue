@@ -24,6 +24,11 @@ class Action:
     SAVE = 'save'
     LOAD = 'load'
     QUIT = 'quit'
+    # Keys 1-3: take that card of an opened chest's choice (GameState.choose).
+    # Outside a choice they do nothing.
+    CHOOSE_1 = 'choose_1'
+    CHOOSE_2 = 'choose_2'
+    CHOOSE_3 = 'choose_3'
 
 
 class Renderer:
