@@ -66,6 +66,13 @@ CLASS_STATS = {
 DEFAULT_CLASS = 'warrior'
 
 
+def _describe(item):
+    """Short label for an item offered in a chest choice."""
+    if item.rarity is None:
+        return item.name
+    return f'{item.name} ({item.rarity})'
+
+
 class GameState:
     def __init__(self, width, height, fov_radius=6, char_class=DEFAULT_CLASS):
         self.width = width
@@ -79,6 +86,9 @@ class GameState:
         # the player acts; the serial keeps counting across rounds and levels.
         self.combat_events = []
         self._hit_serial = 0
+        # Items an opened gear chest is offering, or None. While set, the
+        # player must choose() one before anything else happens.
+        self.pending_choice = None
 
         self.game_map, self.rooms = generate_dungeon(width, height)
         place_stairs(self.game_map, self.rooms)
@@ -151,6 +161,9 @@ class GameState:
         if self.game_over:
             return False
 
+        if self.is_choosing:
+            return False  # a chest's choice must be made first: see choose()
+
         if action in MOVE_DELTAS:
             dx, dy = MOVE_DELTAS[action]
             self.try_move_player(dx, dy)
@@ -192,13 +205,43 @@ class GameState:
             self.open_chest(chest)
 
     def open_chest(self, chest):
-        """Roll the item table (depth-scaled -- see game/item.py) and apply
-        whatever comes out immediately, same as walking onto a bare item
-        used to work."""
+        """Open a chest and remove it from the map. Its contents are rolled
+        now, against the current depth (see game/item.py). A potion chest's
+        potion is drunk at once; a gear or boss chest's drops become
+        `pending_choice`, and the player must choose() one of them."""
         self.log('You open the chest.')
-        item = chest.open(self.depth)
-        item.apply(self.player, self.log)
+        items = chest.open(self.depth)
         self.entities.remove(chest)
+        if not chest.offers_choice:
+            for item in items:
+                item.apply(self.player, self.log)
+            return
+        self.pending_choice = items
+        self.log('Choose one: ' + ', '.join(_describe(i) for i in items) + '.')
+
+    @property
+    def is_choosing(self):
+        """True while an opened chest is waiting for the player to pick an
+        item. Movement and every other turn action are blocked meanwhile."""
+        return self.pending_choice is not None
+
+    def choose(self, index):
+        """Take item `index` (0-based) of the pending chest choice.
+
+        Gear always equips into its slot, replacing (and discarding) what was
+        there -- the player chose it, so there is no "only if better" check.
+        Junk only logs a line. The other offers are lost. There is no cancel:
+        a choice stays pending until one is taken. Takes no turn.
+        Raises ValueError if nothing is pending or `index` is out of range.
+        """
+        if self.pending_choice is None:
+            raise ValueError('no chest choice is pending')
+        if not 0 <= index < len(self.pending_choice):
+            raise ValueError(f'choice index out of range: {index!r}')
+        item = self.pending_choice[index]
+        self.pending_choice = None
+        item.x, item.y = self.player.x, self.player.y
+        item.apply(self.player, self.log)
 
     def shoot_arrow(self, dx, dy):
         """Archer-only ranged attack: travels in a straight line until it
@@ -234,6 +277,7 @@ class GameState:
         self.seen = [[False] * self.width for _ in range(self.height)]
 
         self.cancel_monster_phase()
+        self.pending_choice = None
         self.entities = [self.player] + self._spawn_level_monsters() + spawn_chests(self.rooms)
         if is_boss_level(self.depth):
             self.log(f'You descend to level {self.depth}. Something powerful lurks here...')

@@ -78,6 +78,10 @@ def state_to_dict(state):
             'inventory': list(state.player.inventory),
         },
         'entities': [_entity_to_dict(e) for e in state.entities if e is not state.player],
+        # An opened chest's offers, stored like equipped gear (kind + rarity;
+        # junk has rarity None). None when no choice is pending.
+        'pending_choice': (None if state.pending_choice is None
+                           else [_gear_to_dict(i) for i in state.pending_choice]),
     }
 
 
@@ -100,10 +104,19 @@ def apply_dict(state, data):
     state.player.hp, state.player.max_hp = p['hp'], p['max_hp']
     state.player.base_power = p.get('base_power', p['power'])
     state.player.power = p['power']
-    state.player.defense = p.get('defense', 0)
     state.player.weapon = _gear_from_dict(p.get('weapon'))
     state.player.armor = _gear_from_dict(p.get('armor'))
+    # Defense comes from the armor, so derive it from the armor's current
+    # table: a save from before ARMOR_DEFENSE stored the old, smaller value.
+    if state.player.armor is not None:
+        state.player.defense = state.player.armor.bonus
+    else:
+        state.player.defense = p.get('defense', 0)
     state.player.inventory = list(p['inventory'])
+
+    # Saves from before chest choices have no field: nothing pending.
+    pending = data.get('pending_choice')
+    state.pending_choice = None if pending is None else [_gear_from_dict(d) for d in pending]
 
     state.cancel_monster_phase()  # queued monsters belong to the discarded level
     state.entities = [state.player] + [_entity_from_dict(d) for d in data['entities']]

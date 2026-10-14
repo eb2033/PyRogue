@@ -16,9 +16,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from game.dungeon import generate_dungeon, make_empty_map, place_doors, place_stairs, wall_sides
 from game.entity import Entity
 from game.fov import compute_fov, update_visibility
-from game.item import (CHEST_COLOR, Chest, ITEM_KIND_WEIGHTS, Item, MAX_SCALING_DEPTH,
+from game.item import (ARMOR_DEFENSE, CHEST_COLOR, Chest, GEAR_BONUS, GEAR_CHEST_DROPS,
+                       GEAR_KINDS, Item, JUNK, JUNK_CHANCE, JUNK_NAME, MAX_SCALING_DEPTH,
                        POTION_CHEST_COLOR, RARITIES, rarity_weights_for_depth, roll_rarity,
-                       spawn_chests)
+                       spawn_boss_chest, spawn_chests)
 from game.monster import (BOSS_REFERENCE_KIND, MONSTER_TYPES, ORTHOGONAL_STEPS, Monster,
                           is_boss_level, scale_stats, spawn_boss, spawn_monsters,
                           tier_for_depth)
@@ -367,15 +368,27 @@ class GameStateIntegrationTests(unittest.TestCase):
         self.assertTrue(state.game_over)
         self.assertEqual(state.messages[-1], 'You died.')
 
-    def test_chest_pickup_rolls_an_item_and_fills_inventory(self):
+    def test_potion_chest_pickup_rolls_a_potion_and_fills_inventory(self):
         random.seed(10)
         state = GameState(50, 20)
-        chest = Chest(state.player.x + 1, state.player.y)
+        chest = Chest(state.player.x + 1, state.player.y, kind='potion')
         state.entities = [state.player, chest]
         state.try_move_player(1, 0)
         self.assertEqual(len(state.player.inventory), 1)
         self.assertNotIn(chest, state.entities)
         self.assertIn('You open the chest.', state.messages)
+        self.assertFalse(state.is_choosing)
+
+    def test_walking_onto_a_gear_chest_offers_a_choice(self):
+        random.seed(15)
+        state = GameState(50, 20)
+        chest = Chest(state.player.x + 1, state.player.y, kind='gear')
+        state.entities = [state.player, chest]
+        state.try_move_player(1, 0)
+        self.assertNotIn(chest, state.entities)
+        self.assertTrue(state.is_choosing)
+        self.assertEqual(len(state.pending_choice), GEAR_CHEST_DROPS)
+        self.assertEqual(state.player.inventory, [])  # nothing auto-equipped
 
     def test_descend_regenerates_level_and_moves_player(self):
         random.seed(11)
@@ -632,7 +645,9 @@ class GearTests(unittest.TestCase):
         self.assertIs(state.player.weapon, w2)
         self.assertIn('swap', state.messages[-1])
 
-    def test_worse_weapon_is_left_behind(self):
+    def test_worse_weapon_still_replaces_the_old_one(self):
+        # Gear is chosen now (GameState.choose), so applying it always
+        # equips -- the old "leave it if yours is better" rule is gone.
         random.seed(53)
         state = GameState(50, 20)
         base_power = state.player.power
@@ -640,25 +655,46 @@ class GearTests(unittest.TestCase):
         epic.apply(state.player, state.log)
         common = Item(state.player.x, state.player.y, 'weapon', 'common')
         common.apply(state.player, state.log)
-        self.assertIs(state.player.weapon, epic)
-        self.assertEqual(state.player.power, base_power + epic.bonus)
-        self.assertNotIn(common.name, state.player.inventory)
-        self.assertIn('leave', state.messages[-1])
+        self.assertIs(state.player.weapon, common)
+        self.assertEqual(state.player.power, base_power + common.bonus)
+        self.assertIn('swap', state.messages[-1])
 
-    def test_equal_or_worse_armor_is_left_behind(self):
+    def test_worse_armor_still_replaces_the_old_one(self):
         random.seed(54)
         state = GameState(50, 20)
-        rare = Item(state.player.x, state.player.y, 'armor', 'rare')
-        rare.apply(state.player, state.log)
+        Item(state.player.x, state.player.y, 'armor', 'rare').apply(state.player, state.log)
         for rarity in ('common', 'uncommon', 'rare'):
-            Item(state.player.x, state.player.y, 'armor', rarity).apply(state.player, state.log)
-            self.assertIs(state.player.armor, rare)
-            self.assertEqual(state.player.defense, rare.bonus)
+            armor = Item(state.player.x, state.player.y, 'armor', rarity)
+            armor.apply(state.player, state.log)
+            self.assertIs(state.player.armor, armor)
+            self.assertEqual(state.player.defense, ARMOR_DEFENSE[rarity])
+
+    def test_armor_defense_table(self):
+        self.assertEqual(ARMOR_DEFENSE, {'common': 3, 'uncommon': 6, 'rare': 12, 'epic': 21})
+        for rarity in RARITIES:
+            self.assertEqual(Item(0, 0, 'armor', rarity).bonus, ARMOR_DEFENSE[rarity])
+            # Weapons keep the old power table.
+            self.assertEqual(Item(0, 0, 'weapon', rarity).bonus, GEAR_BONUS[rarity])
+        self.assertEqual(GEAR_BONUS, {'common': 1, 'uncommon': 2, 'rare': 4, 'epic': 7})
+
+    def test_equipping_armor_sets_defense_from_the_table(self):
+        random.seed(56)
+        state = GameState(50, 20)
+        Item(0, 0, 'armor', 'epic').apply(state.player, state.log)
+        self.assertEqual(state.player.defense, 21)
+
+    def test_junk_item_has_no_stats(self):
+        junk = Item(0, 0, JUNK)
+        self.assertEqual(junk.name, JUNK_NAME)
+        self.assertEqual(junk.name, 'Rusty scrap')
+        self.assertIsNone(junk.rarity)
+        self.assertIsNone(junk.bonus)
+        self.assertFalse(junk.is_gear)
 
     def test_armor_reduces_incoming_damage_with_floor_of_one(self):
         random.seed(44)
         state = GameState(50, 20)
-        armor = Item(state.player.x, state.player.y, 'armor', 'epic')  # +7 defense
+        armor = Item(state.player.x, state.player.y, 'armor', 'epic')  # 21 defense
         armor.apply(state.player, state.log)
         m = Monster(state.player.x + 1, state.player.y, 'goblin')  # power 2, less than defense
         state.entities = [state.player, m]
@@ -730,9 +766,11 @@ class DifficultyScalingTests(unittest.TestCase):
         drops = [e for e in state.entities if isinstance(e, Chest)]
         self.assertEqual(len(drops), 1)
         self.assertEqual(drops[0].guaranteed_min_rarity, 'rare')
+        self.assertTrue(drops[0].offers_choice)
         # Even opened at depth 1, a boss chest ignores the depth-scaled table.
         for _ in range(20):
-            self.assertIn(drops[0].open(depth=1).rarity, ('rare', 'epic'))
+            for item in drops[0].open(depth=1):
+                self.assertIn(item.rarity, ('rare', 'epic'))
 
 
 class ChestTests(unittest.TestCase):
@@ -745,31 +783,99 @@ class ChestTests(unittest.TestCase):
         for c in chests:
             self.assertFalse(rooms[0].x1 <= c.x < rooms[0].x2 and rooms[0].y1 <= c.y < rooms[0].y2)
 
-    def test_regular_chest_open_returns_valid_kind_and_rarity(self):
-        chest = Chest(0, 0)
+    def test_regular_chest_open_returns_valid_kinds_and_rarities(self):
         rng = random.Random(51)
-        for depth in (1, 5, 10, 25):
-            item = chest.open(depth, rng=rng)
-            self.assertIn(item.kind, ITEM_KIND_WEIGHTS)
-            self.assertIn(item.rarity, RARITIES)
+        for kind in ('potion', 'gear'):
+            chest = Chest(0, 0, kind=kind)
+            for depth in (1, 5, 10, 25):
+                for item in chest.open(depth, rng=rng):
+                    self.assertIn(item.kind, ['potion', JUNK] + GEAR_KINDS)
+                    if item.kind != JUNK:
+                        self.assertIn(item.rarity, RARITIES)
 
     def test_chest_kind_is_fixed_at_spawn_and_sets_its_color(self):
         potion = Chest(0, 0, kind='potion')
-        weapon = Chest(0, 0, kind='weapon')
-        armor = Chest(0, 0, kind='armor')
+        gear = Chest(0, 0, kind='gear')
         self.assertEqual(potion.color, POTION_CHEST_COLOR)
-        self.assertEqual(weapon.color, CHEST_COLOR)
-        self.assertEqual(armor.color, CHEST_COLOR)
+        self.assertEqual(gear.color, CHEST_COLOR)
+        self.assertFalse(potion.offers_choice)
+        self.assertTrue(gear.offers_choice)
         rng = random.Random(55)
-        for chest in (potion, weapon, armor):
-            for depth in (1, 10):
-                self.assertEqual(chest.open(depth, rng=rng).kind, chest.kind)
+        for depth in (1, 10):
+            potions = potion.open(depth, rng=rng)
+            self.assertEqual([i.kind for i in potions], ['potion'])
+            for item in gear.open(depth, rng=rng):
+                self.assertIn(item.kind, [JUNK] + GEAR_KINDS)
+
+    def test_old_weapon_and_armor_chest_kinds_become_gear(self):
+        # Saves from before gear chests were merged stored 'weapon'/'armor'.
+        for kind in ('weapon', 'armor'):
+            chest = Chest(0, 0, kind=kind)
+            self.assertEqual(chest.kind, 'gear')
+            self.assertEqual(chest.color, CHEST_COLOR)
+
+    def test_gear_chest_opens_to_three_choices(self):
+        rng = random.Random(57)
+        chest = Chest(0, 0, kind='gear')
+        for depth in (1, 8, 30):
+            self.assertEqual(len(chest.open(depth, rng=rng)), 3)
+        self.assertEqual(GEAR_CHEST_DROPS, 3)
 
     def test_boss_chest_ignores_depth_scaling(self):
         chest = Chest(0, 0, guaranteed_min_rarity='rare')
         rng = random.Random(52)
         for _ in range(30):
-            self.assertIn(chest.open(depth=1, rng=rng).rarity, ('rare', 'epic'))
+            for item in chest.open(depth=1, rng=rng):
+                self.assertIn(item.rarity, ('rare', 'epic'))
+
+    def test_boss_chest_offers_three_rare_or_epic_gear_and_no_junk(self):
+        chest = spawn_boss_chest(0, 0)
+        self.assertEqual(chest.kind, 'gear')
+        rng = random.Random(58)
+        for depth in (1, 8, 30):
+            for _ in range(200):
+                items = chest.open(depth, rng=rng)
+                self.assertEqual(len(items), 3)
+                for item in items:
+                    self.assertNotEqual(item.kind, JUNK)
+                    self.assertIn(item.kind, GEAR_KINDS)
+                    self.assertIn(item.rarity, ('rare', 'epic'))
+
+    def test_junk_rate_is_about_fifteen_percent_and_flat_with_depth(self):
+        self.assertEqual(JUNK_CHANCE, 0.15)
+        chest = Chest(0, 0, kind='gear')
+        rates = {}
+        for depth in (1, MAX_SCALING_DEPTH, 50):
+            rng = random.Random(59 + depth)
+            drops = [item for _ in range(3000) for item in chest.open(depth, rng=rng)]
+            rates[depth] = sum(1 for i in drops if i.kind == JUNK) / len(drops)
+        # 9000 drops each: the standard error is ~0.004, so 0.02 is generous.
+        for depth, rate in rates.items():
+            self.assertAlmostEqual(rate, JUNK_CHANCE, delta=0.02, msg=f'depth {depth}')
+
+    def test_gear_chests_spawn_about_point_four_per_floor(self):
+        # Synthetic floors of 4-6 rooms (what generate_dungeon produces on the
+        # default maps) -- real generation is ~8 ms a map, too slow for 5000.
+        rng = random.Random(60)
+        floors = 5000
+        gear = potion = 0
+        for _ in range(floors):
+            rooms = [Rect(1 + 7 * i, 1, 6, 6) for i in range(rng.randint(4, 6))]
+            for chest in spawn_chests(rooms, rng=rng):
+                if chest.kind == 'gear':
+                    gear += 1
+                else:
+                    potion += 1
+        self.assertAlmostEqual(gear / floors, 0.4, delta=0.05)
+        # Potion chests keep the old rate: 0.25 per room past the first.
+        self.assertAlmostEqual(potion / floors, 1.0, delta=0.1)
+
+    def test_spawn_chests_on_real_floors_has_at_most_one_gear_chest(self):
+        random.seed(61)
+        for _ in range(100):
+            _, rooms = generate_dungeon(40, 20)
+            gear = [c for c in spawn_chests(rooms) if c.kind == 'gear']
+            self.assertLessEqual(len(gear), 1)
 
     def test_rarity_weights_shift_toward_better_loot_with_depth(self):
         shallow = rarity_weights_for_depth(1)
@@ -788,15 +894,112 @@ class ChestTests(unittest.TestCase):
         deep_epics = sum(1 for _ in range(500) if roll_rarity(MAX_SCALING_DEPTH, random.Random()) == 'epic')
         self.assertGreater(deep_epics, shallow_epics)
 
-    def test_open_chest_removes_it_and_applies_the_item(self):
+    def test_open_potion_chest_removes_it_and_applies_the_potion(self):
         random.seed(53)
         state = GameState(50, 20)
-        chest = Chest(state.player.x, state.player.y)
+        chest = Chest(state.player.x, state.player.y, kind='potion')
         state.entities = [state.player, chest]
         before = len(state.player.inventory)
         state.open_chest(chest)
         self.assertNotIn(chest, state.entities)
         self.assertEqual(len(state.player.inventory), before + 1)
+        self.assertIsNone(state.pending_choice)
+
+
+class ChestChoiceTests(unittest.TestCase):
+    """A gear chest offers three items; the player must choose() one."""
+
+    def state_with_choice(self, items, seed=62):
+        random.seed(seed)
+        state = GameState(50, 20)
+        state.entities = [state.player]
+        state.pending_choice = items
+        return state
+
+    def test_open_gear_chest_sets_pending_choice_and_equips_nothing(self):
+        random.seed(63)
+        state = GameState(50, 20)
+        chest = Chest(state.player.x, state.player.y, kind='gear')
+        state.entities = [state.player, chest]
+        state.open_chest(chest)
+        self.assertNotIn(chest, state.entities)
+        self.assertTrue(state.is_choosing)
+        self.assertEqual(len(state.pending_choice), 3)
+        self.assertIsNone(state.player.weapon)
+        self.assertIsNone(state.player.armor)
+        self.assertTrue(state.messages[-1].startswith('Choose one:'))
+
+    def test_choose_equips_the_chosen_item_and_discards_the_old_one(self):
+        old = Item(0, 0, 'weapon', 'epic')
+        state = self.state_with_choice([Item(0, 0, 'armor', 'rare'),
+                                        Item(0, 0, 'weapon', 'common'),
+                                        Item(0, 0, JUNK)])
+        old.apply(state.player, state.log)
+        new = state.pending_choice[1]
+        state.choose(1)
+        self.assertFalse(state.is_choosing)
+        self.assertIsNone(state.pending_choice)
+        # Equipped even though it is worse: the player picked it.
+        self.assertIs(state.player.weapon, new)
+        self.assertEqual(state.player.power, state.player.base_power + GEAR_BONUS['common'])
+        self.assertIsNone(state.player.armor)  # the unchosen armor is lost
+
+    def test_choose_armor_sets_defense_from_the_table(self):
+        state = self.state_with_choice([Item(0, 0, 'armor', 'uncommon'),
+                                        Item(0, 0, JUNK), Item(0, 0, JUNK)])
+        state.choose(0)
+        self.assertEqual(state.player.defense, ARMOR_DEFENSE['uncommon'])
+
+    def test_choosing_junk_only_logs(self):
+        state = self.state_with_choice([Item(0, 0, JUNK), Item(0, 0, 'weapon', 'epic'),
+                                        Item(0, 0, 'armor', 'epic')])
+        before = (state.player.power, state.player.defense, state.player.weapon,
+                  state.player.armor, list(state.player.inventory), state.player.hp)
+        n_messages = len(state.messages)
+        state.choose(0)
+        after = (state.player.power, state.player.defense, state.player.weapon,
+                 state.player.armor, list(state.player.inventory), state.player.hp)
+        self.assertEqual(before, after)
+        self.assertFalse(state.is_choosing)
+        self.assertEqual(len(state.messages), n_messages + 1)
+        self.assertIn(JUNK_NAME, state.messages[-1])
+
+    def test_choose_rejects_bad_index_and_no_pending_choice(self):
+        state = self.state_with_choice([Item(0, 0, JUNK)] * 3)
+        with self.assertRaises(ValueError):
+            state.choose(3)
+        self.assertTrue(state.is_choosing)  # still pending: no cancel
+        state.choose(2)
+        with self.assertRaises(ValueError):
+            state.choose(0)
+
+    def test_pending_choice_blocks_movement_and_turns(self):
+        state = self.state_with_choice([Item(0, 0, JUNK)] * 3)
+        state.game_map[state.player.y][state.player.x + 1] = FLOOR
+        start = (state.player.x, state.player.y)
+        for action in ('move_e', 'shoot_e', 'wait', 'descend'):
+            self.assertFalse(state.handle_action(action))
+            self.assertEqual((state.player.x, state.player.y), start)
+            self.assertFalse(state.monster_phase_pending())
+        state.choose(0)
+        self.assertTrue(state.handle_action('move_e'))
+        self.assertEqual((state.player.x, state.player.y), (start[0] + 1, start[1]))
+
+    def test_pending_choice_still_allows_quit(self):
+        state = self.state_with_choice([Item(0, 0, JUNK)] * 3)
+        state.handle_action('quit')
+        self.assertFalse(state.running)
+
+    def test_boss_chest_in_play_offers_rare_or_epic_without_junk(self):
+        random.seed(64)
+        state = GameState(50, 20)
+        chest = spawn_boss_chest(state.player.x, state.player.y)
+        state.entities = [state.player, chest]
+        state.open_chest(chest)
+        self.assertEqual(len(state.pending_choice), 3)
+        for item in state.pending_choice:
+            self.assertIn(item.kind, GEAR_KINDS)
+            self.assertIn(item.rarity, ('rare', 'epic'))
 
 
 class SaveLoadTests(unittest.TestCase):
@@ -863,6 +1066,50 @@ class SaveLoadTests(unittest.TestCase):
         self.assertEqual(loaded_chests[0].kind, 'potion')
         self.assertEqual(loaded_chests[0].color, POTION_CHEST_COLOR)
         self.assertEqual((loaded_chests[0].x, loaded_chests[0].y), (chest.x, chest.y))
+
+    def test_pending_choice_round_trips(self):
+        random.seed(65)
+        state = GameState(50, 20)
+        state.pending_choice = [Item(0, 0, 'weapon', 'rare'), Item(0, 0, JUNK),
+                                Item(0, 0, 'armor', 'epic')]
+
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'save.json')
+            save_game(state, path)
+            fresh = GameState(50, 20)
+            apply_dict(fresh, load_game(path))
+
+        self.assertTrue(fresh.is_choosing)
+        self.assertEqual([(i.kind, i.rarity) for i in fresh.pending_choice],
+                         [('weapon', 'rare'), (JUNK, None), ('armor', 'epic')])
+        fresh.choose(2)
+        self.assertEqual(fresh.player.defense, ARMOR_DEFENSE['epic'])
+
+    def test_no_pending_choice_saves_as_none(self):
+        random.seed(66)
+        state = GameState(50, 20)
+        self.assertIsNone(state_to_dict(state)['pending_choice'])
+
+    def test_old_save_without_pending_choice_loads(self):
+        random.seed(67)
+        state = GameState(50, 20)
+        data = state_to_dict(state)
+        del data['pending_choice']
+        # An old save also stored armor defense from the old GEAR_BONUS
+        # table, and gear chests as 'weapon'/'armor'.
+        data['player']['armor'] = {'kind': 'armor', 'rarity': 'rare'}
+        data['player']['defense'] = 4
+        data['entities'] = [{'type': 'chest', 'x': state.player.x + 1, 'y': state.player.y,
+                             'char': '=', 'color': CHEST_COLOR, 'name': 'chest',
+                             'guaranteed_min_rarity': None, 'kind': 'weapon'}]
+        fresh = GameState(50, 20)
+        fresh.pending_choice = [Item(0, 0, JUNK)] * 3  # must be cleared by the load
+        apply_dict(fresh, data)
+        self.assertIsNone(fresh.pending_choice)
+        self.assertFalse(fresh.is_choosing)
+        self.assertEqual(fresh.player.defense, ARMOR_DEFENSE['rare'])
+        chests = [e for e in fresh.entities if isinstance(e, Chest)]
+        self.assertEqual(chests[0].kind, 'gear')
 
 
 class CombatEventTests(unittest.TestCase):
