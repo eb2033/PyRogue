@@ -490,6 +490,28 @@ class TileModeTest(unittest.TestCase):
         self.assertTrue(frames)
         self.assertIs(frames[0][0].defender, state.player)
 
+    def test_crit_number_is_bigger_yellow_with_black_outline(self):
+        from render.pygame_render import CRIT_OUTLINE_RGB, CRIT_RGB
+        r = self.renderer
+        self.assertGreater(r._glyph('-12', CRIT_RGB, bold=True, scale=2).get_height(),
+                           r._glyph('-12', CRIT_RGB, bold=True).get_height())
+        state, goblin = self.fight()
+        r.draw(state)
+        state.player.power = 5
+        with mock.patch('game.state.BASE_CRIT_CHANCE', 1.0):
+            state.attack(state.player, goblin)
+        hit = state.combat_events[-1]
+        self.assertTrue(hit.crit)
+        r.canvas.surface.fill((50, 50, 50))
+        r._paint_impact(hit, 0.0)
+        rect = r._map_cell_rect(hit.x, hit.y)
+        area = r.canvas.surface.subsurface(rect.inflate(rect.width, rect.height)
+                                           .clip(r.canvas.surface.get_rect()))
+        pixels = {tuple(area.get_at((x, y)))[:3]
+                  for x in range(area.get_width()) for y in range(area.get_height())}
+        self.assertIn(CRIT_RGB, pixels)
+        self.assertIn(CRIT_OUTLINE_RGB, pixels)
+
     def test_char_without_a_tile_is_drawn_as_its_glyph(self):
         state = GameState(WIDTH, HEIGHT)
         stranger = Monster(state.player.x + 1, state.player.y, 'goblin')

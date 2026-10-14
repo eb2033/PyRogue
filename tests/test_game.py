@@ -10,6 +10,7 @@ import random
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -25,7 +26,8 @@ from game.monster import (BOSS_REFERENCE_KIND, MONSTER_TYPES, ORTHOGONAL_STEPS, 
                           tier_for_depth)
 from game.rect import Rect
 from game.save import apply_dict, load_game, save_game, state_to_dict
-from game.state import GameState
+from game.damage import mitigate, round_damage
+from game.state import BASE_CRIT_CHANCE, CRIT_MULTIPLIER, GameState, crit_chance
 from game.tiles import DOOR, FLOOR, STAIRS_DOWN, WALL, is_walkable
 
 
@@ -1127,7 +1129,8 @@ class CombatEventTests(unittest.TestCase):
     def test_attack_records_a_hit(self):
         self.goblin.hp = 2
         self.state.player.power = 5
-        self.state.attack(self.state.player, self.goblin)
+        with mock.patch('game.state.BASE_CRIT_CHANCE', 0.0):  # no random crit
+            self.state.attack(self.state.player, self.goblin)
         (hit,) = self.state.combat_events
         self.assertIs(hit.attacker, self.state.player)
         self.assertIs(hit.defender, self.goblin)
@@ -1149,6 +1152,95 @@ class CombatEventTests(unittest.TestCase):
         self.goblin.y -= 1
         self.goblin.alive = False
         self.assertEqual(self.state.melee_opponents(), [])
+
+
+class CritAndReductionTests(unittest.TestCase):
+    def setUp(self):
+        self.state = GameState(50, 20)
+        p = self.state.player
+        self.goblin = Monster(p.x + 1, p.y, 'goblin')
+        self.goblin.hp = self.goblin.max_hp = 10 ** 6
+        p.hp = p.max_hp = 10 ** 6
+        self.state.entities = [p, self.goblin]
+
+    def hit(self, attacker, defender, crit):
+        """One attack with the crit roll forced either way."""
+        with mock.patch('game.state.BASE_CRIT_CHANCE', 1.0 if crit else 0.0):
+            self.state.attack(attacker, defender)
+        return self.state.combat_events[-1]
+
+    def test_constants(self):
+        self.assertEqual(BASE_CRIT_CHANCE, 0.10)
+        self.assertEqual(CRIT_MULTIPLIER, 1.5)
+        self.assertEqual(crit_chance(self.state.player), BASE_CRIT_CHANCE)
+
+    def test_defense_zero_non_crit_is_full_power(self):
+        self.state.player.power = 7
+        self.goblin.defense = 0
+        hit = self.hit(self.state.player, self.goblin, False)
+        self.assertEqual(hit.damage, 7)
+        self.assertFalse(hit.crit)
+        self.assertIsInstance(hit.damage, int)
+
+    def test_monster_hit_on_armored_player_is_reduced(self):
+        p = self.state.player
+        p.defense = 10  # 50% reduction
+        self.goblin.power = 7  # 3.5 -> probabilistic
+        random.seed(5)
+        expected = []
+        rng_probe = random.Random()
+        rng_probe.setstate(random.getstate())
+        for _ in range(5):
+            expected.append(round_damage(mitigate(7, 10), rng_probe))
+        got = []
+        for _ in range(5):
+            before = p.hp
+            self.state.attack(self.goblin, p)
+            got.append(before - p.hp)
+        self.assertEqual(got, expected)
+        self.assertTrue(all(d in (3, 4) for d in got))
+
+    def test_player_crit_chance_is_about_ten_percent(self):
+        random.seed(123)
+        self.state.player.power = 10
+        crits = 0
+        n = 4000
+        for _ in range(n):
+            self.state.attack(self.state.player, self.goblin)
+            crits += self.state.combat_events[-1].crit
+        self.assertTrue(0.07 < crits / n < 0.13, crits / n)
+
+    def test_monsters_never_crit(self):
+        random.seed(1)
+        with mock.patch('game.state.BASE_CRIT_CHANCE', 1.0):
+            for _ in range(300):
+                self.state.attack(self.goblin, self.state.player)
+                self.assertFalse(self.state.combat_events[-1].crit)
+        self.assertNotIn('Critical hit!', self.state.messages)
+
+    def test_crit_multiplies_raw_before_reduction(self):
+        self.state.player.power = 10
+        self.goblin.defense = 10  # 50%: 10 -> 5, crit 15 -> 7.5
+        random.seed(9)
+        hits = [self.hit(self.state.player, self.goblin, True).damage for _ in range(200)]
+        self.assertTrue(all(d in (7, 8) for d in hits))
+        self.assertGreater(len(set(hits)), 1)
+        self.assertAlmostEqual(sum(hits) / len(hits), 7.5, delta=0.5)
+
+    def test_crit_hit_is_flagged_and_logged(self):
+        self.state.player.power = 4
+        hit = self.hit(self.state.player, self.goblin, True)
+        self.assertTrue(hit.crit)
+        self.assertEqual(hit.damage, 6)
+        self.assertIn('Critical hit!', self.state.messages)
+        self.assertIn('You hit goblin for 6.', self.state.messages)
+
+    def test_arrow_can_crit(self):
+        self.state.player.char_class = 'archer'
+        self.state.player.power = 4
+        with mock.patch('game.state.BASE_CRIT_CHANCE', 1.0):
+            self.state.shoot_arrow(1, 0)
+        self.assertTrue(self.state.combat_events[-1].crit)
 
 
 if __name__ == '__main__':

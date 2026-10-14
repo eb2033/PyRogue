@@ -51,6 +51,11 @@ REPAINT_EVENTS = (
 )
 
 
+# Critical-hit damage numbers: bright yellow with a black outline.
+CRIT_RGB = (255, 235, 40)
+CRIT_OUTLINE_RGB = (0, 0, 0)
+
+
 class PygameRenderer(Renderer):
     def __init__(self, width, height, tileset=None, font_path=None,
                  combat_zoom=True, zoom_ms=ZOOM_MS, impact_ms=IMPACT_MS):
@@ -353,10 +358,23 @@ class PygameRenderer(Renderer):
         flash = pygame.Surface(rect.size, pygame.SRCALPHA)
         flash.fill((*palette.DANGER, round(IMPACT_FLASH_ALPHA * (1 - t))))
         self.canvas.surface.blit(flash, rect)
-        number = self._glyph(f'-{hit.damage}', palette.brighten(palette.DANGER), bold=True)
         rise = round(rect.height * 0.5 * t)
-        self.canvas.surface.blit(number, number.get_rect(
-            midbottom=(rect.centerx, rect.top + rect.height // 3 - rise)))
+        midbottom = (rect.centerx, rect.top + rect.height // 3 - rise)
+        text = f'-{hit.damage}'
+        if getattr(hit, 'crit', False):
+            # Double size, bright yellow, black outline.
+            number = self._glyph(text, CRIT_RGB, bold=True, scale=2)
+            outline = self._glyph(text, CRIT_OUTLINE_RGB, bold=True, scale=2)
+            at = number.get_rect(midbottom=midbottom)
+            stroke = max(1, number.get_height() // 16)
+            for dx in (-stroke, 0, stroke):
+                for dy in (-stroke, 0, stroke):
+                    if dx or dy:
+                        self.canvas.surface.blit(outline, at.move(dx, dy))
+            self.canvas.surface.blit(number, at)
+            return
+        number = self._glyph(text, palette.brighten(palette.DANGER), bold=True)
+        self.canvas.surface.blit(number, number.get_rect(midbottom=midbottom))
 
     # -- map cells ------------------------------------------------------------
 
@@ -396,13 +414,16 @@ class PygameRenderer(Renderer):
         source = self.tileset.glyph(char, color_index, self.tileset.cell, dim)
         return None if source is None else pygame.transform.scale(source, (size, size))
 
-    def _glyph(self, text, rgb, bold=False, underline=False):
+    def _glyph(self, text, rgb, bold=False, underline=False, scale=1):
         """`text` rendered for a map cell at the current view: the layout's
         font when unzoomed, a proportionally bigger one when zoomed in."""
         if self._proj is None:
-            return self.canvas.text_surface(text, rgb, bold=bold, underline=underline)
-        zoom = self._proj[1] / self.layout.map_cell_size()[1]
-        size = max(ui.MIN_FONT_SIZE, round(self.layout.font_size * zoom))
+            if scale == 1:
+                return self.canvas.text_surface(text, rgb, bold=bold, underline=underline)
+            size = max(ui.MIN_FONT_SIZE, round(self.layout.font_size * scale))
+        else:
+            zoom = self._proj[1] / self.layout.map_cell_size()[1]
+            size = max(ui.MIN_FONT_SIZE, round(self.layout.font_size * zoom * scale))
         key = (text, rgb, size, bold, underline)
         glyph = self._zoomed_glyphs.get(key)
         if glyph is None:

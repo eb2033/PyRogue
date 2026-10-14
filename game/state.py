@@ -13,8 +13,11 @@ the monsters still queued never act. end_turn() runs both halves back to back
 for callers that don't care about the split (tests, headless use).
 """
 
+import random
+
 from game import paths
 from game.combat import Hit
+from game.damage import mitigate, round_damage
 from game.dungeon import generate_dungeon, place_stairs
 from game.entity import Entity
 from game.fov import update_visibility
@@ -71,6 +74,16 @@ def _describe(item):
     if item.rarity is None:
         return item.name
     return f'{item.name} ({item.rarity})'
+
+
+# Chance that a player hit is critical; weapon bonuses (dagger) add to this later.
+BASE_CRIT_CHANCE = 0.10
+# A crit multiplies raw damage by this BEFORE defense reduction.
+CRIT_MULTIPLIER = 1.5
+
+
+def crit_chance(attacker):
+    return BASE_CRIT_CHANCE
 
 
 class GameState:
@@ -287,15 +300,22 @@ class GameState:
 
     def attack(self, attacker, defender):
         defense = getattr(defender, 'defense', 0)
-        damage = max(1, attacker.power - defense)
+        raw = attacker.power
+        # Only the player crits (monsters never do); arrows are player hits too.
+        crit = attacker is self.player and random.random() < crit_chance(attacker)
+        if crit:
+            raw = raw * CRIT_MULTIPLIER
+        damage = round_damage(mitigate(raw, defense))
         defender.hp -= damage
         subject = 'You' if attacker is self.player else attacker.name.capitalize()
         verb = 'hit' if attacker is self.player else 'hits'
         target = 'you' if defender is self.player else defender.name
         self.log(f'{subject} {verb} {target} for {damage}.')
+        if crit:
+            self.log('Critical hit!')
         self._hit_serial += 1
         self.combat_events.append(Hit(self._hit_serial, attacker, defender, damage,
-                                      defender.hp <= 0, defender.x, defender.y))
+                                      defender.hp <= 0, defender.x, defender.y, crit))
         if defender.hp <= 0:
             defender.alive = False
             if defender is not self.player:

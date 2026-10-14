@@ -12,4 +12,6 @@ from collections import namedtuple
 
 # (x, y) is where the defender stood when hit -- still valid once a killed
 # monster has been removed from the entity list.
-Hit = namedtuple('Hit', 'serial attacker defender damage killed x y')
+# `crit` is last and defaults to False so older positional constructions hold.
+Hit = namedtuple('Hit', 'serial attacker defender damage killed x y crit')
+Hit.__new__.__defaults__ = (False,)
