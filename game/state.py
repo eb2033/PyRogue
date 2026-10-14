@@ -511,6 +511,17 @@ class GameState:
                 if isinstance(e, Monster) and e.alive and e.is_adjacent(self.player)
                 and self.visible[e.y][e.x]]
 
+    def zoom_opponents(self):
+        """Who the combat zoom frames: melee_opponents(), plus -- for a
+        reach weapon (the spear) -- every monster _reach_target would hit
+        in one of the four directions. Adjacent ones come first."""
+        found = self.melee_opponents()
+        for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
+            target = self._reach_target(dx, dy)
+            if target is not None and target not in found:
+                found.append(target)
+        return found
+
     def chest_at(self, x, y):
         for e in self.entities:
             if isinstance(e, Chest) and e.x == x and e.y == y:

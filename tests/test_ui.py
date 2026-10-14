@@ -675,5 +675,15 @@ class PanelParityTest(unittest.TestCase):
             self.assertEqual(self.drawn(self.layout.map_rect()), 0)
 
 
+
+class GearLineSignTest(unittest.TestCase):
+    def test_bonus_is_signed_once(self):
+        _, rapier, _ = ui._gear_lines('Weapon', Item(0, 0, 'rapier', 'common'), 'atk')
+        self.assertIn('-1 atk', rapier)
+        self.assertNotIn('+-', rapier)
+        _, sword, _ = ui._gear_lines('Weapon', Item(0, 0, 'great_sword', 'common'), 'atk')
+        self.assertIn('+2 atk', sword)
+
+
 if __name__ == '__main__':
     unittest.main()
