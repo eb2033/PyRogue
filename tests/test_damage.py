@@ -5,8 +5,9 @@ from game import damage
 from game.damage import mitigate, plain_round, reduction, round_damage
 
 
-class FakeRng:
+class FakeRng(random.Random):
     def __init__(self, value):
+        super().__init__()
         self.value = value
 
     def random(self):

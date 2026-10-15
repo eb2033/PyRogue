@@ -14,6 +14,7 @@ for callers that don't care about the split (tests, headless use).
 """
 
 import random
+from typing import Any
 
 from game import paths
 from game.combat import Hit
@@ -128,7 +129,7 @@ class GameState:
         self.turn = 0
         # Items an opened gear chest is offering, or None. While set, the
         # player must choose() one before anything else happens.
-        self.pending_choice = None
+        self.pending_choice: list[Item] | None = None
         # The potion belt: up to BELT_SLOTS potion Items, in order. Potions
         # found at full HP go here; 'drink' takes only belt[0] and the rest
         # shift forward. Empty at the start of a run; kept across floors.
@@ -162,10 +163,12 @@ class GameState:
         self.player.inventory = []
         self.player.alive = True
 
-        self.entities = [self.player] + self._spawn_level_monsters() + spawn_chests(self.rooms)
+        self.entities: list[Any] = (
+            [self.player] + self._spawn_level_monsters() + spawn_chests(self.rooms)
+        )
 
         # Monsters still owing a turn in the current round. See end_player_phase.
-        self._pending_monsters = []
+        self._pending_monsters: list[Monster] = []
 
         self.update_fov()
 
@@ -215,7 +218,7 @@ class GameState:
         if action in CHOOSE_INDEX:
             # Only means something on a choice screen; never takes a turn.
             index = CHOOSE_INDEX[action]
-            if self.is_choosing and index < len(self.pending_choice):
+            if self.pending_choice is not None and index < len(self.pending_choice):
                 self.choose(index)
             return False
 

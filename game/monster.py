@@ -28,6 +28,7 @@ decided by game/spawn.py.
 import random
 
 from game.entity import Entity
+from game.rng import Rng
 from game.tiles import is_walkable
 
 # name -> (char, color, hp, power)
@@ -71,6 +72,8 @@ def is_boss_level(depth):
 
 
 class Monster(Entity):
+    defense: int
+
     def __init__(self, x, y, kind='goblin', depth=1, is_boss=False):
         char, color, base_hp, base_power = MONSTER_TYPES[kind]
         hp, power = scale_stats(base_hp, base_power, depth)
@@ -171,7 +174,7 @@ class Monster(Entity):
         return None
 
 
-def spawn_monsters(rooms, depth=1, rng=random):
+def spawn_monsters(rooms, depth=1, rng: Rng = random):
     """Every enemy on a floor -- one kind per non-start room, plus the boss
     (and its escort) on a boss floor. The rules live in game/spawn.py; this
     is the old entry point, kept for callers that only want the list."""

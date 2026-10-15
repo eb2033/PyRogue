@@ -13,6 +13,7 @@ try:
 except ImportError:  # pragma: no cover - terminal-only checkout
     pygame = None
 
+from typing import Any, cast
 from unittest import mock
 
 from game.item import BELT_SLOTS, POTION_HEAL, Item, belt_slot_label
@@ -77,15 +78,14 @@ class TileLayoutTest(unittest.TestCase):
 
     def test_map_cells_are_square_tiles(self):
         self.layout.fit((1600, 900))
-        self.assertIn(self.layout.tile, ui.TILE_SIZES)
-        self.assertEqual(self.layout.map_cell_size(), (self.layout.tile, self.layout.tile))
-        self.assertEqual(
-            self.layout.map_rect().size, (WIDTH * self.layout.tile, HEIGHT * self.layout.tile)
-        )
+        tile = cast(int, self.layout.tile)
+        self.assertIn(tile, ui.TILE_SIZES)
+        self.assertEqual(self.layout.map_cell_size(), (tile, tile))
+        self.assertEqual(self.layout.map_rect().size, (WIDTH * tile, HEIGHT * tile))
         x0, y0 = self.layout.map_cell_to_pixel(0, 0)
         self.assertEqual(
             self.layout.map_cell_to_pixel(3, 2),
-            (x0 + 3 * self.layout.tile, y0 + 2 * self.layout.tile),
+            (x0 + 3 * tile, y0 + 2 * tile),
         )
 
     def test_bigger_window_never_gets_smaller_tiles(self):
@@ -467,7 +467,7 @@ class NoticeboardTest(unittest.TestCase):
     def test_common_window_sizes_get_bigger_tiles(self):
         for size, tile in [((1280, 720), 24), ((1600, 900), 32), ((1920, 1080), 40)]:
             with self.subTest(size=size):
-                self.assertGreaterEqual(fitted(size, tiles=True).tile, tile)
+                self.assertGreaterEqual(cast(int, fitted(size, tiles=True).tile), tile)
 
     def test_board_and_page_are_drawn_behind_the_text(self):
         for tiles, size in [(False, (1280, 720)), (True, (1920, 1080)), (True, (600, 1000))]:
@@ -708,7 +708,7 @@ class PanelParityTest(unittest.TestCase):
                 self.paint(state, tiles, size)
                 class_row, items_row = self.row_bytes(1), self.row_bytes(4)
                 state.depth += 1
-                state.player.inventory.append(Item(0, 0))
+                state.player.inventory.append(Item(0, 0).name)
                 self.paint(state, tiles, size)
                 self.assertNotEqual(self.row_bytes(1), class_row)
                 self.assertNotEqual(self.row_bytes(4), items_row)
@@ -818,10 +818,11 @@ class CursesBeltTest(unittest.TestCase):
         state = GameState(WIDTH, HEIGHT)
         state.belt[:] = belt
         renderer = curses_render.CursesRenderer.__new__(curses_render.CursesRenderer)
-        renderer.stdscr = _FakeScreen()
+        screen = _FakeScreen()
+        renderer.stdscr = cast(Any, screen)
         with mock.patch.object(curses_render.curses, 'color_pair', lambda n: n << 8):
             renderer._draw_panel(state)
-        return state, renderer.stdscr.writes
+        return state, screen.writes
 
     def belt_writes(self, writes):
         row = 6 + 3  # gear_start + 3, as in PanelParityTest's row test

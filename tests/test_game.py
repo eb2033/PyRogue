@@ -10,6 +10,7 @@ import random
 import sys
 import tempfile
 import unittest
+from typing import cast
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -837,7 +838,7 @@ class GameStateIntegrationTests(unittest.TestCase):
         state.try_move_player(1, 0)
         self.assertNotIn(chest, state.entities)
         self.assertTrue(state.is_choosing)
-        self.assertEqual(len(state.pending_choice), GEAR_CHEST_DROPS)
+        self.assertEqual(len(cast(list[Item], state.pending_choice)), GEAR_CHEST_DROPS)
         self.assertEqual(state.player.inventory, [])  # nothing auto-equipped
 
     def test_descend_regenerates_level_and_moves_player(self):
@@ -1084,7 +1085,7 @@ class GearTests(unittest.TestCase):
         weapon = Item(0, 0, 'weapon', 'rare')
         weapon.apply(state.player, state.log)
         self.assertIs(state.player.weapon, weapon)
-        self.assertEqual(state.player.power, base_power + weapon.bonus)
+        self.assertEqual(state.player.power, base_power + cast(int, weapon.bonus))
 
     def test_swapping_weapon_does_not_stack_bonus(self):
         random.seed(43)
@@ -1094,7 +1095,7 @@ class GearTests(unittest.TestCase):
         w1.apply(state.player, state.log)
         w2 = Item(state.player.x, state.player.y, 'weapon', 'epic')
         w2.apply(state.player, state.log)
-        self.assertEqual(state.player.power, base_power + w2.bonus)
+        self.assertEqual(state.player.power, base_power + cast(int, w2.bonus))
         self.assertIs(state.player.weapon, w2)
         self.assertIn('swap', state.messages[-1])
 
@@ -1109,7 +1110,7 @@ class GearTests(unittest.TestCase):
         common = Item(state.player.x, state.player.y, 'weapon', 'common')
         common.apply(state.player, state.log)
         self.assertIs(state.player.weapon, common)
-        self.assertEqual(state.player.power, base_power + common.bonus)
+        self.assertEqual(state.player.power, base_power + cast(int, common.bonus))
         self.assertIn('swap', state.messages[-1])
 
     def test_worse_armor_still_replaces_the_old_one(self):
@@ -1583,7 +1584,7 @@ class ChestChoiceTests(unittest.TestCase):
         state.open_chest(chest)
         self.assertNotIn(chest, state.entities)
         self.assertTrue(state.is_choosing)
-        self.assertEqual(len(state.pending_choice), 3)
+        self.assertEqual(len(cast(list[Item], state.pending_choice)), 3)
         self.assertIs(state.player.weapon, starting)  # the starting weapon, untouched
         self.assertIsNone(state.player.armor)
         self.assertTrue(state.messages[-1].startswith('Choose one:'))
@@ -1719,7 +1720,7 @@ class ChestChoiceTests(unittest.TestCase):
         chest = spawn_boss_chest(state.player.x, state.player.y)
         state.entities = [state.player, chest]
         state.open_chest(chest)
-        self.assertEqual(len(state.pending_choice), 3)
+        self.assertEqual(len(cast(list[Item], state.pending_choice)), 3)
         for item in state.pending_choice:
             self.assertIn(item.kind, GEAR_KINDS)
             self.assertIn(item.rarity, ('rare', 'epic'))
@@ -1767,7 +1768,7 @@ class SaveLoadTests(unittest.TestCase):
 
         self.assertEqual(fresh.player.weapon.rarity, 'rare')
         self.assertEqual(fresh.player.armor.rarity, 'uncommon')
-        self.assertEqual(fresh.player.power, fresh.player.base_power + weapon.bonus)
+        self.assertEqual(fresh.player.power, fresh.player.base_power + cast(int, weapon.bonus))
         self.assertEqual(fresh.player.defense, armor.bonus)
 
     def test_chest_on_the_map_round_trips(self):

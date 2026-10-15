@@ -24,8 +24,10 @@ the pick always equips, replacing whatever was in that slot.
 """
 
 import random
+from typing import cast
 
 from game.entity import Entity
+from game.rng import Rng
 
 RARITIES = ['common', 'uncommon', 'rare', 'epic']
 
@@ -205,24 +207,24 @@ def rarity_weights_for_depth(depth):
     ]
 
 
-def roll_rarity(depth=1, rng=random):
+def roll_rarity(depth=1, rng: Rng = random):
     return rng.choices(RARITIES, weights=rarity_weights_for_depth(depth))[0]
 
 
-def roll_kind(rng=random):
+def roll_kind(rng: Rng = random):
     """Potion or gear, 50/50. Only used for a chest loaded from a save that
     predates chest kinds; new chests get their kind from spawn_chests."""
     return rng.choice(CHEST_KINDS)
 
 
-def roll_gear_kind(armor_chance, rng=random):
+def roll_gear_kind(armor_chance, rng: Rng = random):
     """Armor with probability armor_chance, otherwise a weapon type picked evenly."""
     if rng.random() < armor_chance:
         return 'armor'
     return rng.choice(WEAPON_TYPES)
 
 
-def roll_gear_drop(depth=1, rng=random):
+def roll_gear_drop(depth=1, rng: Rng = random):
     """One gear-chest drop: junk with JUNK_CHANCE, else a gear piece at a
     depth-scaled rarity. Armor is ARMOR_DROP_CHANCE of ALL drops, so among the
     non-junk ones it is ARMOR_DROP_CHANCE / (1 - JUNK_CHANCE)."""
@@ -232,7 +234,7 @@ def roll_gear_drop(depth=1, rng=random):
     return Item(0, 0, roll_gear_kind(armor_of_gear, rng), roll_rarity(depth, rng))
 
 
-def roll_boss_drop(rng=random):
+def roll_boss_drop(rng: Rng = random):
     """One boss-chest drop: always gear, always rare or epic, never junk, so
     armor is ARMOR_DROP_CHANCE of them directly."""
     rarity = rng.choices(BOSS_CHEST_MIN_RARITIES, weights=BOSS_CHEST_MIN_WEIGHTS)[0]
@@ -267,6 +269,16 @@ def gear_power(player):
 
 
 class Item(Entity):
+    kind: str
+    rarity: str | None
+    bonus: int | None
+    max_hp_bonus: int
+    strikes: int
+    cleave: bool
+    defense_bonus: int
+    crit_bonus: float
+    reach: int
+
     def __init__(self, x, y, kind='potion', rarity='common'):
         # Weapon effects, defaulted for every item (see WEAPON_EFFECTS).
         for attr, default in EFFECT_DEFAULTS.items():
@@ -306,7 +318,7 @@ class Item(Entity):
             return
 
         if self.kind == 'potion':
-            healed = min(POTION_HEAL[self.rarity], player.max_hp - player.hp)
+            healed = min(POTION_HEAL[cast(str, self.rarity)], player.max_hp - player.hp)
             player.hp += healed
             player.inventory.append(self.name)
             log(f'You drink a {self.name} and recover {healed} HP.')
@@ -346,7 +358,7 @@ class Chest(Entity):
     (spec-follow-up: "guaranteed rare drop").
     """
 
-    def __init__(self, x, y, guaranteed_min_rarity=None, kind=None, rng=random):
+    def __init__(self, x, y, guaranteed_min_rarity=None, kind=None, rng: Rng = random):
         if kind is None:
             kind = 'gear' if guaranteed_min_rarity else roll_kind(rng)
         elif kind in GEAR_SLOTS:
@@ -361,7 +373,7 @@ class Chest(Entity):
         """True if opening this chest asks the player to pick one item."""
         return self.kind != 'potion'
 
-    def open(self, depth, rng=random):
+    def open(self, depth, rng: Rng = random):
         """Roll the contents. Returns a list of Items: one potion for a
         potion chest, GEAR_CHEST_DROPS choices for a gear or boss chest."""
         if self.kind == 'potion':
@@ -381,7 +393,7 @@ def _place_chest(room, kind, occupied, rng):
     return None
 
 
-def spawn_chests(rooms, rng=random):
+def spawn_chests(rooms, rng: Rng = random):
     """Chests for a fresh level, never in rooms[0] (the player's start): a
     potion chest per room with POTION_CHEST_CHANCE_PER_ROOM, and at most one
     gear chest per floor with GEAR_CHEST_CHANCE_PER_FLOOR."""

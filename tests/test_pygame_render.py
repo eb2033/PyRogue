@@ -9,6 +9,7 @@ import collections
 import os
 import sys
 import unittest
+from typing import Any, cast
 from unittest import mock
 
 os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
@@ -190,7 +191,7 @@ class PygameRendererTest(unittest.TestCase):
         self.renderer.toggle_fullscreen()
         cell = self.renderer.layout.cell_rect(state.player.x, state.player.y)
         self.assertTrue(
-            cell_pixels(self.renderer, cell) - {BACKGROUND},
+            set(cell_pixels(self.renderer, cell)) - {BACKGROUND},
             'frame not repainted after going fullscreen',
         )
 
@@ -262,10 +263,11 @@ class PygameRendererTest(unittest.TestCase):
         self.renderer.draw(GameState(WIDTH, HEIGHT))
 
     def test_make_renderer_uses_the_bundled_font(self):
-        renderer = main.make_renderer('pygame', WIDTH, HEIGHT)
+        renderer = cast(PygameRenderer, main.make_renderer('pygame', WIDTH, HEIGHT))
         try:
-            self.assertTrue(renderer.layout.font_path.endswith(main.BUNDLED_FONT))
-            self.assertTrue(os.path.isfile(renderer.layout.font_path))
+            font_path = cast(str, renderer.layout.font_path)
+            self.assertTrue(font_path.endswith(main.BUNDLED_FONT))
+            self.assertTrue(os.path.isfile(font_path))
         finally:
             renderer.close()
 
@@ -474,7 +476,7 @@ class TileModeTest(unittest.TestCase):
         # area on its tighter axis.
         view = self.renderer._view
         cell, _, ox, oy = camera.project(view, map_rect, layout.map_cell_size())
-        self.assertGreater(cell, layout.tile)
+        self.assertGreater(cell, cast(int, layout.tile))
         self.assertLessEqual(
             min(map_rect.w // cell, map_rect.h // cell) - 1, min(view.width, view.height)
         )
@@ -494,7 +496,7 @@ class TileModeTest(unittest.TestCase):
     def test_zoom_stays_inside_the_map_area(self):
         self.renderer.zoom_ms = self.renderer.impact_ms = 0
         state, _ = self.fight()
-        screen = pygame.display.get_surface()
+        screen = cast(Any, pygame.display.get_surface())
         self.renderer.draw(state)
         self.assertIsNotNone(self.renderer._view)
         zoomed = screen.copy()
@@ -602,7 +604,7 @@ class TileModeTest(unittest.TestCase):
 
     def test_tiles_env_zero_keeps_glyph_mode(self):
         with mock.patch.dict(os.environ, {'TILES': '0'}):
-            renderer = main.make_renderer('pygame', WIDTH, HEIGHT)
+            renderer = cast(PygameRenderer, main.make_renderer('pygame', WIDTH, HEIGHT))
         try:
             self.assertFalse(renderer.layout.tiles)
         finally:
@@ -611,7 +613,7 @@ class TileModeTest(unittest.TestCase):
     def test_make_renderer_uses_the_bundled_tiles_by_default(self):
         with mock.patch.dict(os.environ):
             os.environ.pop('TILES', None)
-            renderer = main.make_renderer('pygame', WIDTH, HEIGHT)
+            renderer = cast(PygameRenderer, main.make_renderer('pygame', WIDTH, HEIGHT))
         try:
             self.assertTrue(renderer.layout.tiles)
         finally:

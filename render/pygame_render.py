@@ -21,6 +21,7 @@ Division of labour with the other render modules:
 import os
 import random
 import warnings
+from typing import cast
 
 os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
 
@@ -65,6 +66,10 @@ REPAINT_EVENTS = (
 # Critical-hit damage numbers: bright yellow with a black outline.
 CRIT_RGB = (255, 235, 40)
 CRIT_OUTLINE_RGB = (0, 0, 0)
+
+
+# (x, y) -> (sprite index, angle, scale) for a boss room's blood decals.
+DecalLayout = dict[tuple[int, int], tuple[int, int, float]]
 
 
 class PygameRenderer(Renderer):
@@ -130,7 +135,9 @@ class PygameRenderer(Renderer):
         # Boss-arena blood: the sprites (loaded on first use), the decal
         # layout per arena, and scaled/rotated sprites.
         self._blood = None
-        self._decal_layouts = {}
+        self._decal_layouts: dict[
+            tuple[int, int, int, int], dict[tuple[int, int], tuple[int, int, float]]
+        ] = {}
         self._decal_sprites = {}
 
     @staticmethod
@@ -143,7 +150,7 @@ class PygameRenderer(Renderer):
 
     def _relayout(self):
         """Pick up the current window surface and size, then repaint."""
-        self.canvas.surface = pygame.display.get_surface()
+        self.canvas.surface = cast(pygame.Surface, pygame.display.get_surface())
         self.layout.fit(self.canvas.surface.get_size())
         self._repaint()
 
@@ -417,7 +424,7 @@ class PygameRenderer(Renderer):
 
     # -- boss arena -----------------------------------------------------------
 
-    def _arena_decals(self, arena):
+    def _arena_decals(self, arena) -> DecalLayout:
         """{(x, y): (sprite index, angle, scale)} for a boss room: fixed by
         the room's corner, so it is the same every frame. Floor is checked at
         paint time (the layout doesn't know the map)."""
@@ -468,7 +475,7 @@ class PygameRenderer(Renderer):
             self._decal_sprites[key] = sprite
         return sprite
 
-    def _paint_arena_floor(self, arena, decals, x, y, dim):
+    def _paint_arena_floor(self, arena, decals: DecalLayout, x, y, dim):
         """On a floor cell already painted: the darker stone of the arena's
         3x3 centre, then any blood decal. Entities are drawn after this."""
         rect = self._map_cell_rect(x, y)

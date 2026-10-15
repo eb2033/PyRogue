@@ -19,8 +19,10 @@ Standard library only, like the rest of game/.
 
 import random
 from collections import namedtuple
+from typing import cast
 
 from game.monster import BOSS_LEVEL_INTERVAL, ORTHOGONAL_STEPS, Monster, is_boss_level, spawn_boss
+from game.rng import Rng
 
 FIRST_BOSS_DEPTH = BOSS_LEVEL_INTERVAL
 
@@ -62,7 +64,7 @@ def rules_for_depth(depth, rules=SPAWN_RULES):
     ]
 
 
-def choose_rule(depth, rng=random, rules=SPAWN_RULES):
+def choose_rule(depth, rng: Rng = random, rules=SPAWN_RULES):
     """The one pack a room gets at this depth, or None if no rule covers it."""
     options = rules_for_depth(depth, rules)
     if not options:
@@ -79,7 +81,7 @@ def _chebyshev(a, b):
     return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
 
 
-def pick_tiles(room, count, rng=random, occupied=(), spread=False):
+def pick_tiles(room, count, rng: Rng = random, occupied=(), spread=False):
     """Up to `count` free tiles of `room`. With spread=True no two picked
     tiles touch, diagonals included. Fewer come back only if the room cannot
     hold them (never for a 4x4+ room and a pack of 3 or less)."""
@@ -95,7 +97,7 @@ def pick_tiles(room, count, rng=random, occupied=(), spread=False):
     return picked
 
 
-def spawn_pack(room, rule, depth, rng=random, occupied=None):
+def spawn_pack(room, rule, depth, rng: Rng = random, occupied=None):
     """One rule's pack in one room. Adds the tiles it uses to `occupied`."""
     occupied = set() if occupied is None else occupied
     tiles = pick_tiles(room, rule.count(depth), rng, occupied, spread=rule.spread)
@@ -103,7 +105,7 @@ def spawn_pack(room, rule, depth, rng=random, occupied=None):
     return [Monster(x, y, rule.kind, depth=depth) for x, y in tiles]
 
 
-def spawn_boss_room(room, depth, rng=random, occupied=None):
+def spawn_boss_room(room, depth, rng: Rng = random, occupied=None):
     """The boss at room.center(), plus BOSS_ESCORTS[depth] orthogonally
     adjacent to it. Adds the tiles used to `occupied`."""
     occupied = set() if occupied is None else occupied
@@ -131,11 +133,11 @@ def spawn_boss_room(room, depth, rng=random, occupied=None):
         rng.shuffle(spots)
         for x, y in spots[:count]:
             occupied.add((x, y))
-            monsters.append(Monster(x, y, kind, depth=depth))
+            monsters.append(Monster(x, y, cast(str, kind), depth=depth))
     return monsters
 
 
-def spawn_level(rooms, depth, rng=random, rules=SPAWN_RULES):
+def spawn_level(rooms, depth, rng: Rng = random, rules=SPAWN_RULES):
     """Every enemy on a floor. Returns (monsters, boss_room), boss_room being
     None off boss floors."""
     occupied = {rooms[0].center()}  # the player's start tile

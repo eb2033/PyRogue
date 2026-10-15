@@ -2,6 +2,8 @@
 
 import random
 
+from game.rng import Rng
+
 # Defense value that gives 50% reduction. The single tuning knob.
 DEFENSE_K = 10
 
@@ -21,7 +23,7 @@ def mitigate(raw, defense, k=DEFENSE_K):
     return max(1.0, raw * (1 - reduction(defense, k)))
 
 
-def round_damage(value, rng=random):
+def round_damage(value, rng: Rng = random):
     """Probabilistic rounding that preserves the average."""
     floor = int(value // 1)
     frac = value - floor
