@@ -103,6 +103,21 @@ class DoorPlacementTests(unittest.TestCase):
                         single_gap = tile != WALL and before == WALL and after == WALL
                         self.assertEqual(single_gap, tile == DOOR, (side[i], tiles))
 
+    def test_no_corridor_turns_through_a_ring_corner_shared_with_another_room(self):
+        """Found by tests/test_properties.py: room A's ring corner was also
+        room B's west wall, so a corridor stepped out of A's south doorway
+        sideways into that corner and on into B, leaving A's door flanked by
+        B's door rather than by wall."""
+        random.seed(115)
+        game_map, _ = generate_dungeon(27, 17)
+        h, w = len(game_map), len(game_map[0])
+        for y in range(1, h - 1):
+            for x in range(1, w - 1):
+                if game_map[y][x] == DOOR:
+                    horizontal = game_map[y][x - 1] == WALL == game_map[y][x + 1]
+                    vertical = game_map[y - 1][x] == WALL == game_map[y + 1][x]
+                    self.assertTrue(horizontal or vertical, (x, y))
+
     def test_a_closed_doorway_hides_the_room_from_the_corridor(self):
         checked = 0
         for game_map, rooms in self.maps(100):

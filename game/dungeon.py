@@ -78,17 +78,23 @@ DOORWAY_COST = 20
 
 
 def _wall_index(rooms):
-    """(sides, corners): every non-corner wall-ring tile mapped to the set of
-    (room, side) it belongs to, and the set of ring corner tiles."""
-    sides, corners = {}, set()
+    """(sides, corners, rings): every non-corner wall-ring tile mapped to the
+    set of (room, side) it belongs to; the set of ring corner tiles; and every
+    ring tile, corners included, mapped to the set of rooms whose ring it is
+    part of."""
+    sides, corners, rings = {}, set(), {}
     for i, room in enumerate(rooms):
         for side_no, side in enumerate(wall_sides(room)):
             for pos in side:
                 sides.setdefault(pos, set()).add((i, side_no))
-        corners.update({(room.x1 - 1, room.y1 - 1), (room.x2, room.y1 - 1),
-                        (room.x1 - 1, room.y2), (room.x2, room.y2)})
+                rings.setdefault(pos, set()).add(i)
+        room_corners = {(room.x1 - 1, room.y1 - 1), (room.x2, room.y1 - 1),
+                        (room.x1 - 1, room.y2), (room.x2, room.y2)}
+        corners.update(room_corners)
+        for pos in room_corners:
+            rings.setdefault(pos, set()).add(i)
     corners.difference_update(sides)  # a corner of one room can be a side of another
-    return sides, corners
+    return sides, corners, rings
 
 
 def route_corridor(game_map, rooms, start, goal):
@@ -98,7 +104,7 @@ def route_corridor(game_map, rooms, start, goal):
     next to an existing doorway in the same wall (which would make a gap no
     door can close). Reusing an existing doorway or corridor is cheap."""
     h, w = len(game_map), len(game_map[0])
-    sides, corners = _wall_index(rooms)
+    sides, corners, rings = _wall_index(rooms)
 
     def cost(pos):
         x, y = pos
@@ -133,8 +139,11 @@ def route_corridor(game_map, rooms, start, goal):
             step = cost(nxt)
             if step is None:
                 continue
-            if sides.get(pos, set()) & sides.get(nxt, set()):
-                continue  # walking along a wall
+            if rings.get(pos, set()) & rings.get(nxt, set()):
+                # Walking along a wall -- including into a corner of the
+                # ring that is also another room's side, which would leave
+                # a door flanked by a doorway instead of wall.
+                continue
             if dist + step < best.get(nxt, float('inf')):
                 best[nxt] = dist + step
                 came_from[nxt] = pos
