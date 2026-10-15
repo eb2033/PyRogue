@@ -22,7 +22,8 @@ from game.item import (ARMOR_DEFENSE, CHEST_COLOR, Chest, GEAR_BONUS, GEAR_CHEST
                        JUNK_CHANCE, JUNK_NAME, MAX_SCALING_DEPTH, POTION_CHEST_COLOR, RARITIES,
                        WEAPON_TYPES, rarity_weights_for_depth, roll_rarity, spawn_boss_chest,
                        spawn_chests)
-from game.monster import (BOSS_REFERENCE_KIND, MONSTER_TYPES, ORTHOGONAL_STEPS, Monster,
+from game.monster import (BOSS_REFERENCE_KIND, CHASE_RANGE, GIVE_UP_AFTER, MONSTER_TYPES,
+                          ORTHOGONAL_STEPS, Monster,
                           is_boss_level, scale_stats, spawn_boss, spawn_monsters,
                           tier_for_depth)
 from game.rect import Rect
@@ -337,6 +338,229 @@ class MonsterTests(unittest.TestCase):
         for m in monsters:
             in_room0 = rooms[0].x1 <= m.x < rooms[0].x2 and rooms[0].y1 <= m.y < rooms[0].y2
             self.assertFalse(in_room0)
+
+
+def open_floor_state(seed, fov_radius=6):
+    """A GameState whose whole interior is floor, emptied of entities, with
+    the player at (10, 10). Lets a test place monsters without the random
+    dungeon getting in the way."""
+    random.seed(seed)
+    state = GameState(50, 20, fov_radius=fov_radius)
+    state.game_map = [[WALL if x in (0, state.width - 1) or y in (0, state.height - 1)
+                       else FLOOR for x in range(state.width)]
+                      for y in range(state.height)]
+    state.player.x, state.player.y = 10, 10
+    state.entities = [state.player]
+    state.update_fov()
+    return state
+
+
+class MonsterCollisionTests(unittest.TestCase):
+    """Monsters must never stack on one tile, nor stand on the player."""
+
+    CORRIDOR = ['#' * 12, '#' + '.' * 10 + '#', '#' * 12]
+
+    def test_crowded_room_never_shares_a_tile(self):
+        state = open_floor_state(60)
+        state.player.hp = state.player.max_hp = 10 ** 6
+        # A tight 5x4 block of goblins right next to the player, so they all
+        # want the same handful of tiles at once.
+        for x in range(12, 17):
+            for y in range(8, 12):
+                m = Monster(x, y, 'goblin')
+                m.power = 1
+                state.entities.append(m)
+        monsters = [e for e in state.entities if isinstance(e, Monster)]
+
+        def check(when):
+            spots = [(m.x, m.y) for m in monsters]
+            self.assertEqual(len(spots), len(set(spots)), f'monsters stacked {when}')
+            self.assertNotIn((state.player.x, state.player.y), spots,
+                             f'a monster stood on the player {when}')
+
+        for turn in range(80):
+            state.handle_action('wait')
+            while state.step_monster_phase():
+                check(f'mid-round on turn {turn}')  # one monster at a time
+            check(f'after turn {turn}')
+        self.assertFalse(state.game_over)
+
+    def test_wanderers_never_share_a_tile(self):
+        """The same, for monsters that never see the player (FOV radius 1)
+        and so only ever wander."""
+        state = open_floor_state(61, fov_radius=1)
+        for x in range(30, 35):
+            for y in range(3, 7):
+                state.entities.append(Monster(x, y, 'goblin'))
+        monsters = [e for e in state.entities if isinstance(e, Monster)]
+        for _ in range(150):
+            state.end_turn()
+            spots = [(m.x, m.y) for m in monsters]
+            self.assertEqual(len(spots), len(set(spots)))
+        self.assertTrue(all(not m.chasing for m in monsters))
+
+    def test_blocked_chaser_does_not_step_onto_the_monster_ahead(self):
+        """In a one-tile corridor there is no other axis: the rear monster
+        just waits its turn rather than overlapping or swapping."""
+        game_map = [list(r) for r in self.CORRIDOR]
+        player = Entity(1, 1, '@')
+        front, rear = Monster(5, 1, 'goblin'), Monster(6, 1, 'goblin')
+        occupied = {(player.x, player.y), (front.x, front.y)}
+        self.assertIsNone(rear.take_turn(player, game_map, occupied=occupied))
+        self.assertEqual((rear.x, rear.y), (6, 1))
+        self.assertEqual((front.x, front.y), (5, 1))
+
+    def test_blocked_chaser_tries_its_other_axis(self):
+        game_map = [list(r) for r in MonsterTests.ROOM]
+        player = Entity(1, 1, '@')
+        ahead = Monster(3, 3, 'goblin')
+        m = Monster(4, 3, 'goblin')  # larger gap is x, but (3, 3) is taken
+        m.take_turn(player, game_map, occupied={(1, 1), (ahead.x, ahead.y)})
+        self.assertEqual((m.x, m.y), (4, 2))
+
+    def test_boxed_in_wanderer_stays_put(self):
+        game_map = [list(r) for r in MonsterTests.ROOM]
+        player = Entity(5, 5, '@')
+        m = Monster(2, 2, 'goblin')
+        occupied = {(2 + dx, 2 + dy) for dx, dy in ORTHOGONAL_STEPS} | {(5, 5)}
+        random.seed(62)
+        for _ in range(30):
+            self.assertIsNone(m.take_turn(player, game_map, occupied=occupied,
+                                          sees_player=False))
+            self.assertEqual((m.x, m.y), (2, 2))
+
+    def test_adjacent_monsters_both_reach_the_player_without_overlapping(self):
+        state = open_floor_state(63)
+        state.player.hp = state.player.max_hp = 10 ** 6
+        # `behind` is lined up on a's row; `offset` is a row below it.
+        a = Monster(13, 10, 'goblin')
+        behind = Monster(14, 10, 'goblin')
+        offset = Monster(14, 11, 'goblin')
+        state.entities += [a, behind, offset]
+        for _ in range(8):
+            state.end_turn()
+            spots = [(m.x, m.y) for m in (a, behind, offset)]
+            self.assertEqual(len(spots), len(set(spots)))
+        self.assertTrue(a.is_adjacent(state.player))
+        self.assertTrue(offset.is_adjacent(state.player))
+        # The naive chase has no second axis when lined up with the player,
+        # so the one behind queues up against a rather than overlapping it.
+        self.assertEqual((behind.x, behind.y), (a.x + 1, a.y))
+
+    def test_boss_does_not_spawn_on_another_monster(self):
+        rooms = [Rect(1, 1, 3, 3), Rect(10, 1, 3, 3)]
+        boss_room = rooms[1]
+        taken = {(x, y) for x in range(boss_room.x1, boss_room.x2)
+                 for y in range(boss_room.y1, boss_room.y2)}
+        taken.discard((boss_room.x1, boss_room.y1))  # leave exactly one free tile
+        for seed in range(30):
+            boss = spawn_boss(rooms, 8, rng=random.Random(seed), occupied=taken)
+            self.assertNotIn((boss.x, boss.y), taken)
+
+
+class ChaseGiveUpTests(unittest.TestCase):
+    """A chasing monster that goes GIVE_UP_AFTER turns in a row without
+    seeing the player stops pursuing and wanders again."""
+
+    def corridor(self):
+        return [list(r) for r in ['#' * 20, '#' + '.' * 18 + '#', '#' * 20]]
+
+    def test_give_up_after_is_three(self):
+        self.assertEqual(GIVE_UP_AFTER, 3)
+
+    def test_stops_after_exactly_three_blind_turns_and_not_before(self):
+        game_map = self.corridor()
+        player = Entity(1, 1, '@')
+        m = Monster(1 + CHASE_RANGE, 1, 'goblin')
+        m.take_turn(player, game_map, sees_player=True)
+        self.assertTrue(m.chasing)
+        self.assertEqual(m.lost_sight, 0)
+
+        for miss in range(1, GIVE_UP_AFTER):
+            x_before = m.x
+            m.take_turn(player, game_map, sees_player=False)
+            self.assertTrue(m.chasing, f'gave up after only {miss} blind turn(s)')
+            self.assertEqual(m.lost_sight, miss)
+            self.assertEqual(m.x, x_before - 1, 'stopped closing in while still chasing')
+
+        x_before = m.x
+        m.take_turn(player, game_map, sees_player=False)  # the third miss
+        self.assertEqual(m.x, x_before - 1, 'the third blind turn is still a chase step')
+        self.assertFalse(m.chasing)
+        self.assertEqual(m.lost_sight, 0)
+
+    def test_gave_up_monster_wanders_instead_of_chasing(self):
+        game_map = self.corridor()
+        player = Entity(1, 1, '@')
+        m = Monster(12, 1, 'goblin')
+        m.chasing, m.lost_sight = True, GIVE_UP_AFTER - 1
+        m.take_turn(player, game_map, sees_player=False)
+        self.assertFalse(m.chasing)
+        random.seed(64)
+        moves = set()
+        for _ in range(40):
+            before = m.x
+            m.take_turn(player, game_map, sees_player=False)
+            moves.add(m.x - before)
+            self.assertFalse(m.chasing)
+        self.assertIn(1, moves, 'never stepped away from the player: still chasing?')
+
+    def test_counter_resets_when_sight_returns(self):
+        game_map = self.corridor()
+        player = Entity(1, 1, '@')
+        m = Monster(1 + CHASE_RANGE, 1, 'goblin')
+        m.take_turn(player, game_map, sees_player=True)
+        m.take_turn(player, game_map, sees_player=False)
+        m.take_turn(player, game_map, sees_player=False)
+        self.assertEqual(m.lost_sight, GIVE_UP_AFTER - 1)
+
+        m.take_turn(player, game_map, sees_player=True)
+        self.assertTrue(m.chasing)
+        self.assertEqual(m.lost_sight, 0)
+
+        # Two more misses would make four in total: still chasing, because
+        # only *consecutive* blind turns count.
+        m.take_turn(player, game_map, sees_player=False)
+        m.take_turn(player, game_map, sees_player=False)
+        self.assertTrue(m.chasing)
+        self.assertEqual(m.lost_sight, GIVE_UP_AFTER - 1)
+
+    def test_unseen_monster_does_not_start_chasing(self):
+        game_map = self.corridor()
+        player = Entity(1, 1, '@')
+        m = Monster(5, 1, 'goblin')
+        random.seed(65)
+        for _ in range(10):
+            m.take_turn(player, game_map, sees_player=False)
+            self.assertFalse(m.chasing)
+
+    def test_game_state_uses_the_players_fov_for_sight(self):
+        """End to end: with FOV radius 2, a chaser 8 tiles away is out of
+        sight on each of its next three turns (8, 7, 6 tiles off), so it
+        gives up on exactly the third round."""
+        state = open_floor_state(66, fov_radius=2)
+        m = Monster(state.player.x + 8, state.player.y, 'goblin')
+        m.chasing = True
+        state.entities.append(m)
+        self.assertFalse(state.is_visible(m.x, m.y))
+
+        for rnd in range(1, GIVE_UP_AFTER):
+            state.end_turn()
+            self.assertTrue(m.chasing, f'gave up after round {rnd}')
+            self.assertEqual(m.lost_sight, rnd)
+        state.end_turn()
+        self.assertFalse(m.chasing)
+        self.assertEqual(m.x, state.player.x + 8 - GIVE_UP_AFTER)
+
+    def test_game_state_monster_in_view_keeps_chasing(self):
+        state = open_floor_state(67)
+        m = Monster(state.player.x + 5, state.player.y, 'goblin')
+        state.entities.append(m)
+        self.assertTrue(state.is_visible(m.x, m.y))
+        state.end_turn()
+        self.assertTrue(m.chasing)
+        self.assertEqual(m.lost_sight, 0)
+        self.assertEqual(m.x, state.player.x + 4)
 
 
 class GameStateIntegrationTests(unittest.TestCase):
@@ -1162,6 +1386,40 @@ class SaveLoadTests(unittest.TestCase):
         self.assertEqual(fresh.player.defense, ARMOR_DEFENSE['rare'])
         chests = [e for e in fresh.entities if isinstance(e, Chest)]
         self.assertEqual(chests[0].kind, 'gear')
+    def test_monster_chase_state_round_trips(self):
+        state = open_floor_state(68)
+        m = Monster(20, 10, 'orc')
+        m.chasing, m.lost_sight = True, 2
+        state.entities.append(m)
+
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'save.json')
+            save_game(state, path)
+            fresh = GameState(50, 20)
+            apply_dict(fresh, load_game(path))
+
+        loaded = [e for e in fresh.entities if isinstance(e, Monster)]
+        self.assertEqual(len(loaded), 1)
+        self.assertTrue(loaded[0].chasing)
+        self.assertEqual(loaded[0].lost_sight, 2)
+
+    def test_monster_from_an_old_save_loads_idle(self):
+        """Saves from before chase tracking have no chasing/lost_sight keys."""
+        random.seed(69)
+        state = GameState(50, 20)
+        data = state_to_dict(state)
+        for e in data['entities']:
+            e.pop('chasing', None)
+            e.pop('lost_sight', None)
+        data['entities'].append({'type': 'monster', 'x': 20, 'y': 10, 'char': 'g',
+                                 'color': 2, 'name': 'goblin', 'kind': 'goblin',
+                                 'hp': 5, 'max_hp': 5, 'power': 2, 'alive': True})
+        apply_dict(state, data)
+        monsters = [e for e in state.entities if isinstance(e, Monster)]
+        self.assertTrue(monsters)
+        for m in monsters:
+            self.assertFalse(m.chasing)
+            self.assertEqual(m.lost_sight, 0)
 
 
 class CombatEventTests(unittest.TestCase):

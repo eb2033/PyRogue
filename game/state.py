@@ -149,7 +149,8 @@ class GameState:
     def _spawn_level_monsters(self):
         monsters = spawn_monsters(self.rooms, depth=self.depth)
         if is_boss_level(self.depth):
-            monsters.append(spawn_boss(self.rooms, self.depth))
+            occupied = {(m.x, m.y) for m in monsters}
+            monsters.append(spawn_boss(self.rooms, self.depth, occupied=occupied))
         return monsters
 
     # -- turn resolution ---------------------------------------------------
@@ -450,7 +451,9 @@ class GameState:
 
             was_seen = self.is_visible(monster.x, monster.y)
             before = (monster.x, monster.y)
-            result = monster.take_turn(self.player, self.game_map)
+            result = monster.take_turn(self.player, self.game_map,
+                                       occupied=self._occupied_except(monster),
+                                       sees_player=was_seen)
             if result == 'attack':
                 self.attack(monster, self.player)
             self.update_fov()
@@ -481,6 +484,17 @@ class GameState:
             self.end_player_phase()
         while self.step_monster_phase():
             pass
+
+    def _occupied_except(self, monster):
+        """Tiles `monster` may not step onto: the player's and every other
+        living monster's. Built fresh for each monster, so it reflects the
+        moves already made earlier in the same round."""
+        occupied = {(self.player.x, self.player.y)}
+        for e in self.entities:
+            if (e is not monster and e is not self.player
+                    and isinstance(e, Monster) and e.alive):
+                occupied.add((e.x, e.y))
+        return occupied
 
     def _player_just_died(self):
         """True only on the single step that kills the player, so the death
