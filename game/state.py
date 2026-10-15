@@ -66,6 +66,11 @@ SHOOT_DELTAS = {
     'shoot_e': (1, 0),
 }
 
+# The archer's hop (Q): reach, trigger radius, and turns before the next one.
+HOP_DISTANCE = 2
+HOP_TRIGGER_RANGE = 3
+HOP_COOLDOWN = 4
+
 # Keys 1-3 on a chest's choice screen -> index into pending_choice.
 CHOOSE_INDEX = {
     'choose_1': 0,
@@ -131,6 +136,8 @@ class GameState:
         # handle_action; never per frame or per monster). The combat zoom's
         # hold (render/camera.py) counts turns with it.
         self.turn = 0
+        # GameState.turn when the archer last hopped (None: never). Not saved.
+        self.last_hop_turn: int | None = None
         # Items an opened gear chest is offering, or the Boons a shrine is
         # (game/shrine.py), or None. While set, the player must choose() one
         # before anything else happens. Typed Any, not Item | Boon: a choice
@@ -237,11 +244,20 @@ class GameState:
             return False
 
         if action == 'ability':
-            # The class ability is not wired yet, so mid-game this is a no-op.
             # On the death screen ('press q to quit') it is the quit key.
+            # Mid-game only the archer has an ability (the hop); a warrior's
+            # is a no-op.
             if self.game_over:
                 self.running = False
-            return False
+                return False
+            if self.is_choosing or self.player.char_class != 'archer':
+                return False
+            if not self.hop():
+                return False
+            self._spend_turn()
+            self.last_hop_turn = self.turn
+            self.end_player_phase()
+            return True
 
         if self.game_over:
             return False
@@ -307,6 +323,49 @@ class GameState:
             return False
 
         return False
+
+    def hop(self):
+        """The archer's backward hop: up to HOP_DISTANCE tiles straight away
+        from the nearest living monster within HOP_TRIGGER_RANGE, along the
+        axis where it is farther (vertical on a tie), stopping at a wall or
+        anything standing in the way. Returns False, with a log line and no
+        position change, if it is refused; the caller spends the turn."""
+        if self.last_hop_turn is not None:
+            left = HOP_COOLDOWN - (self.turn - self.last_hop_turn)
+            if left > 0:
+                self.log(f'Hop recovering ({left} turns).')
+                return False
+        player = self.player
+        near = [
+            e
+            for e in self.entities
+            if isinstance(e, Monster) and e.alive and player.distance_to(e) <= HOP_TRIGGER_RANGE
+        ]
+        if not near:
+            self.log('Nothing to hop from.')
+            return False
+        foe = min(near, key=player.distance_to)
+        ddx, ddy = player.x - foe.x, player.y - foe.y
+        if abs(ddx) > abs(ddy):
+            dx, dy = (1 if ddx > 0 else -1), 0
+        else:
+            dx, dy = 0, (1 if ddy >= 0 else -1)
+        hopped = 0
+        for _ in range(HOP_DISTANCE):
+            nx, ny = player.x + dx, player.y + dy
+            if (
+                not is_walkable(self.game_map, nx, ny)
+                or self.monster_at(nx, ny) is not None
+                or self.chest_at(nx, ny) is not None
+                or self.shrine_at(nx, ny) is not None
+            ):
+                break
+            player.x, player.y = nx, ny
+            hopped += 1
+        if not hopped:
+            self.log('Nowhere to hop.')
+            return False
+        return True
 
     def _spend_turn(self, shot=False):
         """A turn-taking player action happened: count it (GameState.turn),

@@ -1065,6 +1065,90 @@ class ClassAndArcherTests(unittest.TestCase):
         self.assertEqual((state.player.x, state.player.y), (px, py))
 
 
+class ArcherHopTests(unittest.TestCase):
+    def _arena(self, monster_dx=-2, monster_dy=0):
+        state = GameState(20, 20, char_class='archer')
+        state.game_map = make_empty_map(20, 20, WALL)
+        for y in range(1, 19):
+            for x in range(1, 19):
+                state.game_map[y][x] = FLOOR
+        state.player.x, state.player.y = 10, 10
+        state.player.defense = 0
+        mon = Monster(10 + monster_dx, 10 + monster_dy, 'goblin')
+        state.entities = [state.player, mon]
+        state.update_fov()
+        return state, mon
+
+    def test_hop_moves_two_tiles_away(self):
+        state, _ = self._arena()
+        self.assertTrue(state.handle_action('ability'))
+        self.assertEqual((state.player.x, state.player.y), (12, 10))
+
+    def test_hop_takes_a_turn_and_monsters_act(self):
+        state, mon = self._arena()
+        turn = state.turn
+        state.handle_action('ability')
+        self.assertEqual(state.turn, turn + 1)
+        while state.step_monster_phase():
+            pass
+        self.assertNotEqual((mon.x, mon.y), (8, 10))  # it acted after the hop
+
+    def test_hop_vertical_on_tie(self):
+        state, _ = self._arena(-2, -2)
+        state.handle_action('ability')
+        self.assertEqual((state.player.x, state.player.y), (10, 12))
+
+    def test_hop_stops_at_wall(self):
+        state, _ = self._arena()
+        state.game_map[10][12] = WALL
+        state.handle_action('ability')
+        self.assertEqual((state.player.x, state.player.y), (11, 10))
+
+    def test_no_monster_in_range_refuses(self):
+        state, _ = self._arena(-5, 0)
+        turn = state.turn
+        self.assertFalse(state.handle_action('ability'))
+        self.assertEqual(state.turn, turn)
+        self.assertEqual(state.messages[-1], 'Nothing to hop from.')
+
+    def test_cooldown_four_turns(self):
+        state, mon = self._arena()
+        state.handle_action('ability')
+        state.cancel_monster_phase()
+        mon.x, mon.y = state.player.x - 2, state.player.y
+        for left in (4, 3, 2, 1):
+            self.assertFalse(state.handle_action('ability'))
+            self.assertEqual(state.messages[-1], f'Hop recovering ({left} turns).')
+            state.handle_action('wait')
+            state.cancel_monster_phase()
+            mon.x, mon.y = state.player.x - 2, state.player.y
+        px = state.player.x
+        self.assertTrue(state.handle_action('ability'))
+        self.assertEqual(state.player.x, px + 2)
+
+    def test_warrior_q_does_nothing(self):
+        state, _ = self._arena()
+        state.player.char_class = 'warrior'
+        turn, n = state.turn, len(state.messages)
+        self.assertFalse(state.handle_action('ability'))
+        self.assertEqual((state.turn, len(state.messages), state.player.x), (turn, n, 10))
+
+    def test_nowhere_to_hop_refuses(self):
+        state, _ = self._arena()
+        state.game_map[10][11] = WALL
+        turn = state.turn
+        self.assertFalse(state.handle_action('ability'))
+        self.assertEqual(state.turn, turn)
+        self.assertEqual(state.messages[-1], 'Nowhere to hop.')
+        self.assertEqual(state.player.x, 10)
+
+    def test_pending_choice_blocks_hop(self):
+        state, _ = self._arena()
+        state.pending_choice = [Item(0, 0, 'weapon', 'common')]
+        self.assertFalse(state.handle_action('ability'))
+        self.assertEqual(state.player.x, 10)
+
+
 class GearTests(unittest.TestCase):
     def test_invalid_rarity_rejected(self):
         with self.assertRaises(ValueError):
