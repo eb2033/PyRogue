@@ -340,7 +340,7 @@ class PygameRenderer(Renderer):
         if state.is_choosing:
             screens.paint_choice(self.canvas, state)
         if state.game_over:
-            screens.paint_game_over(self.canvas, state)
+            screens.paint_game_over(self.canvas)
 
     def _paint_entity(self, entity):
         rgb = palette.color(entity.color, palette.VISIBLE)
@@ -380,7 +380,12 @@ class PygameRenderer(Renderer):
             self.canvas.surface.blit(number, at)
             return
         number = self._glyph(text, palette.brighten(palette.DANGER), bold=True)
-        self.canvas.surface.blit(number, number.get_rect(midbottom=midbottom))
+        spot = number.get_rect(midbottom=midbottom)
+        # pygame's synthetic bold is thin at these sizes, so stamp the number
+        # a second time, one stroke over, to thicken it.
+        stroke = max(1, number.get_height() // 14)
+        self.canvas.surface.blit(number, spot)
+        self.canvas.surface.blit(number, spot.move(stroke, 0))
 
     # -- map cells ------------------------------------------------------------
 

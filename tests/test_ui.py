@@ -388,38 +388,40 @@ class PaintTest(unittest.TestCase):
         self.assertDrewSomething(self.canvas.surface.get_rect())
 
     def test_game_over(self):
-        screens.paint_game_over(self.canvas, GameState(WIDTH, HEIGHT))
+        screens.paint_game_over(self.canvas)
         self.assertDrewSomething(self.layout.map_rect())
 
 
 @unittest.skipUnless(pygame, 'pygame-ce not installed')
 class GameOverBannerTest(unittest.TestCase):
-    """The banner sits at the end of the map away from the player."""
+    """The banner is centred across the top of the map, its title four
+    times the map's font."""
 
-    def test_banner_never_covers_the_player(self):
+    def test_banner_is_centred_at_the_top_of_the_map(self):
         for tiles in (False, True):
             for width, height in [(WIDTH, HEIGHT), (20, 10)]:
-                layout = ui.Layout(width, height, tiles=tiles)
-                layout.fit((1280, 720))
-                state = GameState(width, height)
-                for y in (1, height // 2 - 1, height // 2, height - 2):
-                    with self.subTest(tiles=tiles, map=(width, height), player_y=y):
-                        state.player.y = y
-                        box = screens.game_over_rect(layout, state)
-                        player = pygame.Rect(layout.map_cell_to_pixel(state.player.x, y),
-                                             layout.map_cell_size())
-                        self.assertFalse(box.colliderect(player))
-                        self.assertTrue(layout.map_rect().contains(box))
+                with self.subTest(tiles=tiles, map=(width, height)):
+                    layout = ui.Layout(width, height, tiles=tiles)
+                    layout.fit((1280, 720))
+                    box = screens.game_over_rect(layout)
+                    area = layout.map_rect()
+                    self.assertTrue(area.contains(box))
+                    self.assertEqual(box.centerx, area.centerx)
+                    self.assertLess(box.top - area.top, layout.cell_h * 2)
 
-    def test_banner_goes_to_the_far_end(self):
+    def test_title_is_four_times_the_map_font(self):
         layout = fitted((1280, 720), tiles=True)
-        state = GameState(WIDTH, HEIGHT)
-        state.player.y = 2
-        self.assertGreater(screens.game_over_rect(layout, state).centery,
-                           layout.map_rect().centery)
-        state.player.y = HEIGHT - 3
-        self.assertLess(screens.game_over_rect(layout, state).centery,
-                        layout.map_rect().centery)
+        title_font, hint_font = screens.game_over_fonts(layout)
+        self.assertEqual(title_font.get_height(), layout._font(layout.font_size * 4).get_height())
+        self.assertEqual(hint_font, layout.font)
+
+    def test_title_shrinks_to_fit_a_narrow_map(self):
+        layout = ui.Layout(12, 10, tiles=False)
+        layout.fit((1280, 720))
+        title_font, _ = screens.game_over_fonts(layout)
+        self.assertLessEqual(title_font.size(screens.GAME_OVER_TITLE)[0],
+                             layout.map_rect().width - 2 * layout.cell_w)
+        self.assertGreaterEqual(title_font.get_height(), layout.font.get_height())
 
 
 @unittest.skipUnless(pygame, 'pygame-ce not installed')

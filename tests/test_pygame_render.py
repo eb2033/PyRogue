@@ -353,10 +353,7 @@ class PygameRendererTest(unittest.TestCase):
     def assertOverlayDrawn(self, state):
         """The game-over line differs from the same frame without it."""
         layout = self.renderer.layout
-        row = screens.game_over_rect(layout, state)
-        player = pygame.Rect(layout.map_cell_to_pixel(state.player.x, state.player.y),
-                             layout.map_cell_size())
-        self.assertFalse(row.colliderect(player), 'the banner hides the player')
+        row = screens.game_over_rect(layout)
         self.renderer.draw(state)
         with_overlay = cell_pixels(self.renderer, row, as_list=True)
         state.game_over = False
@@ -526,7 +523,7 @@ class TileModeTest(unittest.TestCase):
         before = pygame.display.get_surface().copy()
         state.game_over = True
         self.renderer.draw(state)
-        band = screens.game_over_rect(self.renderer.layout, state)
+        band = screens.game_over_rect(self.renderer.layout)
         self.assertTrue(self.renderer.layout.map_rect().contains(band))
         after = pygame.display.get_surface()
         self.assertNotEqual(pygame.image.tobytes(after.subsurface(band), 'RGB'),
