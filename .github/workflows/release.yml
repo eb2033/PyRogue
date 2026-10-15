@@ -40,8 +40,8 @@ jobs:
       version: ${{ steps.read.outputs.version }}
       prerelease: ${{ steps.read.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - id: read
@@ -81,8 +81,8 @@ jobs:
       SDL_VIDEODRIVER: dummy
       SDL_AUDIODRIVER: dummy
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -112,7 +112,7 @@ jobs:
         shell: bash
         run: test -f "dist/PyRogue-${{ matrix.platform }}-${{ needs.version.outputs.version }}.zip"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: PyRogue-${{ matrix.platform }}
           path: dist/PyRogue-${{ matrix.platform }}-${{ needs.version.outputs.version }}.zip
@@ -128,8 +128,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: PyRogue-*
           path: release
@@ -186,7 +186,7 @@ jobs:
         run: |
           echo "::error::BUTLER_API_KEY is set but the ITCH_PROJECT repo variable (\"<itch-user>/<game>\") is not."
           exit 1
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: env.BUTLER_API_KEY != ''
         with:
           pattern: PyRogue-*
