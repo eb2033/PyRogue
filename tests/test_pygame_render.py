@@ -769,6 +769,98 @@ class DefaultRendererTest(unittest.TestCase):
 
 # -- helpers -----------------------------------------------------------------
 
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
+class BossArenaTest(unittest.TestCase):
+    """Dark stone in the arena's 3x3 centre and blood decals round the room
+    (a stub `boss_arena` stands in for the one game/ provides)."""
+
+    class Arena:
+        x1, y1, x2, y2 = 8, 4, 28, 16
+
+        def center(self):
+            return ((self.x1 + self.x2) // 2, (self.y1 + self.y2) // 2)
+
+    def setUp(self):
+        from render.tileset import Tileset
+        from game.paths import resource_path
+        self.renderer = PygameRenderer(WIDTH, HEIGHT, tileset=Tileset(resource_path('assets')),
+                                       combat_zoom=False)
+        self.renderer._set_mode((1600, 900), pygame.RESIZABLE)
+        self.renderer._relayout()
+        self.arena = self.Arena()
+
+    def tearDown(self):
+        self.renderer.close()
+
+    def state(self, arena):
+        state = GameState(WIDTH, HEIGHT)
+        state.entities[:] = []
+        for y in range(HEIGHT):
+            for x in range(WIDTH):
+                edge = x in (0, WIDTH - 1) or y in (0, HEIGHT - 1)
+                state.game_map[y][x] = '#' if edge else '.'
+                state.visible[y][x] = state.seen[y][x] = True
+        state.player.x, state.player.y = 1, 1
+        state.boss_arena = arena
+        return state
+
+    def frame(self, arena):
+        self.renderer.draw(self.state(arena))
+        return self.renderer.canvas.surface.copy()
+
+    def cell(self, surface, x, y):
+        rect = self.renderer.layout.map_cell_to_pixel(x, y)
+        size = self.renderer.layout.map_cell_size()
+        return pygame.image.tobytes(surface.subsurface(pygame.Rect(rect, size)), 'RGB')
+
+    def decal_cells(self):
+        layout = self.renderer._arena_decals(self.arena)
+        return sorted(layout)
+
+    def test_centre_stone_differs_from_plain_floor(self):
+        plain, arena = self.frame(None), self.frame(self.arena)
+        cx, cy = self.arena.center()
+        self.assertNotEqual(self.cell(plain, cx, cy), self.cell(arena, cx, cy))
+        # The tint is darker, not just different.
+        total = lambda b: sum(b)
+        self.assertLess(total(self.cell(arena, cx, cy)), total(self.cell(plain, cx, cy)))
+
+    def test_decal_cell_differs_from_plain_floor(self):
+        plain, arena = self.frame(None), self.frame(self.arena)
+        cx, cy = self.arena.center()
+        changed = [c for c in self.decal_cells()
+                   if max(abs(c[0] - cx), abs(c[1] - cy)) > 1
+                   and self.cell(plain, *c) != self.cell(arena, *c)]
+        self.assertTrue(changed)
+
+    def test_decals_are_stable_across_draws(self):
+        first, second = self.frame(self.arena), self.frame(self.arena)
+        self.assertEqual(pygame.image.tobytes(first, 'RGB'), pygame.image.tobytes(second, 'RGB'))
+        layout = dict(self.renderer._arena_decals(self.arena))
+        self.renderer._decal_layouts.clear()
+        self.assertEqual(layout, self.renderer._arena_decals(self.arena))
+
+    def test_no_arena_is_the_plain_frame(self):
+        plain = self.frame(None)
+        state = self.state(None)
+        del state.boss_arena
+        self.renderer.draw(state)
+        self.assertEqual(pygame.image.tobytes(plain, 'RGB'),
+                         pygame.image.tobytes(self.renderer.canvas.surface, 'RGB'))
+
+    def test_decals_stay_off_walls(self):
+        state = self.state(self.arena)
+        state.game_map[6][10] = '#'
+        decals = {(10, 6): (0, 0, 1.0)}
+        with mock.patch.object(self.renderer, '_arena_decals', return_value=decals):
+            self.renderer.draw(state)
+        after = self.renderer.canvas.surface
+        wall = self.cell(after, 10, 6)
+        state.boss_arena = None
+        self.renderer.draw(state)
+        self.assertEqual(wall, self.cell(self.renderer.canvas.surface, 10, 6))
+
+
 def cell_pixels(renderer, rect, as_list=False):
     screen = renderer.canvas.surface
     pixels = [tuple(screen.get_at((x, y)))[:3]

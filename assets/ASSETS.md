@@ -47,3 +47,13 @@ Sheets are 16x16 cells with a 1 px margin, so cell `(col, row)` starts at pixel
 `(col * 17, row * 17)`. To change what a char looks like, edit its `layers` in `tiles.json` (bottom
 layer first; floor-standing things like doors and stairs put the floor tile underneath). After
 changing `@`, rerun `packaging/make_icon.py`.
+
+## Boss-arena blood decals
+
+| File | Source | Licence | Notes |
+|---|---|---|---|
+| `blood/blood_01.png` | [Animations - Blood, Hit and Both](https://opengameart.org/node/81933) by Sinestesia | CC0 | Sheet frame (col 0, row 2) of the 4x4 grid of 512 px frames, cropped to the splatter's bounding box and scaled to 24 px wide. Drawn by `render/pygame_render.py` around a boss room. |
+| `blood/blood_02.png` | same sheet | CC0 | Frame (col 1, row 2), cropped and scaled the same way. |
+| `blood/blood_03.png` | same sheet | CC0 | Frame (col 2, row 2), cropped and scaled the same way. |
+| `blood/blood_04.png` | same sheet | CC0 | Frame (col 3, row 2), cropped and scaled the same way. |
+| `blood/blood_05.png` | same sheet | CC0 | Frame (col 0, row 3), cropped and scaled the same way. |

@@ -19,6 +19,7 @@ Division of labour with the other render modules:
 """
 
 import os
+import random
 import warnings
 
 os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
@@ -45,6 +46,11 @@ FRAME_MS = 16
 TILT_DEGREES = 15
 STEP_MS = 110
 IMPACT_FLASH_ALPHA = 170
+
+# Boss arena: how dark the 3x3 centre stone is, and how many blood sprites
+# assets/blood/ holds (blood_01.png ...).
+ARENA_STONE_ALPHA = 110
+BLOOD_SPRITES = 5
 
 # Events after which the window contents may be stale: repaint the last frame.
 REPAINT_EVENTS = (
@@ -114,6 +120,11 @@ class PygameRenderer(Renderer):
         self._gait = {}
         self._tilts = {}
         self._tilted_tiles = {}
+        # Boss-arena blood: the sprites (loaded on first use), the decal
+        # layout per arena, and scaled/rotated sprites.
+        self._blood = None
+        self._decal_layouts = {}
+        self._decal_sprites = {}
 
     @staticmethod
     def _set_mode(size, flags):
@@ -355,13 +366,21 @@ class PygameRenderer(Renderer):
                          min(state.height, (map_rect.bottom - oy) // cell_h + 1))
             surface.set_clip(map_rect)
         try:
+            arena = getattr(state, 'boss_arena', None)
+            decals = self._arena_decals(arena) if arena is not None else {}
             for y in rows:
                 row = state.game_map[y]
                 for x in cols:
                     if state.visible[y][x]:
                         self._paint_cell(x, y, row[x], palette.VISIBLE)
+                        dim = False
                     elif state.seen[y][x]:
                         self._paint_cell(x, y, row[x], palette.SEEN, dim=True)
+                        dim = True
+                    else:
+                        continue
+                    if arena is not None and row[x] == '.':
+                        self._paint_arena_floor(arena, decals, x, y, dim)
 
             for entity in state.visible_entities():
                 self._paint_entity(entity)
@@ -376,6 +395,72 @@ class PygameRenderer(Renderer):
             screens.paint_choice(self.canvas, state)
         if state.game_over:
             screens.paint_game_over(self.canvas)
+
+    # -- boss arena -----------------------------------------------------------
+
+    def _arena_decals(self, arena):
+        """{(x, y): (sprite index, angle, scale)} for a boss room: fixed by
+        the room's corner, so it is the same every frame. Floor is checked at
+        paint time (the layout doesn't know the map)."""
+        key = (arena.x1, arena.y1, arena.x2, arena.y2)
+        layout = self._decal_layouts.get(key)
+        if layout is None:
+            rng = random.Random(arena.x1 * 1009 + arena.y1)
+            cx, cy = arena.center()
+            layout = {}
+            for y in range(arena.y1, arena.y2 + 1):
+                for x in range(arena.x1, arena.x2 + 1):
+                    near = max(abs(x - cx), abs(y - cy)) <= 2
+                    if rng.random() < (0.5 if near else 0.28):
+                        layout[(x, y)] = (rng.randrange(BLOOD_SPRITES),
+                                          rng.randrange(0, 360, 15),
+                                          rng.uniform(0.8, 1.3))
+            self._decal_layouts[key] = layout
+        return layout
+
+    def _blood_sprites(self):
+        if self._blood is None:
+            self._blood = []
+            for i in range(1, BLOOD_SPRITES + 1):
+                path = resource_path('assets/blood') / f'blood_{i:02d}.png'
+                try:
+                    self._blood.append(pygame.image.load(str(path)).convert_alpha())
+                except (pygame.error, OSError):
+                    pass
+        return self._blood
+
+    def _decal(self, index, angle, scale, size, dim):
+        sprites = self._blood_sprites()
+        if not sprites:
+            return None
+        key = (index, angle, scale, size, dim)
+        sprite = self._decal_sprites.get(key)
+        if sprite is None:
+            base = sprites[index % len(sprites)]
+            w = max(2, round(size * scale))
+            h = max(2, round(w * base.get_height() / base.get_width()))
+            sprite = pygame.transform.rotate(pygame.transform.smoothscale(base, (w, h)), angle)
+            if dim:
+                sprite.fill((130, 130, 130, 255), special_flags=pygame.BLEND_RGBA_MULT)
+            if len(self._decal_sprites) > 400:
+                self._decal_sprites.clear()
+            self._decal_sprites[key] = sprite
+        return sprite
+
+    def _paint_arena_floor(self, arena, decals, x, y, dim):
+        """On a floor cell already painted: the darker stone of the arena's
+        3x3 centre, then any blood decal. Entities are drawn after this."""
+        rect = self._map_cell_rect(x, y)
+        cx, cy = arena.center()
+        if abs(x - cx) <= 1 and abs(y - cy) <= 1:
+            shade = pygame.Surface(rect.size, pygame.SRCALPHA)
+            shade.fill((0, 0, 0, ARENA_STONE_ALPHA))
+            self.canvas.surface.blit(shade, rect)
+        spec = decals.get((x, y))
+        if spec is not None:
+            sprite = self._decal(*spec, rect.width, dim)
+            if sprite is not None:
+                self.canvas.surface.blit(sprite, sprite.get_rect(center=rect.center))
 
     def _paint_entity(self, entity):
         angle = self._tilts.get(id(entity), 0)
