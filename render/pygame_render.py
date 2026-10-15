@@ -148,6 +148,10 @@ class PygameRenderer(Renderer):
         self._gait = {}
         self._tilts = {}
         self._tilted_tiles = {}
+        # Hit shake on the struck sprite: (entity, (dx, dy)) for the frame
+        # being painted, and the offset of the sprite being painted right now.
+        self._jolt = None
+        self._sprite_offset = (0, 0)
         # Boss-arena blood: the sprites (loaded on first use), the decal
         # layout per arena, and scaled/rotated sprites.
         self._blood = None
@@ -324,7 +328,10 @@ class PygameRenderer(Renderer):
                 self._play(
                     self.impact_ms_for(shake),
                     lambda t, hit=beat.hit, shake=shake: self._paint_game(
-                        state, impact=(hit, t), shake=self.shake_offset(shake, t)
+                        state,
+                        impact=(hit, t),
+                        shake=self.shake_offset(shake, t),
+                        sprite_shake=shake,
                     ),
                     interruptible=False,
                 )
@@ -367,6 +374,27 @@ class PygameRenderer(Renderer):
         a shake feels the same zoomed in or out."""
         return camera.shake_offset(shake, t, self.layout.map_cell_size()[1])
 
+    def sprite_shake_offset(self, shake, t, hit):
+        """The struck sprite's own (dx, dy) in pixels at t, inside its cell:
+        sized off that cell at the view being painted, so it grows with the
+        zoom. (0, 0) once the beat is over."""
+        return camera.sprite_shake_offset(shake, t, self._map_cell_rect(hit.x, hit.y).height)
+
+    def _jolt_of(self, entity):
+        """`entity`'s sprite offset in the frame being painted: (0, 0) unless
+        it is the one being struck."""
+        if self._jolt is not None and self._jolt[0] is entity:
+            return self._jolt[1]
+        return (0, 0)
+
+    def _clip_to_map(self):
+        """Narrow the clip to the map's area (and any clip already set);
+        returns the clip to restore."""
+        surface = self.canvas.surface
+        old = surface.get_clip()
+        surface.set_clip(self.layout.map_rect().clip(old))
+        return old
+
     def _play(self, ms, paint, interruptible=True):
         """Play one beat: `paint(t)` for t running 0 -> 1 over `ms`.
 
@@ -403,10 +431,12 @@ class PygameRenderer(Renderer):
 
     # -- game frame -----------------------------------------------------------
 
-    def _paint_game(self, state, impact=None, shake=(0, 0)):
+    def _paint_game(self, state, impact=None, shake=(0, 0), sprite_shake=None):
         """The map at the current view, clipped to the map's area, then the
         panel. `impact`: (Hit, t) to draw a blow landing, t running 0 -> 1.
-        `shake`: (dx, dy) pixels to shift the whole painted map by."""
+        `shake`: (dx, dy) pixels to shift the whole painted map by.
+        `sprite_shake`: the impact's Shake, to jolt the struck sprite (and its
+        health bar) inside its cell as well."""
         surface = self.canvas.surface
         map_rect = self.layout.map_rect()
         if self._view is None:
@@ -441,7 +471,13 @@ class PygameRenderer(Renderer):
                     if arena is not None and row[x] == '.':
                         self._paint_arena_floor(arena, decals, x, y, dim)
 
+            if impact is not None and sprite_shake is not None:
+                hit, t = impact
+                self._jolt = (hit.defender, self.sprite_shake_offset(sprite_shake, t, hit))
             entities = state.visible_entities()
+            if self._jolt is not None and any(e is self._jolt[0] for e in entities):
+                # The struck sprite last, so it shakes on top of a neighbour.
+                entities = [e for e in entities if e is not self._jolt[0]] + [self._jolt[0]]
             for entity in entities:
                 self._paint_entity(entity)
             for entity in entities:
@@ -454,6 +490,7 @@ class PygameRenderer(Renderer):
         finally:
             surface.set_clip(None)
             self._proj = None
+            self._jolt = None
 
         ui.paint_panel(self.canvas, state)
         if state.is_choosing:
@@ -492,7 +529,8 @@ class PygameRenderer(Renderer):
         top = rect.top - gap - height
         if top < map_rect.top or (player.x, player.y) == (monster.x, monster.y - 1):
             top = rect.top + gap
-        return pygame.Rect(rect.centerx - width // 2, top, width, height)
+        bar = pygame.Rect(rect.centerx - width // 2, top, width, height)
+        return bar.move(self._jolt_of(monster))  # stays on a sprite that shakes
 
     @staticmethod
     def health_bar_color(fraction):
@@ -511,12 +549,18 @@ class PygameRenderer(Renderer):
         fraction = min(1.0, max(0.0, monster.hp / max_hp))
         bar = self.health_bar_rect(monster, player, map_rect)
         surface = self.canvas.surface
-        surface.fill(HEALTH_TRACK, bar)
-        fill = round(bar.width * fraction)
-        if monster.hp > 0:
-            fill = max(1, fill)
-        if fill:
-            surface.fill(self.health_bar_color(fraction), (bar.left, bar.top, fill, bar.height))
+        clip = self._clip_to_map()
+        try:
+            surface.fill(HEALTH_TRACK, bar)
+            fill = round(bar.width * fraction)
+            if monster.hp > 0:
+                fill = max(1, fill)
+            if fill:
+                surface.fill(
+                    self.health_bar_color(fraction), (bar.left, bar.top, fill, bar.height)
+                )
+        finally:
+            surface.set_clip(clip)
 
     # -- boss arena -----------------------------------------------------------
 
@@ -587,17 +631,29 @@ class PygameRenderer(Renderer):
                 self.canvas.surface.blit(sprite, sprite.get_rect(center=rect.center))
 
     def _paint_entity(self, entity):
+        """The entity's tile or glyph in its cell -- leaning if it just
+        stepped, and offset inside the cell (clipped to the map) if it is the
+        one being struck. Its floor was painted first and stays put."""
         angle = self._tilts.get(id(entity), 0)
+        offset = self._jolt_of(entity)
         rgb = palette.color(entity.color, palette.VISIBLE)
-        if self._proj is not None and not self.layout.tile:
-            # Zoomed glyphs are big enough that the floor dot under them shows.
+        if (self._proj is not None or offset != (0, 0)) and not self.layout.tile:
+            # Zoomed glyphs are big enough that the floor dot under them shows;
+            # a shaking glyph would show it too, beside itself.
             self.canvas.surface.fill(palette.BACKGROUND, self._map_cell_rect(entity.x, entity.y))
-        if getattr(entity, 'is_boss', False):
-            self._paint_boss(
-                entity.x, entity.y, entity.char, palette.brighten(rgb), entity.color, angle
-            )
-        else:
-            self._paint_cell(entity.x, entity.y, entity.char, rgb, entity.color, angle=angle)
+        clip = self._clip_to_map() if offset != (0, 0) else None
+        self._sprite_offset = offset
+        try:
+            if getattr(entity, 'is_boss', False):
+                self._paint_boss(
+                    entity.x, entity.y, entity.char, palette.brighten(rgb), entity.color, angle
+                )
+            else:
+                self._paint_cell(entity.x, entity.y, entity.char, rgb, entity.color, angle=angle)
+        finally:
+            self._sprite_offset = (0, 0)
+            if clip is not None:
+                self.canvas.surface.set_clip(clip)
 
     def _paint_impact(self, hit, t):
         """A blow landing on `hit.defender`: its cell flashes red and fades,
@@ -644,8 +700,8 @@ class PygameRenderer(Renderer):
     def _paint_cell(self, x, y, char, rgb, color_index=0, dim=False, angle=0):
         if self._paint_tile(x, y, char, color_index, dim, angle):
             return
-        if self.layout.tile or self._proj is not None or angle:
-            # No tile for this char (or a zoomed or leaning glyph): centred.
+        if self.layout.tile or self._proj is not None or angle or self._sprite_offset != (0, 0):
+            # No tile for this char (or a zoomed, leaning or shaking glyph): centred.
             self._blit_centred(self._rotated(self._glyph(char, rgb), angle), x, y)
         else:
             self.canvas.put(x, y, char, rgb)
@@ -668,7 +724,7 @@ class PygameRenderer(Renderer):
                     self._tilted_tiles[key] = leaning
             tile = leaning
             rect = tile.get_rect(center=rect.center)
-        self.canvas.surface.blit(tile, rect.topleft)
+        self.canvas.surface.blit(tile, rect.move(self._sprite_offset).topleft)
         return True
 
     @staticmethod
@@ -710,7 +766,7 @@ class PygameRenderer(Renderer):
         return glyph
 
     def _blit_centred(self, surface, x, y):
-        centre = self._map_cell_rect(x, y).center
+        centre = self._map_cell_rect(x, y).move(self._sprite_offset).center
         self.canvas.surface.blit(surface, surface.get_rect(center=centre))
 
     def _paint_boss(self, x, y, char, rgb, color_index, angle=0):
@@ -720,7 +776,7 @@ class PygameRenderer(Renderer):
         distinction."""
         if self._paint_tile(x, y, char, color_index, angle=angle):
             return
-        if self.layout.tile or self._proj is not None or angle:
+        if self.layout.tile or self._proj is not None or angle or self._sprite_offset != (0, 0):
             self._blit_centred(
                 self._rotated(self._glyph(char, rgb, bold=True, underline=True), angle), x, y
             )

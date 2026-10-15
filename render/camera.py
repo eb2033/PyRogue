@@ -61,6 +61,10 @@ SHAKE_AMPLITUDE = 0.12
 CRIT_SHAKE_AMPLITUDE = 0.25
 MIN_SHAKE_PX = 2  # so a shake is still felt on small cells
 SHAKE_STEP_MS = 30  # the jitter picks a new offset this often
+# The struck sprite's own shake, as a multiple of the map shake's amplitude,
+# applied to the sprite's cell at the current view: 0.09 of a cell for a
+# normal hit, 0.19 for a crit (4 / 8 px on a 40 px tile, 12 / 24 zoomed to 128).
+SPRITE_SHAKE_RATIO = 0.75
 
 
 def shake_for(hit):
@@ -80,10 +84,31 @@ def shake_offset(shake, t, cell):
     px tall. Each axis is a random jitter within the peak, held for
     SHAKE_STEP_MS, under a (1 - t)^2 decay -- so it starts at full strength
     and settles to exactly (0, 0) at t = 1. Deterministic for a given shake."""
+    return _jitter(shake, t, shake_peak(shake, cell), skip=0)
+
+
+def sprite_shake_offset(shake, t, cell):
+    """(dx, dy) in pixels at t for the struck sprite itself, in a cell
+    `cell` px tall at the current view (so it scales with the zoom). Same
+    timing, decay and per-hit random sequence as shake_offset -- the next two
+    draws of it, so the sprite doesn't just move in step with the map -- and
+    a peak of SPRITE_SHAKE_RATIO of its own cell: bigger for a crit, whose
+    shake.amplitude is. (0, 0) at t = 1, so the sprite ends back in its cell."""
+    return _jitter(shake, t, sprite_shake_peak(shake, cell), skip=2)
+
+
+def sprite_shake_peak(shake, cell):
+    """The struck sprite's peak offset in pixels, in a cell `cell` px tall."""
+    return max(MIN_SHAKE_PX, round(cell * shake.amplitude * SPRITE_SHAKE_RATIO))
+
+
+def _jitter(shake, t, peak, skip):
     if not 0 <= t < 1:
         return 0, 0
-    peak = shake_peak(shake, cell) * (1 - t) ** 2
     rng = random.Random(shake.seed * 7919 + int(t * shake.ms / SHAKE_STEP_MS))
+    for _ in range(skip):
+        rng.random()
+    peak *= (1 - t) ** 2
     return round(rng.uniform(-1, 1) * peak), round(rng.uniform(-1, 1) * peak)
 
 

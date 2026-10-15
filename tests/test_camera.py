@@ -458,6 +458,23 @@ class HitShakeTest(unittest.TestCase):
         self.assertGreater(camera.shake_peak(shake, 64), camera.shake_peak(shake, 24))
         self.assertGreaterEqual(camera.shake_peak(shake, 4), camera.MIN_SHAKE_PX)
 
+    def test_sprite_shake_has_the_same_timing_and_a_bigger_crit(self):
+        normal = camera.shake_for(self.hit(False)[1])
+        crit = camera.shake_for(self.hit(True)[1])
+        self.assertGreater(
+            camera.sprite_shake_peak(crit, 40), camera.sprite_shake_peak(normal, 40)
+        )
+        for shake in (normal, crit):
+            times = [i / 50 for i in range(50)]
+            offsets = [camera.sprite_shake_offset(shake, t, 40) for t in times]
+            self.assertEqual(offsets, [camera.sprite_shake_offset(shake, t, 40) for t in times])
+            peak = camera.sprite_shake_peak(shake, 40)
+            self.assertTrue(all(abs(dx) <= peak and abs(dy) <= peak for dx, dy in offsets))
+            self.assertTrue(any(o != (0, 0) for o in offsets))
+            self.assertEqual(camera.sprite_shake_offset(shake, 1.0, 40), (0, 0))
+            # Its own draws from the hit's sequence, not the map's offset again.
+            self.assertNotEqual(offsets, [camera.shake_offset(shake, t, 40) for t in times])
+
 
 if __name__ == '__main__':
     unittest.main()

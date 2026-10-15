@@ -685,9 +685,9 @@ class HitShakeAndHealthBarTest(unittest.TestCase):
         offsets = []
         real = self.renderer._paint_game
 
-        def paint(state, impact=None, shake=(0, 0)):
+        def paint(state, impact=None, shake=(0, 0), **kw):
             offsets.append(shake)
-            real(state, impact=impact, shake=shake)
+            real(state, impact=impact, shake=shake, **kw)
 
         with mock.patch.object(self.renderer, '_paint_game', side_effect=paint):
             self.renderer.draw(state)
@@ -743,6 +743,125 @@ class HitShakeAndHealthBarTest(unittest.TestCase):
         self.renderer.draw(state)
         self.assertLess(pygame.time.get_ticks() - start, 1000)
         self.assertEqual(self.renderer.get_action(), Action.QUIT)
+
+    # -- the struck sprite's own shake ----------------------------------------
+
+    def impact_frame(self, state, hit, t, sprite=True):
+        """The map painted at t of `hit`'s beat, without the map's shake, so
+        only the sprite's own jitter differs between sprite=True and False."""
+        r = self.renderer
+        r.canvas.clear()
+        shake = camera.shake_for(hit)
+        r._paint_game(state, impact=(hit, t), sprite_shake=shake if sprite else None)
+        return r.canvas.surface.copy()
+
+    def assert_sprite_shakes(self, state, hit, attacker):
+        r = self.renderer
+        map_rect = r.layout.map_rect()
+        if r._view is not None:
+            r._proj = camera.project(r._view, map_rect, r.layout.map_cell_size())
+        try:
+            struck = r._map_cell_rect(hit.x, hit.y)
+            other = r._map_cell_rect(attacker.x, attacker.y)
+        finally:
+            r._proj = None
+        # The struck sprite may spill a few pixels over the edge it shares
+        # with the attacker; the rest of the attacker's cell is its own
+        # sprite, which must not jitter.
+        spill = camera.sprite_shake_peak(camera.shake_for(hit), struck.height)
+        dx, dy = attacker.x - hit.x, attacker.y - hit.y
+        own = pygame.Rect(other)
+        if dx:
+            own.width -= spill
+            own.left += spill if dx > 0 else 0
+        else:
+            own.height -= spill
+            own.top += spill if dy > 0 else 0
+        moved = False
+        for step in range(10):
+            t = step / 10
+            jolted = self.impact_frame(state, hit, t)
+            still = self.impact_frame(state, hit, t, sprite=False)
+            if area_bytes(jolted, struck) != area_bytes(still, struck):
+                moved = True
+            self.assertEqual(area_bytes(jolted, own), area_bytes(still, own), t)
+        self.assertTrue(moved, 'the struck sprite never moved')
+        # The beat's end: exactly back in its cell, the whole map unchanged.
+        end = self.impact_frame(state, hit, 1.0)
+        still = self.impact_frame(state, hit, 1.0, sprite=False)
+        self.assertEqual(area_bytes(end, map_rect), area_bytes(still, map_rect))
+
+    def test_the_struck_monster_shakes_in_its_cell(self):
+        state, goblin = self.fight()
+        state.attack(state.player, goblin)
+        hit = state.combat_events[-1]
+        self.assertIs(hit.defender, goblin)
+        self.assertFalse(hit.killed)
+        self.assert_sprite_shakes(state, hit, state.player)
+
+    def test_the_struck_player_shakes_in_its_cell(self):
+        state, goblin = self.fight()
+        state.attack(goblin, state.player)
+        hit = state.combat_events[-1]
+        self.assertIs(hit.defender, state.player)
+        self.assert_sprite_shakes(state, hit, goblin)
+
+    def test_the_struck_sprite_shakes_zoomed_in(self):
+        state, goblin = self.fight(zoom=True)
+        self.assertIsNotNone(self.renderer._view)
+        state.attack(state.player, goblin)
+        self.assert_sprite_shakes(state, state.combat_events[-1], state.player)
+
+    def test_sprite_shake_is_repeatable_decays_and_is_bigger_for_a_crit(self):
+        state, goblin = self.fight()
+        state.attack(state.player, goblin)
+        hit = state.combat_events[-1]
+        crit = hit._replace(crit=True)
+        r = self.renderer
+        cell = r._map_cell_rect(hit.x, hit.y).height
+
+        def peak(h):
+            shake = camera.shake_for(h)
+            ts = [i / 50 for i in range(50)]
+            offsets = [r.sprite_shake_offset(shake, t, h) for t in ts]
+            self.assertEqual(offsets, [r.sprite_shake_offset(shake, t, h) for t in ts])
+            self.assertEqual(r.sprite_shake_offset(shake, 1.0, h), (0, 0))
+            return max(max(abs(dx), abs(dy)) for dx, dy in offsets)
+
+        normal, big = peak(hit), peak(crit)
+        self.assertGreater(normal, 0)
+        self.assertGreater(big, normal)
+        self.assertLessEqual(normal, round(cell * camera.SHAKE_AMPLITUDE))
+        self.assertLessEqual(big, round(cell * camera.CRIT_SHAKE_AMPLITUDE))
+        # Not just the map's shake again: the sprite has its own draws.
+        shake = camera.shake_for(hit)
+        self.assertNotEqual(
+            [camera.sprite_shake_offset(shake, i / 10, cell) for i in range(10)],
+            [camera.shake_offset(shake, i / 10, cell) for i in range(10)],
+        )
+
+    def test_health_bar_moves_with_the_shaking_sprite(self):
+        from render.pygame_render import HEALTH_BAR_COLORS
+
+        state, goblin = self.fight()
+        r = self.renderer
+        map_rect = r.layout.map_rect()
+        still = r.health_bar_rect(goblin, state.player, map_rect)
+        r._jolt = (goblin, (3, -2))
+        try:
+            moved = r.health_bar_rect(goblin, state.player, map_rect)
+        finally:
+            r._jolt = None
+        self.assertEqual(moved, still.move(3, -2))
+        # Painted with the goblin jolted: the bar is drawn at the moved rect.
+        r.canvas.clear()
+        r._jolt = (goblin, (3, -2))
+        r._paint_game(state)
+        self.assertIsNone(r._jolt)  # one frame only
+        self.assertTrue(set(cell_pixels(r, moved)) <= HEALTH_BAR_COLORS)
+        r.canvas.clear()
+        r._paint_game(state)
+        self.assertTrue(set(cell_pixels(r, still)) <= HEALTH_BAR_COLORS)
 
     # -- health bars ----------------------------------------------------------
 
@@ -839,6 +958,35 @@ class HitShakeAndHealthBarTest(unittest.TestCase):
             state.seen[goblin.y][goblin.x] = True
             self.renderer.draw(state)
         self.assertEqual(painted, [])
+
+
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
+class GlyphModeSpriteShakeTest(unittest.TestCase):
+    """The struck sprite's own shake with no tileset: glyphs, not tiles."""
+
+    fight = HitShakeAndHealthBarTest.fight
+    impact_frame = HitShakeAndHealthBarTest.impact_frame
+    assert_sprite_shakes = HitShakeAndHealthBarTest.assert_sprite_shakes
+    test_the_struck_monster_shakes_in_its_cell = (
+        HitShakeAndHealthBarTest.test_the_struck_monster_shakes_in_its_cell
+    )
+    test_the_struck_player_shakes_in_its_cell = (
+        HitShakeAndHealthBarTest.test_the_struck_player_shakes_in_its_cell
+    )
+    test_the_struck_sprite_shakes_zoomed_in = (
+        HitShakeAndHealthBarTest.test_the_struck_sprite_shakes_zoomed_in
+    )
+
+    def setUp(self):
+        self.renderer = PygameRenderer(WIDTH, HEIGHT)
+        self.renderer._set_mode((1600, 900), pygame.RESIZABLE)
+        self.renderer._relayout()
+        self.renderer.zoom_ms = 0
+        self.assertFalse(self.renderer.layout.tile)
+        pygame.event.clear()
+
+    def tearDown(self):
+        self.renderer.close()
 
 
 @unittest.skipUnless(pygame, 'pygame-ce not installed')
@@ -1258,6 +1406,11 @@ def cell_pixels(renderer, rect, as_list=False):
         for x in range(rect.left, rect.right)
     ]
     return pixels if as_list else set(pixels)
+
+
+def area_bytes(surface, rect):
+    """The RGB bytes of `rect` on `surface`, to compare two frames' areas."""
+    return pygame.image.tobytes(surface.subsurface(rect).copy(), 'RGB')
 
 
 def lit_pixels(renderer, rect):
