@@ -2906,6 +2906,8 @@ class ArcherArena(unittest.TestCase):
         p = self.state.player
         p.x, p.y = 10, 10
         p.hp = p.max_hp = 1000
+        # A plain single-target weapon, not the archer's starting longbow.
+        p.weapon = Item(0, 0, 'weapon', 'common')
         self.state.entities = [p]
         self.state.update_fov()
         patcher = mock.patch('game.state.BASE_CRIT_CHANCE', 0.0)
@@ -3054,6 +3056,45 @@ class ArcherWeaponTests(ArcherArena):
         self.state.shoot_arrow(1, 0)
         self.assertEqual(left.hp, 1000)
 
+    def test_a_volley_is_one_shot_with_all_its_arrows_from_the_player(self):
+        self.equip('volley_bow', 'rare', power=10)  # aim + 3 extras
+        aim, left, right = self.monster(13, 10), self.monster(13, 9), self.monster(13, 11)
+        state = self.state
+        self.assertTrue(state.handle_action('shoot_e'))  # one action, one turn
+        self.assertEqual(len(state.shots), 1)  # one shot, not one per arrow
+        shot = state.shots[0]
+        self.assertEqual(len(shot.arrows), 4)
+        for arrow in shot.arrows:
+            self.assertEqual(arrow.path[0], (10, 10))  # all leave the player's cell
+            for hit in arrow.hits:
+                self.assertIn((hit.x, hit.y), arrow.path)
+        # The aim arrow comes first and is also the shot's path / hits.
+        self.assertEqual(shot.arrows[0].path[1], (11, 10))
+        self.assertEqual((shot.path, shot.hits), tuple(shot.arrows[0]))
+        # Side arrows step diagonally forward first; the third extra flies the aim line.
+        self.assertEqual({a.path[1] for a in shot.arrows[1:3]}, {(11, 9), (11, 11)})
+        self.assertEqual(shot.arrows[3].path[1], (11, 10))
+        # Each arrow keeps its own hits and damage; all of them are this shot's.
+        self.assertEqual(
+            [[h.defender for h in a.hits] for a in shot.arrows], [[aim], [right], [left], [aim]]
+        )
+        self.assertEqual([[h.damage for h in a.hits] for a in shot.arrows], [[10], [6], [6], [6]])
+        every = [h for a in shot.arrows for h in a.hits]
+        self.assertEqual(sorted(every, key=lambda h: h.serial), state.combat_events)
+        self.assertLess(shot.serial, min(h.serial for h in every))
+        self.assertEqual(state.player.quiver, QUIVER_CAPACITY - 1)  # one arrow spent
+        self.assertEqual(state.turn, 1)  # all of it on the same turn
+
+    def test_a_single_arrow_bow_records_a_one_arrow_shot(self):
+        self.equip('longbow', 'common', power=6)
+        first, second = self.monster(12, 10), self.monster(14, 10)
+        self.state.shoot_arrow(1, 0)
+        (shot,) = self.state.shots
+        self.assertEqual(len(shot.arrows), 1)
+        self.assertEqual(shot.arrows[0].path[0], (10, 10))
+        self.assertEqual([h.defender for h in shot.arrows[0].hits], [first, second])
+        self.assertEqual((shot.path, shot.hits), tuple(shot.arrows[0]))
+
     def test_attack_factor_defaults_to_one(self):
         m = self.monster(11, 10)
         self.state.player.power = 8
@@ -3176,6 +3217,17 @@ class ArcherWeaponTests(ArcherArena):
                     state.open_chest(c)
                     kinds = {item.kind for item in cast(list, state.pending_choice)}
                     self.assertFalse(kinds & set(other), char_class)
+
+
+class StartingWeaponTests(unittest.TestCase):
+    def test_archer_starts_with_a_common_longbow_and_warrior_the_plain_weapon(self):
+        archer = GameState(50, 20, char_class='archer').player
+        self.assertEqual((archer.weapon.kind, archer.weapon.rarity), ('longbow', 'common'))
+        self.assertEqual(archer.weapon.pierce, 2)
+        # base 3 + common bonus 1 + longbow offset -2 = 2 (above MIN_POWER).
+        self.assertEqual(archer.power, 2)
+        warrior = GameState(50, 20, char_class='warrior').player
+        self.assertEqual((warrior.weapon.kind, warrior.weapon.rarity), ('weapon', 'common'))
 
 
 class QuiverTests(ArcherArena):

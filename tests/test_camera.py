@@ -490,6 +490,8 @@ def archer_arena():
         for x in range(1, WIDTH - 1):
             state.game_map[y][x] = FLOOR
     state.player.x, state.player.y = 10, 10
+    # A plain single-target weapon, not the archer's starting longbow.
+    state.player.weapon = Item(0, 0, 'weapon', 'common')
     state.entities = [state.player]
     state.update_fov()
     return state
@@ -546,23 +548,28 @@ class ArrowFlightTest(unittest.TestCase):
         self.assertEqual(beats[0].path[-1], (13, 10))
         self.assertIsNotNone(self.state.arrows_at(13, 10))  # the pile tile
 
-    def test_each_volley_arrow_gets_its_own_flight_and_impact(self):
+    def test_a_volley_is_one_shot_whose_arrows_all_leave_the_player(self):
         Item(0, 0, 'volley_bow', 'common').apply(self.state.player, self.state.log)
         add_goblin(self.state, 13, 10)
         add_goblin(self.state, 13, 9)
         add_goblin(self.state, 13, 11)
         beats = self.shoot()
-        flights = [b for b in beats if isinstance(b, Flight)]
-        self.assertEqual(len(flights), len(self.state.shots))
-        for i, beat in enumerate(beats):
-            if isinstance(beat, Impact):
-                before = beats[i - 1]
-                self.assertIsInstance(before, Flight)
-                self.assertEqual(before.path[-1], (beat.hit.x, beat.hit.y))
-        # A side arrow goes from the player straight to its diagonal first tile.
-        side = flights[1].path
-        self.assertEqual(side[0], (10, 10))
-        self.assertEqual(abs(side[1][0] - 10) + abs(side[1][1] - 10), 2)
+        # One shot record carrying all three arrows, each from the player's cell.
+        self.assertEqual(len(self.state.shots), 1)
+        shot = self.state.shots[0]
+        self.assertEqual(len(shot.arrows), 3)
+        self.assertEqual({arrow.path[0] for arrow in shot.arrows}, {(10, 10)})
+        # The aim arrow is the shot's own path: flown first, its Impact after it.
+        self.assertEqual((shot.path, shot.hits), shot.arrows[0])
+        self.assertIsInstance(beats[0], Flight)
+        self.assertEqual(beats[0].path, shot.arrows[0].path)
+        self.assertIsInstance(beats[1], Impact)
+        self.assertEqual(beats[0].path[-1], (beats[1].hit.x, beats[1].hit.y))
+        # Every arrow's hit is staged once.
+        hits = [hit.serial for arrow in shot.arrows for hit in arrow.hits]
+        impacts = [b.hit.serial for b in beats if isinstance(b, Impact)]
+        self.assertEqual(sorted(impacts), sorted(hits))
+        self.assertEqual(len(hits), 3)
 
     def test_a_flight_stops_where_the_arrow_leaves_sight(self):
         beats = self.shoot()  # down an open row longer than the FOV radius

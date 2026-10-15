@@ -1262,40 +1262,40 @@ class ChoiceCardTextTest(unittest.TestCase):
                 '+7 damage, reach 2',
             ],
             'longbow': [
+                '-1 damage, pierces 2',
                 '+0 damage, pierces 2',
-                '+1 damage, pierces 2',
-                '+3 damage, pierces 3',
-                '+6 damage, pierces 4',
+                '+2 damage, pierces 3',
+                '+5 damage, pierces 4',
             ],
             'heavy_crossbow': [
+                '+2 damage, reload 2',
                 '+3 damage, reload 2',
-                '+4 damage, reload 2',
-                '+6 damage, reload 1',
-                '+9 damage, reload 1',
+                '+5 damage, reload 1',
+                '+8 damage, reload 1',
             ],
             'volley_bow': [
+                '-2 damage, +2 arrows at 50%',
                 '-1 damage, +2 arrows at 50%',
-                '+0 damage, +2 arrows at 50%',
-                '+2 damage, +3 arrows at 60%',
-                '+5 damage, +3 arrows at 70%',
+                '+1 damage, +3 arrows at 60%',
+                '+4 damage, +3 arrows at 70%',
             ],
             'sling': [
+                '-1 damage, knockback 1',
                 '+0 damage, knockback 1',
-                '+1 damage, knockback 1',
-                '+3 damage, knockback 2',
-                '+6 damage, knockback 2',
+                '+2 damage, knockback 2',
+                '+5 damage, knockback 2',
             ],
             'hunters_bow': [
-                '+0 damage, mark +25%',
-                '+1 damage, mark +50%',
-                '+3 damage, mark +75%',
-                '+6 damage, mark +100%',
+                '-1 damage, mark +25%',
+                '+0 damage, mark +50%',
+                '+2 damage, mark +75%',
+                '+5 damage, mark +100%',
             ],
             'quickdraw': [
+                '+0 damage, every 4 shots free',
                 '+1 damage, every 4 shots free',
-                '+2 damage, every 4 shots free',
-                '+4 damage, every 3 shots free',
-                '+7 damage, every 2 shots free',
+                '+3 damage, every 3 shots free',
+                '+6 damage, every 2 shots free',
             ],
         }
         from game.item import GEAR_KINDS, RARITIES
@@ -1458,11 +1458,15 @@ class ArcherVisualsTest(unittest.TestCase):
 
     @staticmethod
     def arena(char_class='archer'):
+        from game.item import Item
+
         state = GameState(WIDTH, HEIGHT, char_class=char_class)
         for y in range(1, HEIGHT - 1):
             for x in range(1, WIDTH - 1):
                 state.game_map[y][x] = '.'
         state.player.x, state.player.y = 10, 10
+        # A plain single-target weapon, not the archer's starting longbow.
+        state.player.weapon = Item(0, 0, 'weapon', 'common')
         state.entities = [state.player]
         state.update_fov()
         return state
