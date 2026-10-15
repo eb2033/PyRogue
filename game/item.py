@@ -91,11 +91,13 @@ GEAR_STATS = {'weapon': GEAR_BONUS, 'armor': ARMOR_DEFENSE}
 GEAR_STATS.update({kind: {r: GEAR_BONUS[r] + WEAPON_DAMAGE_OFFSET[kind] for r in RARITIES}
                    for kind in WEAPON_TYPES})
 
-# The kinds a gear-chest (or boss-chest) drop picks from, uniformly. This is
-# the one place to rebalance drops: repeat a kind to weight it up, or leave
-# one out to stop it dropping (it still loads from a save). Uniform over the
-# 8 GEAR_KINDS makes armor 1 drop in 8.
-GEAR_DROP_KINDS = list(GEAR_KINDS)
+# The kinds a gear-chest (or boss-chest) drop can be. The plain 'weapon' is
+# not among them: it is the starting weapon every run begins with (see
+# GameState), so it never drops. Armor's share of drops is ARMOR_DROP_CHANCE;
+# the rest are weapons, split evenly across WEAPON_TYPES (roll_gear_kind).
+GEAR_DROP_KINDS = ['armor'] + WEAPON_TYPES
+# The starting weapon, equipped at the start of every run.
+STARTING_WEAPON_RARITY = 'common'
 
 GEAR_NAMES = {
     ('weapon', 'common'): 'Rusty Dagger',
@@ -151,6 +153,10 @@ JUNK_CHAR = '%'
 JUNK_COLOR = 7
 # Chance that any one gear-chest drop is junk. Flat: does not scale with depth.
 JUNK_CHANCE = 0.15
+# Share of every drop (junk not counted separately, boss drops included) that
+# is armor. Armor is the more impactful drop, so it gets a fixed 20%; the
+# remainder of non-junk drops are weapons.
+ARMOR_DROP_CHANCE = 0.20
 
 CHEST_CHAR = '='
 CHEST_COLOR = 3         # gear chests: reuses the cyan pair the old flat "item" color used
@@ -187,18 +193,28 @@ def roll_kind(rng=random):
     return rng.choice(CHEST_KINDS)
 
 
+def roll_gear_kind(armor_chance, rng=random):
+    """Armor with probability armor_chance, otherwise a weapon type picked evenly."""
+    if rng.random() < armor_chance:
+        return 'armor'
+    return rng.choice(WEAPON_TYPES)
+
+
 def roll_gear_drop(depth=1, rng=random):
-    """One gear-chest drop: junk with JUNK_CHANCE, else a random
-    GEAR_DROP_KINDS piece at a depth-scaled rarity."""
+    """One gear-chest drop: junk with JUNK_CHANCE, else a gear piece at a
+    depth-scaled rarity. Armor is ARMOR_DROP_CHANCE of ALL drops, so among the
+    non-junk ones it is ARMOR_DROP_CHANCE / (1 - JUNK_CHANCE)."""
     if rng.random() < JUNK_CHANCE:
         return Item(0, 0, JUNK)
-    return Item(0, 0, rng.choice(GEAR_DROP_KINDS), roll_rarity(depth, rng))
+    armor_of_gear = ARMOR_DROP_CHANCE / (1 - JUNK_CHANCE)
+    return Item(0, 0, roll_gear_kind(armor_of_gear, rng), roll_rarity(depth, rng))
 
 
 def roll_boss_drop(rng=random):
-    """One boss-chest drop: always gear, always rare or epic, never junk."""
+    """One boss-chest drop: always gear, always rare or epic, never junk, so
+    armor is ARMOR_DROP_CHANCE of them directly."""
     rarity = rng.choices(BOSS_CHEST_MIN_RARITIES, weights=BOSS_CHEST_MIN_WEIGHTS)[0]
-    return Item(0, 0, rng.choice(GEAR_DROP_KINDS), rarity)
+    return Item(0, 0, roll_gear_kind(ARMOR_DROP_CHANCE, rng), rarity)
 
 
 def _effect_value(value, rarity):

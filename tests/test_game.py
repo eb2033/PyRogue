@@ -30,6 +30,7 @@ from game.save import apply_dict, load_game, save_game, state_to_dict
 from game.damage import mitigate, round_damage
 from game.state import BASE_CRIT_CHANCE, CRIT_MULTIPLIER, GameState, crit_chance
 from game.tiles import DOOR, FLOOR, STAIRS_DOWN, WALL, is_walkable
+from game.item import ARMOR_DROP_CHANCE, roll_boss_drop, roll_gear_drop
 
 
 class DungeonGenerationTests(unittest.TestCase):
@@ -630,7 +631,7 @@ class GearTests(unittest.TestCase):
     def test_equip_weapon_updates_power(self):
         random.seed(42)
         state = GameState(50, 20, char_class='warrior')
-        base_power = state.player.power
+        base_power = state.player.base_power
         weapon = Item(0, 0, 'weapon', 'rare')
         weapon.apply(state.player, state.log)
         self.assertIs(state.player.weapon, weapon)
@@ -639,7 +640,7 @@ class GearTests(unittest.TestCase):
     def test_swapping_weapon_does_not_stack_bonus(self):
         random.seed(43)
         state = GameState(50, 20)
-        base_power = state.player.power
+        base_power = state.player.base_power
         w1 = Item(state.player.x, state.player.y, 'weapon', 'common')
         w1.apply(state.player, state.log)
         w2 = Item(state.player.x, state.player.y, 'weapon', 'epic')
@@ -653,7 +654,7 @@ class GearTests(unittest.TestCase):
         # equips -- the old "leave it if yours is better" rule is gone.
         random.seed(53)
         state = GameState(50, 20)
-        base_power = state.player.power
+        base_power = state.player.base_power
         epic = Item(state.player.x, state.player.y, 'weapon', 'epic')
         epic.apply(state.player, state.log)
         common = Item(state.player.x, state.player.y, 'weapon', 'common')
@@ -922,13 +923,14 @@ class ChestChoiceTests(unittest.TestCase):
     def test_open_gear_chest_sets_pending_choice_and_equips_nothing(self):
         random.seed(63)
         state = GameState(50, 20)
+        starting = state.player.weapon
         chest = Chest(state.player.x, state.player.y, kind='gear')
         state.entities = [state.player, chest]
         state.open_chest(chest)
         self.assertNotIn(chest, state.entities)
         self.assertTrue(state.is_choosing)
         self.assertEqual(len(state.pending_choice), 3)
-        self.assertIsNone(state.player.weapon)
+        self.assertIs(state.player.weapon, starting)  # the starting weapon, untouched
         self.assertIsNone(state.player.armor)
         self.assertTrue(state.messages[-1].startswith('Choose one:'))
 
@@ -1345,7 +1347,22 @@ class WeaponTypeTests(unittest.TestCase):
                 self.assertTrue(item.name)
                 self.assertEqual(item.char, ITEM_CHARS['weapon'])
         self.assertIn('armor', GEAR_DROP_KINDS)
-        self.assertIn('weapon', GEAR_DROP_KINDS)
+        # The plain weapon is the starting weapon, never a drop.
+        self.assertNotIn('weapon', GEAR_DROP_KINDS)
+
+    def test_drop_shares_armor_twenty_percent_junk_fifteen(self):
+        # Armor is 20% of ALL gear-chest drops (junk included); the rest are
+        # weapon types, evenly. Boss drops have no junk, so armor is 20% there.
+        rng = random.Random(7)
+        n = 20000
+        gear = [roll_gear_drop(1, rng) for _ in range(n)]
+        junk = sum(1 for d in gear if d.kind == JUNK) / n
+        armor = sum(1 for d in gear if d.kind == 'armor') / n
+        self.assertTrue(abs(junk - 0.15) < 0.01, junk)
+        self.assertTrue(abs(armor - ARMOR_DROP_CHANCE) < 0.01, armor)
+        boss = [roll_boss_drop(rng) for _ in range(n)]
+        self.assertTrue(abs(sum(1 for d in boss if d.kind == 'armor') / n - ARMOR_DROP_CHANCE) < 0.01)
+        self.assertNotIn('weapon', {d.kind for d in gear + boss})
 
     def test_damage_bonus_by_rarity(self):
         for kind, table in self.EXPECTED_BONUS.items():
@@ -1597,6 +1614,17 @@ class WeaponTypeTests(unittest.TestCase):
         self.state.handle_action('move_e')
         self.assertEqual(far.hp, 1000)
         self.assertEqual((self.state.player.x, self.state.player.y), (10, 10))
+
+    def test_spear_does_not_reach_through_a_door(self):
+        self.equip('spear', 'rare')
+        self.state.game_map[10][11] = DOOR
+        far = self.monster(12, 10)
+        # Force the target visible so only the door rule can block the strike.
+        self.state.visible[10][12] = True
+        self.state.handle_action('move_e')
+        self.assertEqual(far.hp, 1000)
+        # The door is walkable, so the press is a normal move into it.
+        self.assertEqual((self.state.player.x, self.state.player.y), (11, 10))
 
     def test_spear_does_not_reach_diagonally(self):
         self.equip('spear', 'rare')

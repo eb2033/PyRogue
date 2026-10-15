@@ -21,10 +21,11 @@ from game.damage import mitigate, round_damage
 from game.dungeon import generate_dungeon, place_stairs
 from game.entity import Entity
 from game.fov import update_visibility
-from game.item import Chest, spawn_boss_chest, spawn_chests
+from game.item import (STARTING_WEAPON_RARITY, Chest, Item, gear_power,
+                       spawn_boss_chest, spawn_chests)
 from game.monster import Monster, is_boss_level, spawn_boss, spawn_monsters
 from game.save import apply_dict, load_game, save_game
-from game.tiles import STAIRS_DOWN, is_walkable
+from game.tiles import DOOR, STAIRS_DOWN, is_walkable
 
 # None means "use paths.save_path()" (the per-user data dir), resolved at
 # save/load time rather than import time. Tests -- or anything else that wants
@@ -132,8 +133,9 @@ class GameState:
         self.player.base_power = power
         self.player.power = power
         self.player.defense = 0
-        self.player.weapon = None
+        self.player.weapon = Item(0, 0, 'weapon', STARTING_WEAPON_RARITY)
         self.player.armor = None
+        self.player.power = gear_power(self.player)
         self.player.inventory = []
         self.player.alive = True
 
@@ -250,9 +252,10 @@ class GameState:
         Only exactly `reach` tiles away, straight along the pressed
         direction (so never diagonally -- movement is 4-way). Every tile in
         between must be walkable and unoccupied: no wall, no monster (the
-        player is behind, never in between; a chest is not an obstacle). The
-        target must also be in the player's view, so a spear can't strike an
-        unseen monster through a closed door (doors are walkable but opaque).
+        player is behind, never in between; a chest is not an obstacle), and
+        no door -- a reach attack can't pass through one. The target must
+        also be in the player's view, so a spear can't strike an unseen
+        monster through a closed door (doors are walkable but opaque).
         """
         weapon = self.player.weapon
         reach = weapon.reach if weapon is not None else 1
@@ -261,7 +264,8 @@ class GameState:
         px, py = self.player.x, self.player.y
         for step in range(1, reach):
             x, y = px + dx * step, py + dy * step
-            if not is_walkable(self.game_map, x, y) or self.monster_at(x, y) is not None:
+            if (not is_walkable(self.game_map, x, y) or self.game_map[y][x] == DOOR
+                    or self.monster_at(x, y) is not None):
                 return None
         tx, ty = px + dx * reach, py + dy * reach
         if not (0 <= ty < self.height and 0 <= tx < self.width) or not self.visible[ty][tx]:

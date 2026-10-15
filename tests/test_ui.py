@@ -544,8 +544,10 @@ class PanelParityTest(unittest.TestCase):
         for _ in self.each_layout():
             for row in rows:
                 self.assertGreater(self.pixels(self.row_rect(row)), 0, f'row {row} blank')
-            # No gear: a slot's stats row stays empty.
-            for blank in (5, ui.GEAR_TOP + 2, ui.GEAR_TOP + 4, ui.GEAR_TOP + 5,
+            # Every run starts with a weapon, so its stats row (GEAR_TOP + 2)
+            # is drawn; no armor, so the armor's stats row stays empty.
+            self.assertGreater(self.pixels(self.row_rect(ui.GEAR_TOP + 2)), 0)
+            for blank in (5, ui.GEAR_TOP + 4, ui.GEAR_TOP + 5,
                           ui.CONTROLS_TOP + 4, ui.LOG_TOP + 3):
                 self.assertEqual(self.pixels(self.row_rect(blank)), 0, f'row {blank} drawn')
 
