@@ -33,8 +33,8 @@ from game.tiles import is_walkable
 
 # name -> (char, color, hp, power)
 MONSTER_TYPES = {
-    'goblin': ('g', 2, 12, 2),
-    'orc': ('o', 2, 30, 4),
+    'goblin': ('g', 2, 11, 2),
+    'orc': ('o', 2, 27, 4),
 }
 
 # The only steps anything in this game takes. Order is north/south/west/east
