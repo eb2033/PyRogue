@@ -26,12 +26,13 @@ Pure geometry, no pygame: views are in map cells (floats while animating).
 
 from collections import namedtuple
 
-MARGIN = 2                       # squares of map shown around the fight
+MARGIN = 2  # squares of map shown around the fight
 ZOOM_CLASSES = frozenset({'warrior'})
 
 
 class View(namedtuple('View', 'left top width height')):
     """A rectangle of the map, in cells."""
+
     __slots__ = ()
 
     @property
@@ -113,8 +114,11 @@ class Director:
 
         start = self.current(state)
         self.focus = self._pick_focus(state)
-        target = (combat_view(state.player, self.focus) if self.focus is not None
-                  else full_view(state.width, state.height))
+        target = (
+            combat_view(state.player, self.focus)
+            if self.focus is not None
+            else full_view(state.width, state.height)
+        )
         if target != start:
             beats.append(Pan(start, target))
         self.view = None if self.focus is None else target

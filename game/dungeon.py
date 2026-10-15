@@ -41,9 +41,9 @@ def wall_sides(room):
     touches no floor tile of the room orthogonally, so it can't be a doorway."""
     return [
         [(x, room.y1 - 1) for x in range(room.x1, room.x2)],  # north
-        [(x, room.y2) for x in range(room.x1, room.x2)],      # south
+        [(x, room.y2) for x in range(room.x1, room.x2)],  # south
         [(room.x1 - 1, y) for y in range(room.y1, room.y2)],  # west
-        [(room.x2, y) for y in range(room.y1, room.y2)],      # east
+        [(room.x2, y) for y in range(room.y1, room.y2)],  # east
     ]
 
 
@@ -89,8 +89,12 @@ def _wall_index(rooms):
             for pos in side:
                 sides.setdefault(pos, set()).add((i, side_no))
                 rings.setdefault(pos, set()).add(i)
-        room_corners = {(room.x1 - 1, room.y1 - 1), (room.x2, room.y1 - 1),
-                        (room.x1 - 1, room.y2), (room.x2, room.y2)}
+        room_corners = {
+            (room.x1 - 1, room.y1 - 1),
+            (room.x2, room.y1 - 1),
+            (room.x1 - 1, room.y2),
+            (room.x2, room.y2),
+        }
         corners.update(room_corners)
         for pos in room_corners:
             rings.setdefault(pos, set()).add(i)
@@ -181,8 +185,7 @@ def connect_rooms(game_map, rooms, rng: Rng = random):
             game_map[y][x] = FLOOR
 
 
-def generate_dungeon(w, h, min_rooms=4, max_rooms=6, min_size=4, max_size=8,
-                     max_attempts=300):
+def generate_dungeon(w, h, min_rooms=4, max_rooms=6, min_size=4, max_size=8, max_attempts=300):
     """Keeps rolling random, non-overlapping rooms until it hits a target
     room count in [min_rooms, max_rooms] or exhausts max_attempts. min_size/
     max_size are clamped to whatever fits in (w, h): a map smaller than the

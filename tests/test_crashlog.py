@@ -15,6 +15,7 @@ from game import crashlog, paths
 def _exc_info(message='boom'):
     def inner():
         raise ValueError(message)
+
     try:
         inner()
     except ValueError:
@@ -84,17 +85,23 @@ class CrashlogTest(unittest.TestCase):
     def test_real_uncaught_exception_in_a_process(self):
         """End to end: a process that dies of an uncaught exception leaves a
         crash.log with the full traceback, and stderr still gets it too."""
-        script = textwrap.dedent('''
+        script = textwrap.dedent("""
             from game import crashlog
             crashlog.install()
             def explode():
                 raise RuntimeError('forced crash for the test')
             explode()
-        ''')
+        """)
         env = dict(os.environ, PYROGUE_DATA_DIR=str(self.tmp / 'data'))
-        proc = subprocess.run([sys.executable, '-c', script], cwd=str(paths.SOURCE_ROOT),
-                              env=env, capture_output=True, text=True, timeout=60,
-                              check=False)
+        proc = subprocess.run(
+            [sys.executable, '-c', script],
+            cwd=str(paths.SOURCE_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn('RuntimeError: forced crash for the test', proc.stderr)
         text = (self.tmp / 'data' / 'crash.log').read_text(encoding='utf-8')

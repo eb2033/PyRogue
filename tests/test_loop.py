@@ -66,8 +66,9 @@ class MonsterPhaseFramesTests(unittest.TestCase):
         resolve_monster_phase(renderer, state, DELAY)
 
         first = renderer.draws()[0]
-        self.assertEqual(first[1], hp_after_player_half,
-                         'first frame already showed the monster\'s reply')
+        self.assertEqual(
+            first[1], hp_after_player_half, "first frame already showed the monster's reply"
+        )
         self.assertEqual(first[2], messages_after_player_half)
         self.assertIn('You hit', ' '.join(first[2]))
         self.assertNotIn('hits you', ' '.join(first[2]))

@@ -64,5 +64,5 @@ class Player(Entity):
         self.defense = 0
         self.weapon: Item | None = None
         self.armor: Item | None = None
-        self.inventory: list[str] = []   # item names, newest last
+        self.inventory: list[str] = []  # item names, newest last
         self.alive = True

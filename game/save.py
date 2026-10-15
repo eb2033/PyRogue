@@ -20,11 +20,17 @@ SAVE_VERSION = 1
 def _entity_to_dict(e):
     d = {'x': e.x, 'y': e.y, 'char': e.char, 'color': e.color, 'name': e.name}
     if isinstance(e, Monster):
-        d.update(type='monster', kind=e.kind, hp=e.hp, max_hp=e.max_hp,
-                  power=e.power, alive=e.alive, is_boss=e.is_boss)
+        d.update(
+            type='monster',
+            kind=e.kind,
+            hp=e.hp,
+            max_hp=e.max_hp,
+            power=e.power,
+            alive=e.alive,
+            is_boss=e.is_boss,
+        )
     elif isinstance(e, Chest):
-        d.update(type='chest', guaranteed_min_rarity=e.guaranteed_min_rarity,
-                 kind=e.kind)
+        d.update(type='chest', guaranteed_min_rarity=e.guaranteed_min_rarity, kind=e.kind)
     elif isinstance(e, Item):
         # Only reachable from an old (pre-chest) save file -- current play
         # never leaves a bare Item sitting in state.entities anymore.
@@ -68,10 +74,13 @@ def state_to_dict(state):
         'seen': [[bool(c) for c in row] for row in state.seen],
         'messages': state.messages,
         'player': {
-            'x': state.player.x, 'y': state.player.y,
+            'x': state.player.x,
+            'y': state.player.y,
             'char_class': state.player.char_class,
-            'hp': state.player.hp, 'max_hp': state.player.max_hp,
-            'base_power': state.player.base_power, 'power': state.player.power,
+            'hp': state.player.hp,
+            'max_hp': state.player.max_hp,
+            'base_power': state.player.base_power,
+            'power': state.player.power,
             'defense': state.player.defense,
             'weapon': _gear_to_dict(state.player.weapon),
             'armor': _gear_to_dict(state.player.armor),

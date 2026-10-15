@@ -7,6 +7,7 @@ keeps the game loop identical across curses and SDL.
 
 class Action:
     """Valid return values from Renderer.get_action()."""
+
     MOVE_N = 'move_n'
     MOVE_S = 'move_s'
     MOVE_W = 'move_w'

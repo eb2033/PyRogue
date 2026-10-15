@@ -57,13 +57,20 @@ class PygameRendererTest(unittest.TestCase):
         self.renderer.draw(state)
         cell = self.renderer.layout.cell_rect(state.player.x, state.player.y)
         screen = self.renderer.canvas.surface
-        pixels = {tuple(screen.get_at((x, y)))[:3]
-                  for x in range(cell.left, cell.right) for y in range(cell.top, cell.bottom)}
+        pixels = {
+            tuple(screen.get_at((x, y)))[:3]
+            for x in range(cell.left, cell.right)
+            for y in range(cell.top, cell.bottom)
+        }
         self.assertTrue(pixels - {BACKGROUND}, 'player cell is blank')
 
     def test_get_action_maps_keys_like_curses(self):
-        self.post(key(pygame.K_w, 'w'), key(pygame.K_s, 'S', shift=True),
-                  key(pygame.K_UP), key(pygame.K_PERIOD, '.'))
+        self.post(
+            key(pygame.K_w, 'w'),
+            key(pygame.K_s, 'S', shift=True),
+            key(pygame.K_UP),
+            key(pygame.K_PERIOD, '.'),
+        )
         self.assertEqual(self.renderer.get_action(), Action.MOVE_N)
         self.assertEqual(self.renderer.get_action(), Action.SAVE)
         self.assertEqual(self.renderer.get_action(), Action.SHOOT_N)
@@ -81,8 +88,10 @@ class PygameRendererTest(unittest.TestCase):
         self.renderer.draw(GameState(WIDTH, HEIGHT))
         before = self.renderer.layout.cell_w
         pygame.display.set_mode((3000, 1500), pygame.RESIZABLE)
-        self.post(pygame.event.Event(pygame.VIDEORESIZE, size=(3000, 1500), w=3000, h=1500),
-                  key(pygame.K_d, 'd'))
+        self.post(
+            pygame.event.Event(pygame.VIDEORESIZE, size=(3000, 1500), w=3000, h=1500),
+            key(pygame.K_d, 'd'),
+        )
         self.assertEqual(self.renderer.get_action(), Action.MOVE_E)
         self.assertGreater(self.renderer.layout.cell_w, before)
         self.assertEqual(self.renderer.canvas.surface.get_size(), (3000, 1500))
@@ -106,11 +115,18 @@ class PygameRendererTest(unittest.TestCase):
 
     def test_menus_and_a_full_run_through_main_loop(self):
         import main
+
         enter = key(pygame.K_RETURN, '\r')
         # Title: Start. Class: down to Archer, enter. Then a few turns, quit.
-        self.post(enter, key(pygame.K_s, 's'), enter,
-                  key(pygame.K_w, 'w'), key(pygame.K_RIGHT), key(pygame.K_PERIOD, '.'),
-                  key(pygame.K_q, 'q'))
+        self.post(
+            enter,
+            key(pygame.K_s, 's'),
+            enter,
+            key(pygame.K_w, 'w'),
+            key(pygame.K_RIGHT),
+            key(pygame.K_PERIOD, '.'),
+            key(pygame.K_q, 'q'),
+        )
         self.assertTrue(self.renderer.show_title_screen())
         char_class = self.renderer.choose_class()
         self.assertEqual(char_class, 'archer')
@@ -144,14 +160,17 @@ class PygameRendererTest(unittest.TestCase):
         self.renderer.draw(state)
         self.renderer.toggle_fullscreen()
         cell = self.renderer.layout.cell_rect(state.player.x, state.player.y)
-        self.assertTrue(cell_pixels(self.renderer, cell) - {BACKGROUND},
-                        'frame not repainted after going fullscreen')
+        self.assertTrue(
+            cell_pixels(self.renderer, cell) - {BACKGROUND},
+            'frame not repainted after going fullscreen',
+        )
 
     def test_f11_in_a_menu_is_not_a_selection(self):
         # F11 twice (in and out), then Down: still on the title menu, so the
         # Enter selects Quit -- F11 neither confirmed nor moved anything.
-        self.post(key(pygame.K_F11), key(pygame.K_F11), key(pygame.K_DOWN),
-                  key(pygame.K_RETURN, '\r'))
+        self.post(
+            key(pygame.K_F11), key(pygame.K_F11), key(pygame.K_DOWN), key(pygame.K_RETURN, '\r')
+        )
         self.assertFalse(self.renderer.show_title_screen())
         self.assertFalse(self.renderer.fullscreen)
 
@@ -161,8 +180,10 @@ class PygameRendererTest(unittest.TestCase):
         window.set_fullscreen.side_effect = pygame.error('no fullscreen here')
         with mock.patch.object(PygameRenderer, '_display_window', return_value=window):
             self.renderer.toggle_fullscreen()
-        with mock.patch.object(PygameRenderer, '_display_window', return_value=None), \
-                mock.patch('pygame.display.set_mode', side_effect=pygame.error('no')):
+        with (
+            mock.patch.object(PygameRenderer, '_display_window', return_value=None),
+            mock.patch('pygame.display.set_mode', side_effect=pygame.error('no')),
+        ):
             self.renderer.toggle_fullscreen()
         self.assertFalse(self.renderer.fullscreen)
         self.assertEqual(self.renderer.canvas.surface.get_size(), size)
@@ -194,12 +215,14 @@ class PygameRendererTest(unittest.TestCase):
         plain_pixels = lit_pixels(self.renderer, cell)
 
         self.assertGreater(len(boss_pixels), len(plain_pixels))
+
         # The glyph's solid core -- its most common red pixel -- is the colour
         # it was drawn in. (Not the brightest: an anti-aliased edge blended
         # over the white floor dot under the glyph can outshine the core.)
         def core_red(pixels):
             reds = [tuple(p[:3]) for p in pixels if p[0] > p[1] + 40]
             return sum(collections.Counter(reds).most_common(1)[0][0])
+
         self.assertGreater(core_red(boss_pixels), core_red(plain_pixels))
 
     def test_font_path_reaches_the_layout(self):
@@ -231,9 +254,11 @@ class PygameRendererTest(unittest.TestCase):
 
     def test_menu_hover_moves_the_highlight(self):
         seen = []
+
         def fake_hit(layout, menu, banner, pos):
             seen.append(menu.index)
             return {(1, 1): 1}.get(pos)
+
         self.post(self.motion((1, 1)), key(pygame.K_RETURN, '\r'))
         with mock.patch.object(screens, 'option_at', fake_hit):
             self.assertFalse(self.renderer.show_title_screen())  # Quit, via hover
@@ -248,8 +273,9 @@ class PygameRendererTest(unittest.TestCase):
             self.assertTrue(self.renderer.show_title_screen())
 
     def test_menu_click_outside_any_option_does_nothing(self):
-        self.post(self.click((9, 9)), self.motion((9, 9)), key(pygame.K_DOWN),
-                  key(pygame.K_RETURN, '\r'))
+        self.post(
+            self.click((9, 9)), self.motion((9, 9)), key(pygame.K_DOWN), key(pygame.K_RETURN, '\r')
+        )
         with mock.patch.object(screens, 'option_at', lambda *a: None):
             self.assertFalse(self.renderer.show_title_screen())  # keys decided it
 
@@ -260,8 +286,10 @@ class PygameRendererTest(unittest.TestCase):
 
     def test_menu_repaints_only_when_the_highlight_changes(self):
         self.post(self.motion(), self.motion(), self.motion(), key(pygame.K_RETURN, '\r'))
-        with mock.patch.object(screens, 'option_at', lambda *a: 1), \
-                mock.patch.object(screens, 'paint_menu') as paint:
+        with (
+            mock.patch.object(screens, 'option_at', lambda *a: 1),
+            mock.patch.object(screens, 'paint_menu') as paint,
+        ):
             self.renderer.show_title_screen()
         # first paint, one repaint after the highlight moved, none for the
         # two motions that changed nothing, then Enter returns.
@@ -357,8 +385,9 @@ class PygameRendererTest(unittest.TestCase):
         """The game-over line differs from the same frame without it."""
         layout = self.renderer.layout
         row = screens.game_over_rect(layout, state)
-        player = pygame.Rect(layout.map_cell_to_pixel(state.player.x, state.player.y),
-                             layout.map_cell_size())
+        player = pygame.Rect(
+            layout.map_cell_to_pixel(state.player.x, state.player.y), layout.map_cell_size()
+        )
         self.assertFalse(row.colliderect(player), 'the banner hides the player')
         self.renderer.draw(state)
         with_overlay = pixel_list(self.renderer, row)
@@ -379,6 +408,7 @@ class TileModeTest(unittest.TestCase):
     def setUp(self):
         from game.paths import resource_path
         from render.tileset import Tileset
+
         self.renderer = PygameRenderer(WIDTH, HEIGHT, tileset=Tileset(resource_path('assets')))
         self.renderer._set_mode((1600, 900), pygame.RESIZABLE)
         self.renderer._relayout()
@@ -394,8 +424,9 @@ class TileModeTest(unittest.TestCase):
         state = GameState(WIDTH, HEIGHT)
         self.renderer.draw(state)
         layout = self.renderer.layout
-        rect = pygame.Rect(layout.map_cell_to_pixel(state.player.x, state.player.y),
-                           layout.map_cell_size())
+        rect = pygame.Rect(
+            layout.map_cell_to_pixel(state.player.x, state.player.y), layout.map_cell_size()
+        )
         drawn = pygame.display.get_surface().subsurface(rect)
         expected = self.renderer.tileset.glyph('.', 0, layout.tile).copy()
         expected.blit(self.renderer.tileset.glyph('@', state.player.color, layout.tile), (0, 0))
@@ -422,8 +453,9 @@ class TileModeTest(unittest.TestCase):
         cell, _, ox, oy = camera.project(view, map_rect, layout.map_cell_size())
         assert layout.tile is not None
         self.assertGreater(cell, layout.tile)
-        self.assertLessEqual(min(map_rect.w // cell, map_rect.h // cell) - 1,
-                             min(view.width, view.height))
+        self.assertLessEqual(
+            min(map_rect.w // cell, map_rect.h // cell) - 1, min(view.width, view.height)
+        )
         # The player's zoomed tile is where the projection says, at the bigger size.
         rect = pygame.Rect(ox + state.player.x * cell, oy + state.player.y * cell, cell, cell)
         drawn = pygame.display.get_surface().subsurface(rect)
@@ -451,8 +483,7 @@ class TileModeTest(unittest.TestCase):
         map_rect = self.renderer.layout.map_rect()
         for surface in (zoomed, screen):
             surface.fill(BACKGROUND, map_rect)
-        self.assertEqual(pygame.image.tobytes(zoomed, 'RGB'),
-                         pygame.image.tobytes(screen, 'RGB'))
+        self.assertEqual(pygame.image.tobytes(zoomed, 'RGB'), pygame.image.tobytes(screen, 'RGB'))
 
     def test_fight_over_zooms_back_out(self):
         self.renderer.zoom_ms = self.renderer.impact_ms = 0
@@ -478,10 +509,11 @@ class TileModeTest(unittest.TestCase):
         state, _ = self.fight()
         frames = []
         show = self.renderer._show
-        with mock.patch.object(self.renderer, '_show',
-                               side_effect=lambda paint: (frames.append(1), show(paint))):
+        with mock.patch.object(
+            self.renderer, '_show', side_effect=lambda paint: (frames.append(1), show(paint))
+        ):
             self.renderer.draw(state)
-        self.assertGreater(len(frames), 2)   # in-between frames, then the final one
+        self.assertGreater(len(frames), 2)  # in-between frames, then the final one
 
     def test_impact_flashes_the_defender(self):
         self.renderer.zoom_ms = 0
@@ -489,8 +521,9 @@ class TileModeTest(unittest.TestCase):
         self.renderer.draw(state)
         state.attack(goblin, state.player)
         frames = []
-        with mock.patch.object(self.renderer, '_paint_impact',
-                               side_effect=lambda hit, t: frames.append((hit, t))):
+        with mock.patch.object(
+            self.renderer, '_paint_impact', side_effect=lambda hit, t: frames.append((hit, t))
+        ):
             self.renderer.draw(state)
         self.assertTrue(frames)
         self.assertIs(frames[0][0].defender, state.player)
@@ -512,8 +545,10 @@ class TileModeTest(unittest.TestCase):
         band = screens.game_over_rect(self.renderer.layout, state)
         self.assertTrue(self.renderer.layout.map_rect().contains(band))
         after = pygame.display.get_surface()
-        self.assertNotEqual(pygame.image.tobytes(after.subsurface(band), 'RGB'),
-                            pygame.image.tobytes(before.subsurface(band), 'RGB'))
+        self.assertNotEqual(
+            pygame.image.tobytes(after.subsurface(band), 'RGB'),
+            pygame.image.tobytes(before.subsurface(band), 'RGB'),
+        )
 
     def test_tiles_env_zero_keeps_glyph_mode(self):
         with mock.patch.dict(os.environ, {'TILES': '0'}):
@@ -561,10 +596,14 @@ class DefaultRendererTest(unittest.TestCase):
 
 # -- helpers -----------------------------------------------------------------
 
+
 def pixel_list(renderer, rect):
     screen = renderer.canvas.surface
-    return [tuple(screen.get_at((x, y)))[:3]
-            for y in range(rect.top, rect.bottom) for x in range(rect.left, rect.right)]
+    return [
+        tuple(screen.get_at((x, y)))[:3]
+        for y in range(rect.top, rect.bottom)
+        for x in range(rect.left, rect.right)
+    ]
 
 
 def cell_pixels(renderer, rect):

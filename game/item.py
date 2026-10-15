@@ -57,7 +57,7 @@ ITEM_CHARS = {'potion': '!', 'weapon': '/', 'armor': '['}
 ITEM_KIND_WEIGHTS = {'potion': 0.5, 'weapon': 0.25, 'armor': 0.25}
 
 CHEST_CHAR = '='
-CHEST_COLOR = 3         # gear chests: reuses the cyan pair the old flat "item" color used
+CHEST_COLOR = 3  # gear chests: reuses the cyan pair the old flat "item" color used
 POTION_CHEST_COLOR = 8  # potion chests: pink (pair 8 in render/curses_render.py)
 BOSS_CHEST_MIN_RARITIES = ['rare', 'epic']
 BOSS_CHEST_MIN_WEIGHTS = [0.75, 0.25]
@@ -65,8 +65,10 @@ BOSS_CHEST_MIN_WEIGHTS = [0.75, 0.25]
 
 def rarity_weights_for_depth(depth):
     t = min(1.0, max(0.0, (depth - 1) / (MAX_SCALING_DEPTH - 1)))
-    return [shallow + (deep - shallow) * t
-            for shallow, deep in zip(RARITY_WEIGHTS_SHALLOW, RARITY_WEIGHTS_DEEP)]
+    return [
+        shallow + (deep - shallow) * t
+        for shallow, deep in zip(RARITY_WEIGHTS_SHALLOW, RARITY_WEIGHTS_DEEP)
+    ]
 
 
 def roll_rarity(depth=1, rng: Rng = random):
@@ -103,8 +105,7 @@ class Item(Entity):
         slot = 'weapon' if self.kind == 'weapon' else 'armor'
         old = getattr(player, slot)
         if old is not None and old.bonus >= self.bonus:
-            log(f'You leave the {self.name} ({self.rarity}); '
-                f'your {old.name} is better.')
+            log(f'You leave the {self.name} ({self.rarity}); your {old.name} is better.')
             return
         setattr(player, slot, self)
         if slot == 'weapon':

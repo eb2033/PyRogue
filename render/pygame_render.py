@@ -52,8 +52,16 @@ REPAINT_EVENTS = (
 
 
 class PygameRenderer(Renderer):
-    def __init__(self, width, height, tileset=None, font_path=None,
-                 combat_zoom=True, zoom_ms=ZOOM_MS, impact_ms=IMPACT_MS):
+    def __init__(
+        self,
+        width,
+        height,
+        tileset=None,
+        font_path=None,
+        combat_zoom=True,
+        zoom_ms=ZOOM_MS,
+        impact_ms=IMPACT_MS,
+    ):
         """`tileset`: a tileset.Tileset (None -> an unavailable one, i.e. glyphs).
         An available one puts the layout in tile mode: square map cells.
         `font_path`: a TTF/OTF file for the grid text, handed to ui.Layout
@@ -68,8 +76,7 @@ class PygameRenderer(Renderer):
         pygame.key.set_repeat(300, 60)
 
         self.tileset = tileset or Tileset()
-        self.layout = ui.Layout(width, height, font_path=font_path,
-                                tiles=self.tileset.available)
+        self.layout = ui.Layout(width, height, font_path=font_path, tiles=self.tileset.available)
         self.fullscreen = False
         # Size to go back to when leaving fullscreen.
         self._windowed_size = self.layout.preferred_window_size()
@@ -159,10 +166,12 @@ class PygameRenderer(Renderer):
 
     def _show(self, paint):
         """Paint a frame and remember how, so it can be repainted on expose."""
+
         def repaint():
             self.canvas.clear()
             paint()
             pygame.display.flip()
+
         self._repaint = repaint
         repaint()
 
@@ -192,8 +201,10 @@ class PygameRenderer(Renderer):
                     self.toggle_fullscreen()
                     continue
                 return event
-            if mouse and (event.type == pygame.MOUSEMOTION or
-                          (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1)):
+            if mouse and (
+                event.type == pygame.MOUSEMOTION
+                or (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1)
+            ):
                 return event
             self._handle_window_event(event)
         return None
@@ -211,8 +222,9 @@ class PygameRenderer(Renderer):
         repaint = True
         while True:
             if repaint:
-                self._show(lambda: screens.paint_menu(self.canvas, menu, banner_lines,
-                                                      descriptions))
+                self._show(
+                    lambda: screens.paint_menu(self.canvas, menu, banner_lines, descriptions)
+                )
             repaint = True
             event = self._wait_input(mouse=True)
             if event is None:
@@ -242,8 +254,9 @@ class PygameRenderer(Renderer):
         return self._run_menu(render_banner('PyRogue'), screens.TITLE_OPTIONS) == 'Start'
 
     def choose_class(self):
-        choice = self._run_menu(['Choose your class'], screens.CLASS_OPTIONS,
-                                screens.CLASS_DESCRIPTIONS)
+        choice = self._run_menu(
+            ['Choose your class'], screens.CLASS_OPTIONS, screens.CLASS_DESCRIPTIONS
+        )
         return (choice or 'Warrior').lower()
 
     # -- game frame -----------------------------------------------------------
@@ -253,8 +266,10 @@ class PygameRenderer(Renderer):
         show the frame. With nothing to stage this is just the paint."""
         for beat in self.director.plan(state):
             if isinstance(beat, camera.Impact):
-                self._play(self.impact_ms,
-                           lambda t, hit=beat.hit: self._paint_game(state, impact=(hit, t)))
+                self._play(
+                    self.impact_ms,
+                    lambda t, hit=beat.hit: self._paint_game(state, impact=(hit, t)),
+                )
             elif isinstance(beat, camera.Pan):
                 self._play(self.zoom_ms, lambda t, pan=beat: self._paint_pan(state, pan, t))
         self._view = self.director.view
@@ -307,10 +322,14 @@ class PygameRenderer(Renderer):
         else:
             self._proj = camera.project(self._view, map_rect, self.layout.map_cell_size())
             cell_w, cell_h, ox, oy = self._proj
-            cols = range(max(0, (map_rect.left - ox) // cell_w),
-                         min(state.width, (map_rect.right - ox) // cell_w + 1))
-            rows = range(max(0, (map_rect.top - oy) // cell_h),
-                         min(state.height, (map_rect.bottom - oy) // cell_h + 1))
+            cols = range(
+                max(0, (map_rect.left - ox) // cell_w),
+                min(state.width, (map_rect.right - ox) // cell_w + 1),
+            )
+            rows = range(
+                max(0, (map_rect.top - oy) // cell_h),
+                min(state.height, (map_rect.bottom - oy) // cell_h + 1),
+            )
             surface.set_clip(map_rect)
         try:
             for y in rows:
@@ -337,11 +356,9 @@ class PygameRenderer(Renderer):
         rgb = palette.color(entity.color, palette.VISIBLE)
         if self._proj is not None and not self.layout.tile:
             # Zoomed glyphs are big enough that the floor dot under them shows.
-            self.canvas.surface.fill(palette.BACKGROUND,
-                                     self._map_cell_rect(entity.x, entity.y))
+            self.canvas.surface.fill(palette.BACKGROUND, self._map_cell_rect(entity.x, entity.y))
         if getattr(entity, 'is_boss', False):
-            self._paint_boss(entity.x, entity.y, entity.char, palette.brighten(rgb),
-                             entity.color)
+            self._paint_boss(entity.x, entity.y, entity.char, palette.brighten(rgb), entity.color)
         else:
             self._paint_cell(entity.x, entity.y, entity.char, rgb, entity.color)
 
@@ -357,8 +374,9 @@ class PygameRenderer(Renderer):
         self.canvas.surface.blit(flash, rect)
         number = self._glyph(f'-{hit.damage}', palette.brighten(palette.DANGER), bold=True)
         rise = round(rect.height * 0.5 * t)
-        self.canvas.surface.blit(number, number.get_rect(
-            midbottom=(rect.centerx, rect.top + rect.height // 3 - rise)))
+        self.canvas.surface.blit(
+            number, number.get_rect(midbottom=(rect.centerx, rect.top + rect.height // 3 - rise))
+        )
 
     # -- map cells ------------------------------------------------------------
 

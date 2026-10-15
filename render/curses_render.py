@@ -41,10 +41,10 @@ COLOR_PAIRS = {
     1: (curses.COLOR_YELLOW, curses.COLOR_BLACK),
     2: (curses.COLOR_RED, curses.COLOR_BLACK),
     3: (curses.COLOR_CYAN, curses.COLOR_BLACK),
-    4: (curses.COLOR_GREEN, curses.COLOR_BLACK),    # uncommon
-    5: (curses.COLOR_BLUE, curses.COLOR_BLACK),     # rare
+    4: (curses.COLOR_GREEN, curses.COLOR_BLACK),  # uncommon
+    5: (curses.COLOR_BLUE, curses.COLOR_BLACK),  # rare
     6: (curses.COLOR_MAGENTA, curses.COLOR_BLACK),  # epic
-    7: (curses.COLOR_WHITE, curses.COLOR_BLACK),    # common
+    7: (curses.COLOR_WHITE, curses.COLOR_BLACK),  # common
     8: (curses.COLOR_MAGENTA, curses.COLOR_BLACK),  # potion chest (pink -- see __init__)
 }
 PINK_256 = 213  # xterm-256 hot pink; 8-colour terminals fall back to magenta
@@ -88,7 +88,7 @@ class CursesRenderer(Renderer):
         if not (0 <= y < max_y and 0 <= x < max_x):
             return
         try:
-            self.stdscr.addstr(y, x, text[:max_x - x - 1], attr)
+            self.stdscr.addstr(y, x, text[: max_x - x - 1], attr)
         except curses.error:
             pass
 
@@ -117,10 +117,13 @@ class CursesRenderer(Renderer):
                 label = f'> {option} <' if i == menu.index else f'  {option}  '
                 self._put_str_centered(options_top + i * 2, label, attr)
                 if descriptions and i == menu.index and descriptions.get(option.lower()):
-                    self._put_str_centered(options_top + len(options) * 2 + 1,
-                                           descriptions[option.lower()])
+                    self._put_str_centered(
+                        options_top + len(options) * 2 + 1, descriptions[option.lower()]
+                    )
 
-            self._put_str_centered(max_y - 2, 'up/down or w/s to choose, enter to select, q to quit')
+            self._put_str_centered(
+                max_y - 2, 'up/down or w/s to choose, enter to select, q to quit'
+            )
             self.stdscr.refresh()
 
             key = self.stdscr.getch()

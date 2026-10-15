@@ -85,7 +85,7 @@ class DirectorTest(unittest.TestCase):
         director = Director()
         director.plan(state)
         goblin.hp = 1
-        state.attack(state.player, goblin)       # the killing blow
+        state.attack(state.player, goblin)  # the killing blow
         beats = director.plan(state)
         self.assertEqual([type(b) for b in beats], [Impact, Pan])
         self.assertTrue(beats[0].hit.killed)

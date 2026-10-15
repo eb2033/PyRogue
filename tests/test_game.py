@@ -63,7 +63,7 @@ class DungeonGenerationTests(unittest.TestCase):
         random.seed(2)
         _, rooms = generate_dungeon(50, 20)
         for i, r1 in enumerate(rooms):
-            for r2 in rooms[i + 1:]:
+            for r2 in rooms[i + 1 :]:
                 self.assertFalse(r1.intersects(r2), 'rooms should not overlap')
 
     def test_rooms_are_carved_floor(self):
@@ -150,8 +150,12 @@ class DoorPlacementTests(unittest.TestCase):
                             continue  # two rooms sharing a wall
                         visible = [[False] * w for _ in range(h)]
                         compute_fov(game_map, visible, *outside, 8)
-                        seen_inside = [(rx, ry) for ry in range(room.y1, room.y2)
-                                       for rx in range(room.x1, room.x2) if visible[ry][rx]]
+                        seen_inside = [
+                            (rx, ry)
+                            for ry in range(room.y1, room.y2)
+                            for rx in range(room.x1, room.x2)
+                            if visible[ry][rx]
+                        ]
                         self.assertEqual(seen_inside, [], (room.x1, room.y1, (x, y)))
                         checked += 1
         self.assertGreater(checked, 100)
@@ -187,7 +191,7 @@ class DoorPlacementTests(unittest.TestCase):
             for xx in range(room.x1, room.x2):
                 game_map[yy][xx] = FLOOR
         game_map[2][4] = game_map[2][5] = FLOOR  # two-wide gap in the north wall
-        game_map[6][4] = FLOOR                   # one-wide gap in the south wall
+        game_map[6][4] = FLOOR  # one-wide gap in the south wall
         place_doors(game_map, [room])
         self.assertEqual((game_map[2][4], game_map[2][5]), (FLOOR, FLOOR))
         self.assertEqual(game_map[6][4], DOOR)
@@ -233,32 +237,38 @@ class FovShadowcastingTests(unittest.TestCase):
         return [[False] * w for _ in range(h)]
 
     def test_open_room_lights_up_to_radius(self):
-        game_map = [list(row) for row in [
-            '###########',
-            '#.........#',
-            '#.........#',
-            '#....@....#',
-            '#.........#',
-            '#.........#',
-            '###########',
-        ]]
+        game_map = [
+            list(row)
+            for row in [
+                '###########',
+                '#.........#',
+                '#.........#',
+                '#....@....#',
+                '#.........#',
+                '#.........#',
+                '###########',
+            ]
+        ]
         visible = self._grid(11, 7)
         compute_fov(game_map, visible, 5, 3, radius=4)
-        self.assertTrue(visible[3][5])   # origin
-        self.assertTrue(visible[3][1])   # 4 tiles west, in open room
-        self.assertTrue(visible[1][5])   # 2 tiles north, open
+        self.assertTrue(visible[3][5])  # origin
+        self.assertTrue(visible[3][1])  # 4 tiles west, in open room
+        self.assertTrue(visible[1][5])  # 2 tiles north, open
 
     def test_wall_blocks_sight_behind_it(self):
         # A single wall segment directly east of the player should shadow
         # the tile directly behind it, while the open tile to its side
         # (not directly hidden by the wall) stays visible.
-        game_map = [list(row) for row in [
-            '###########',
-            '#.........#',
-            '#....@#...#',
-            '#.........#',
-            '###########',
-        ]]
+        game_map = [
+            list(row)
+            for row in [
+                '###########',
+                '#.........#',
+                '#....@#...#',
+                '#.........#',
+                '###########',
+            ]
+        ]
         visible = self._grid(11, 5)
         compute_fov(game_map, visible, 5, 2, radius=5)
         self.assertTrue(visible[2][6], 'the wall tile itself should be lit')
@@ -307,8 +317,9 @@ class MonsterTests(unittest.TestCase):
         player = Entity(3, 3, '@')
         for dx, dy in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
             m = Monster(3 + dx, 3 + dy, 'goblin')
-            self.assertNotEqual(m.take_turn(player, game_map), 'attack',
-                                f'diagonal offset {(dx, dy)} attacked')
+            self.assertNotEqual(
+                m.take_turn(player, game_map), 'attack', f'diagonal offset {(dx, dy)} attacked'
+            )
 
     def test_diagonal_neighbour_closes_in_instead_of_stalling(self):
         """Making the attack orthogonal is only half the fix: the monster
@@ -318,8 +329,9 @@ class MonsterTests(unittest.TestCase):
             player = Entity(3, 3, '@')
             m = Monster(3 + dx, 3 + dy, 'goblin')
             m.take_turn(player, game_map)
-            self.assertTrue(m.is_adjacent(player),
-                            f'diagonal offset {(dx, dy)} failed to close in')
+            self.assertTrue(
+                m.is_adjacent(player), f'diagonal offset {(dx, dy)} failed to close in'
+            )
             self.assertEqual(m.take_turn(player, game_map), 'attack')
 
     def test_orthogonal_neighbour_still_attacks(self):
@@ -386,8 +398,9 @@ class GameStateIntegrationTests(unittest.TestCase):
         state.entities.append(m)
         state.try_move_player(1, 0)
         self.assertFalse(m.alive)
-        self.assertEqual((state.player.x, state.player.y),
-                         (m.x - 1, m.y))  # player did not step onto corpse tile
+        self.assertEqual(
+            (state.player.x, state.player.y), (m.x - 1, m.y)
+        )  # player did not step onto corpse tile
         self.assertIn('dies', state.messages[-1])
 
     def test_monster_attack_reduces_player_hp_and_can_kill(self):
@@ -513,7 +526,7 @@ class TurnPhaseTests(unittest.TestCase):
     def test_step_reports_attacks_as_visible(self):
         state = self.swarmed_state(player_hp=50, offsets=((1, 0),))
         state.end_player_phase()
-        self.assertTrue(state.step_monster_phase())   # the attack
+        self.assertTrue(state.step_monster_phase())  # the attack
         self.assertFalse(state.step_monster_phase())  # queue drained
 
     def test_unseen_monsters_resolve_without_reporting_a_frame(self):
@@ -523,11 +536,14 @@ class TurnPhaseTests(unittest.TestCase):
         state = GameState(50, 20)
         # Pick a floor tile the player genuinely cannot see, so the assertion
         # below can't pass just because the monster happened to sit still.
-        hidden = [(x, y)
-                  for y in range(1, state.height - 1)
-                  for x in range(1, state.width - 1)
-                  if is_walkable(state.game_map, x, y) and not state.is_visible(x, y)
-                  and state.player.distance_to(Entity(x, y, '.')) > state.fov_radius + 1]
+        hidden = [
+            (x, y)
+            for y in range(1, state.height - 1)
+            for x in range(1, state.width - 1)
+            if is_walkable(state.game_map, x, y)
+            and not state.is_visible(x, y)
+            and state.player.distance_to(Entity(x, y, '.')) > state.fov_radius + 1
+        ]
         self.assertTrue(hidden, 'no out-of-sight floor tile to test with')
         state.entities = [state.player, Monster(hidden[0][0], hidden[0][1], 'goblin')]
 
@@ -732,7 +748,10 @@ class DifficultyScalingTests(unittest.TestCase):
 
     def test_boss_stats_scale_off_reference_monster(self):
         depth = 8
-        base_hp, base_power = MONSTER_TYPES[BOSS_REFERENCE_KIND][2], MONSTER_TYPES[BOSS_REFERENCE_KIND][3]
+        base_hp, base_power = (
+            MONSTER_TYPES[BOSS_REFERENCE_KIND][2],
+            MONSTER_TYPES[BOSS_REFERENCE_KIND][3],
+        )
         reg_hp, reg_power = scale_stats(base_hp, base_power, depth)
         boss = spawn_boss([Rect(1, 1, 10, 10)], depth, rng=random.Random(1))
         self.assertTrue(boss.is_boss)
@@ -818,7 +837,9 @@ class ChestTests(unittest.TestCase):
         # Statistical, not exact: a large sample at max depth should skew
         # toward rare/epic far more than the same sample at depth 1.
         shallow_epics = sum(1 for _ in range(500) if roll_rarity(1, random.Random()) == 'epic')
-        deep_epics = sum(1 for _ in range(500) if roll_rarity(MAX_SCALING_DEPTH, random.Random()) == 'epic')
+        deep_epics = sum(
+            1 for _ in range(500) if roll_rarity(MAX_SCALING_DEPTH, random.Random()) == 'epic'
+        )
         self.assertGreater(deep_epics, shallow_epics)
 
     def test_open_chest_removes_it_and_applies_the_item(self):
@@ -880,8 +901,9 @@ class SaveLoadTests(unittest.TestCase):
     def test_chest_on_the_map_round_trips(self):
         random.seed(49)
         state = GameState(50, 20)
-        chest = Chest(state.player.x + 1, state.player.y, guaranteed_min_rarity='rare',
-                      kind='potion')
+        chest = Chest(
+            state.player.x + 1, state.player.y, guaranteed_min_rarity='rare', kind='potion'
+        )
         state.entities = [state.player, chest]
 
         with tempfile.TemporaryDirectory() as d:
@@ -930,7 +952,7 @@ class CombatEventTests(unittest.TestCase):
 
     def test_melee_opponents_are_orthogonal_neighbours_only(self):
         self.assertEqual(self.state.melee_opponents(), [self.goblin])
-        self.goblin.y += 1   # now diagonal
+        self.goblin.y += 1  # now diagonal
         self.assertEqual(self.state.melee_opponents(), [])
         self.goblin.y -= 1
         self.goblin.alive = False

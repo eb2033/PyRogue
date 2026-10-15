@@ -31,8 +31,12 @@ MAX_ASSET_BYTES = 10 * 1024 * 1024
 def drawable_chars():
     """Every char the game can put on the map (CLAUDE.md, Tile chars)."""
     monsters = {char for char, *_ in MONSTER_TYPES.values()}
-    return ({WALL, FLOOR, '+', '>', '@', CHEST_CHAR}
-            | set(ITEM_CHARS.values()) | monsters | {c.upper() for c in monsters})
+    return (
+        {WALL, FLOOR, '+', '>', '@', CHEST_CHAR}
+        | set(ITEM_CHARS.values())
+        | monsters
+        | {c.upper() for c in monsters}
+    )
 
 
 def mean_rgb(surface):
@@ -63,9 +67,15 @@ class TilesetFallbackTest(unittest.TestCase):
 
     def test_missing_sheet_falls_back(self):
         with tempfile.TemporaryDirectory() as d:
-            Path(d, 'tiles.json').write_text(json.dumps({
-                'sheets': {'s': 'gone.png'}, 'tiles': {'#': {'layers': [['s', 0, 0]]}},
-            }), encoding='utf-8')
+            Path(d, 'tiles.json').write_text(
+                json.dumps(
+                    {
+                        'sheets': {'s': 'gone.png'},
+                        'tiles': {'#': {'layers': [['s', 0, 0]]}},
+                    }
+                ),
+                encoding='utf-8',
+            )
             with self.assertLogs('render.tileset', 'WARNING') as logs:
                 tileset = Tileset(d)
                 tileset.glyph('#')

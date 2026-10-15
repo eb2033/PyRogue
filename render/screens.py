@@ -46,8 +46,9 @@ def paint_menu(canvas, menu, banner_lines, descriptions=None):
 
     for i, option in enumerate(options):
         if i == menu.index:
-            canvas.put_str_centered(options_top + i * 2, _option_text(option, True),
-                                    palette.BACKGROUND, palette.TEXT)
+            canvas.put_str_centered(
+                options_top + i * 2, _option_text(option, True), palette.BACKGROUND, palette.TEXT
+            )
             description = (descriptions or {}).get(option.lower())
             if description:
                 canvas.put_str_centered(options_top + len(options) * 2 + 1, description)
@@ -104,8 +105,12 @@ def game_over_rect(layout, state):
     the player or what killed them."""
     lines = _game_over_lines(layout)
     text_w = max(layout.font.size(line)[0] for line in lines)
-    box = pygame.Rect(0, 0, text_w + 2 * layout.cell_w,
-                      len(lines) * layout.font.get_linesize() + layout.cell_h // 2)
+    box = pygame.Rect(
+        0,
+        0,
+        text_w + 2 * layout.cell_w,
+        len(lines) * layout.font.get_linesize() + layout.cell_h // 2,
+    )
     area = layout.map_rect()
     cell_h = layout.map_cell_size()[1]
     player_y = layout.map_cell_to_pixel(state.player.x, state.player.y)[1] + cell_h // 2

@@ -50,7 +50,9 @@ class Tileset:
         self.margin = 0
         self._entries = {}
         self._sheet_files = {}
-        self._sheets: dict[str, pygame.Surface] | None = None   # loaded lazily: convert_alpha() needs a display
+        self._sheets: dict[str, pygame.Surface] | None = (
+            None  # loaded lazily: convert_alpha() needs a display
+        )
         self._cache = {}
         self._broken = False
         if self.path is not None:
@@ -115,8 +117,12 @@ class Tileset:
         surface = pygame.Surface((self.cell, self.cell), pygame.SRCALPHA)
         if entry.get('backdrop'):
             rgb = palette.color(color, palette.TEXT)
-            pygame.draw.rect(surface, (*rgb, BACKDROP_ALPHA), surface.get_rect(),
-                             border_radius=max(1, self.cell // 4))
+            pygame.draw.rect(
+                surface,
+                (*rgb, BACKDROP_ALPHA),
+                surface.get_rect(),
+                border_radius=max(1, self.cell // 4),
+            )
         try:
             for sheet, col, row in entry['layers']:
                 step = self.cell + self.margin

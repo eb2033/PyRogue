@@ -62,10 +62,13 @@ class ResourcePathTest(_TempDirTest):
 
     def test_meipass_wins(self):
         bundle = self.tmp / '_internal'
-        with mock.patch.object(sys, 'frozen', True, create=True), \
-                mock.patch.object(sys, '_MEIPASS', str(bundle), create=True):
-            self.assertEqual(paths.resource_path('assets', 'tiles.json'),
-                             bundle / 'assets' / 'tiles.json')
+        with (
+            mock.patch.object(sys, 'frozen', True, create=True),
+            mock.patch.object(sys, '_MEIPASS', str(bundle), create=True),
+        ):
+            self.assertEqual(
+                paths.resource_path('assets', 'tiles.json'), bundle / 'assets' / 'tiles.json'
+            )
 
     def test_meipass_wins_even_without_frozen_flag(self):
         with mock.patch.object(sys, '_MEIPASS', str(self.tmp), create=True):
@@ -76,10 +79,14 @@ class ResourcePathTest(_TempDirTest):
         exe.parent.mkdir(parents=True)
         exe.touch()
         self.assertFalse(hasattr(sys, '_MEIPASS'))
-        with mock.patch.object(sys, 'frozen', True, create=True), \
-                mock.patch.object(sys, 'executable', str(exe)):
-            self.assertEqual(paths.resource_path('assets', 'icon.png'),
-                             exe.parent.resolve() / 'assets' / 'icon.png')
+        with (
+            mock.patch.object(sys, 'frozen', True, create=True),
+            mock.patch.object(sys, 'executable', str(exe)),
+        ):
+            self.assertEqual(
+                paths.resource_path('assets', 'icon.png'),
+                exe.parent.resolve() / 'assets' / 'icon.png',
+            )
             self.assertEqual(paths.app_dir(), exe.parent.resolve())
 
     def test_app_dir_from_source_is_repo_root(self):
@@ -95,15 +102,19 @@ class UserDataDirTest(_TempDirTest):
         self.assertTrue(d.is_dir())
 
     def test_windows_without_appdata_falls_back_to_roaming(self):
-        with mock.patch.object(sys, 'platform', 'win32'), \
-                mock.patch.object(Path, 'home', return_value=self.tmp):
+        with (
+            mock.patch.object(sys, 'platform', 'win32'),
+            mock.patch.object(Path, 'home', return_value=self.tmp),
+        ):
             d = paths.user_data_dir()
         self.assertEqual(d, self.tmp / 'AppData' / 'Roaming' / 'PyRogue')
         self.assertTrue(d.is_dir())
 
     def test_macos_application_support(self):
-        with mock.patch.object(sys, 'platform', 'darwin'), \
-                mock.patch.object(Path, 'home', return_value=self.tmp):
+        with (
+            mock.patch.object(sys, 'platform', 'darwin'),
+            mock.patch.object(Path, 'home', return_value=self.tmp),
+        ):
             d = paths.user_data_dir()
         self.assertEqual(d, self.tmp / 'Library' / 'Application Support' / 'PyRogue')
         self.assertTrue(d.is_dir())
@@ -117,15 +128,19 @@ class UserDataDirTest(_TempDirTest):
         self.assertTrue(d.is_dir(), 'parents must be created too')
 
     def test_linux_default_is_local_share(self):
-        with mock.patch.object(sys, 'platform', 'linux'), \
-                mock.patch.object(Path, 'home', return_value=self.tmp):
+        with (
+            mock.patch.object(sys, 'platform', 'linux'),
+            mock.patch.object(Path, 'home', return_value=self.tmp),
+        ):
             d = paths.user_data_dir()
         self.assertEqual(d, self.tmp / '.local' / 'share' / 'pyrogue')
         self.assertTrue(d.is_dir())
 
     def test_relative_xdg_data_home_is_ignored(self):
-        with mock.patch.object(sys, 'platform', 'linux'), \
-                mock.patch.object(Path, 'home', return_value=self.tmp):
+        with (
+            mock.patch.object(sys, 'platform', 'linux'),
+            mock.patch.object(Path, 'home', return_value=self.tmp),
+        ):
             os.environ['XDG_DATA_HOME'] = 'relative/dir'
             d = paths.user_data_dir()
         self.assertEqual(d, self.tmp / '.local' / 'share' / 'pyrogue')
@@ -207,6 +222,7 @@ class SaveLocationTest(_TempDirTest):
     def test_legacy_cwd_save_is_migrated_on_load(self):
         self.state.player.hp = 3
         from game.save import save_game
+
         save_game(self.state, self.work / 'savegame.json')  # a pre-WS-B save
         self.state.player.hp = 20
         self.state.handle_action('load')
@@ -220,10 +236,12 @@ class SaveLocationTest(_TempDirTest):
         self.assertTrue(explicit.is_file())
         self.assertFalse((self.data / 'savegame.json').exists())
 
-    @unittest.skipIf(sys.platform.startswith('win'),
-                     'Windows ignores POSIX directory permission bits')
-    @unittest.skipIf(hasattr(os, 'geteuid') and os.geteuid() == 0,
-                     'root ignores directory permissions')
+    @unittest.skipIf(
+        sys.platform.startswith('win'), 'Windows ignores POSIX directory permission bits'
+    )
+    @unittest.skipIf(
+        hasattr(os, 'geteuid') and os.geteuid() == 0, 'root ignores directory permissions'
+    )
     def test_save_load_with_read_only_cwd(self):
         os.chmod(self.work, stat.S_IRUSR | stat.S_IXUSR)
         self.addCleanup(os.chmod, self.work, stat.S_IRWXU)
@@ -254,9 +272,15 @@ class ContractTest(unittest.TestCase):
     """Signatures other streams code against exist."""
 
     def test_platform_functions_exist(self):
-        for fn in (paths.user_data_dir, paths.save_path, paths.log_path,
-                   settings.find_config, settings.load,
-                   crashlog.install, crashlog.write):
+        for fn in (
+            paths.user_data_dir,
+            paths.save_path,
+            paths.log_path,
+            settings.find_config,
+            settings.load,
+            crashlog.install,
+            crashlog.write,
+        ):
             self.assertTrue(callable(fn), fn)
 
     def test_version_is_semver(self):

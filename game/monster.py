@@ -36,7 +36,7 @@ ORTHOGONAL_STEPS = ((0, -1), (0, 1), (-1, 0), (1, 0))
 WANDER_STEPS = ORTHOGONAL_STEPS + ((0, 0),)
 
 CHASE_RANGE = 8
-TIER_SIZE = 3           # floors per difficulty tier
+TIER_SIZE = 3  # floors per difficulty tier
 TIER_HP_MULT = 1.2
 TIER_POWER_BONUS = 1
 
@@ -53,7 +53,7 @@ def tier_for_depth(depth):
 def scale_stats(base_hp, base_power, depth):
     """Apply this depth's difficulty tier to a base (hp, power) pair."""
     tier = tier_for_depth(depth)
-    hp = max(1, round(base_hp * (TIER_HP_MULT ** tier)))
+    hp = max(1, round(base_hp * (TIER_HP_MULT**tier)))
     power = base_power + TIER_POWER_BONUS * tier
     return hp, power
 

@@ -49,9 +49,18 @@ if pygame is not None:
 
 # Everything a player can press that stays inside one game: SAVE/LOAD touch
 # the user data dir and QUIT ends the loop, so they are tested elsewhere.
-PLAY_ACTIONS = [Action.MOVE_N, Action.MOVE_S, Action.MOVE_W, Action.MOVE_E,
-                Action.SHOOT_N, Action.SHOOT_S, Action.SHOOT_W, Action.SHOOT_E,
-                Action.WAIT, Action.DESCEND]
+PLAY_ACTIONS = [
+    Action.MOVE_N,
+    Action.MOVE_S,
+    Action.MOVE_W,
+    Action.MOVE_E,
+    Action.SHOOT_N,
+    Action.SHOOT_S,
+    Action.SHOOT_W,
+    Action.SHOOT_E,
+    Action.WAIT,
+    Action.DESCEND,
+]
 
 # HYPOTHESIS_PROFILE=deep runs ~20x the examples for a local bug hunt.
 settings.register_profile('deep', max_examples=2000)
@@ -59,8 +68,11 @@ settings.load_profile(os.environ.get('HYPOTHESIS_PROFILE', 'default'))
 # Dungeon generation is ~8 ms a map, so a whole playthrough can blow the
 # default 200 ms deadline on a slow CI runner; time isn't what we test. The
 # slow tests also run fewer examples than the fast ones by default.
-SLOW = settings(deadline=None, suppress_health_check=[HealthCheck.too_slow],
-                max_examples=max(60, settings.default.max_examples // 10))
+SLOW = settings(
+    deadline=None,
+    suppress_health_check=[HealthCheck.too_slow],
+    max_examples=max(60, settings.default.max_examples // 10),
+)
 seeds = st.integers(min_value=0, max_value=2**32 - 1)
 # Environment values can't hold NUL or lone surrogates.
 env_text = st.text(st.characters(exclude_categories=('Cs',), exclude_characters='\x00'))
@@ -135,8 +147,13 @@ class DungeonPropertyTests(unittest.TestCase):
 
 class FovPropertyTests(unittest.TestCase):
     @SLOW
-    @given(w=st.integers(3, 60), h=st.integers(3, 30), seed=seeds,
-           radius=st.integers(0, 12), data=st.data())
+    @given(
+        w=st.integers(3, 60),
+        h=st.integers(3, 30),
+        seed=seeds,
+        radius=st.integers(0, 12),
+        data=st.data(),
+    )
     def test_fov_lights_the_origin_and_nothing_past_the_radius(self, w, h, seed, radius, data):
         game_map, _, _ = build_dungeon(w, h, seed)
         # Any cell at all, walls and corners included: compute_fov must not
@@ -149,8 +166,11 @@ class FovPropertyTests(unittest.TestCase):
         for vy in range(h):
             for vx in range(w):
                 if visible[vy][vx]:
-                    self.assertLessEqual((vx - x) ** 2 + (vy - y) ** 2, radius * radius,
-                                         f'{(vx, vy)} lit from {(x, y)} at radius {radius}')
+                    self.assertLessEqual(
+                        (vx - x) ** 2 + (vy - y) ** 2,
+                        radius * radius,
+                        f'{(vx, vy)} lit from {(x, y)} at radius {radius}',
+                    )
 
 
 class LootAndScalingPropertyTests(unittest.TestCase):
@@ -167,15 +187,20 @@ class LootAndScalingPropertyTests(unittest.TestCase):
     def test_deeper_never_means_worse_loot(self, a, b):
         """The epic share never shrinks as depth grows."""
         shallow, deep = sorted((a, b))
-        self.assertLessEqual(rarity_weights_for_depth(shallow)[-1],
-                             rarity_weights_for_depth(deep)[-1] + 1e-9)
+        self.assertLessEqual(
+            rarity_weights_for_depth(shallow)[-1], rarity_weights_for_depth(deep)[-1] + 1e-9
+        )
 
     @given(depth=depths, seed=seeds)
     def test_roll_rarity_always_names_a_rarity(self, depth, seed):
         self.assertIn(roll_rarity(depth, random.Random(seed)), RARITIES)
 
-    @given(hp=st.integers(1, 500), power=st.integers(0, 100),
-           a=st.integers(1, 500), b=st.integers(1, 500))
+    @given(
+        hp=st.integers(1, 500),
+        power=st.integers(0, 100),
+        a=st.integers(1, 500),
+        b=st.integers(1, 500),
+    )
     def test_monsters_never_get_weaker_deeper(self, hp, power, a, b):
         shallow, deep = sorted((a, b))
         hp_a, power_a = scale_stats(hp, power, shallow)
@@ -195,10 +220,15 @@ class SettingsPropertyTests(unittest.TestCase):
             self.assertFalse(any(c.isspace() for c in key), repr(key))
             self.assertIsInstance(value, str)
 
-    @given(values=st.dictionaries(
-        st.from_regex(r'[A-Za-z_][A-Za-z0-9_]*', fullmatch=True).filter(lambda k: k != 'export'),
-        # Quoted, a value keeps everything but line breaks, which end the line.
-        st.text(st.characters(exclude_characters='\n\r\x0b\x0c\x1c\x1d\x1e\x85  '))))
+    @given(
+        values=st.dictionaries(
+            st.from_regex(r'[A-Za-z_][A-Za-z0-9_]*', fullmatch=True).filter(
+                lambda k: k != 'export'
+            ),
+            # Quoted, a value keeps everything but line breaks, which end the line.
+            st.text(st.characters(exclude_characters='\n\r\x0b\x0c\x1c\x1d\x1e\x85  ')),
+        )
+    )
     def test_quoted_values_round_trip(self, values):
         text = '\n'.join(f'{key}="{value}"' for key, value in values.items())
         self.assertEqual(config.parse(text), values)
@@ -211,11 +241,22 @@ class SettingsPropertyTests(unittest.TestCase):
 
 
 class CameraPropertyTests(unittest.TestCase):
-    @given(view=st.builds(camera.View, st.integers(-50, 50), st.integers(-50, 50),
-                          st.integers(1, 80), st.integers(1, 40)),
-           rect=st.tuples(st.integers(-100, 100), st.integers(-100, 100),
-                          st.integers(1, 4000), st.integers(1, 3000)),
-           cell=st.tuples(st.integers(1, 64), st.integers(1, 64)))
+    @given(
+        view=st.builds(
+            camera.View,
+            st.integers(-50, 50),
+            st.integers(-50, 50),
+            st.integers(1, 80),
+            st.integers(1, 40),
+        ),
+        rect=st.tuples(
+            st.integers(-100, 100),
+            st.integers(-100, 100),
+            st.integers(1, 4000),
+            st.integers(1, 3000),
+        ),
+        cell=st.tuples(st.integers(1, 64), st.integers(1, 64)),
+    )
     def test_project_fits_the_view_and_centres_it(self, view, rect, cell):
         cell_w, cell_h, ox, oy = camera.project(view, rect, cell)
         rx, ry, rw, rh = rect
@@ -245,9 +286,11 @@ class LogRowsPropertyTests(unittest.TestCase):
 class PlaythroughPropertyTests(unittest.TestCase):
     """Random games: the rules hold after every single action."""
 
-    playthroughs = given(seed=seeds,
-                         char_class=st.sampled_from(['warrior', 'archer']),
-                         actions=st.lists(st.sampled_from(PLAY_ACTIONS), max_size=120))
+    playthroughs = given(
+        seed=seeds,
+        char_class=st.sampled_from(['warrior', 'archer']),
+        actions=st.lists(st.sampled_from(PLAY_ACTIONS), max_size=120),
+    )
 
     def new_game(self, seed, char_class):
         random.seed(seed)
@@ -261,10 +304,12 @@ class PlaythroughPropertyTests(unittest.TestCase):
         self.assertTrue(state.visible[player.y][player.x], 'player not in their own FOV')
         living = [e for e in state.entities if isinstance(e, Monster) and e.alive]
         for monster in living:
-            self.assertTrue(is_walkable(state.game_map, monster.x, monster.y),
-                            f'{monster.name} in a wall')
-            self.assertNotEqual((monster.x, monster.y), (player.x, player.y),
-                                f'{monster.name} on the player')
+            self.assertTrue(
+                is_walkable(state.game_map, monster.x, monster.y), f'{monster.name} in a wall'
+            )
+            self.assertNotEqual(
+                (monster.x, monster.y), (player.x, player.y), f'{monster.name} on the player'
+            )
         self.assertNotIn(None, state.entities)
 
     @SLOW

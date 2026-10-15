@@ -103,10 +103,14 @@ def _hang(board, page, frame):
     """A nail centred above the page, a string from it to both top corners."""
     nail = (page.centerx, max(frame + 4, page.top - (page.top - frame) * 2 // 3))
     radius = max(3, frame // 2 + 1)
-    for corner in ((page.left + radius * 2, page.top + 1), (page.right - radius * 2, page.top + 1)):
+    for corner in (
+        (page.left + radius * 2, page.top + 1),
+        (page.right - radius * 2, page.top + 1),
+    ):
         pygame.draw.line(board, STRING, nail, corner, max(1, radius // 2))
         pygame.draw.circle(board, NAIL_DARK, corner, max(2, radius // 2))  # eyelets
     pygame.draw.circle(board, NAIL_DARK, (nail[0] + 1, nail[1] + 1), radius)
     pygame.draw.circle(board, NAIL, nail, radius)
-    pygame.draw.circle(board, NAIL_LIGHT, (nail[0] - radius // 3, nail[1] - radius // 3),
-                       max(1, radius // 3))
+    pygame.draw.circle(
+        board, NAIL_LIGHT, (nail[0] - radius // 3, nail[1] - radius // 3), max(1, radius // 3)
+    )

@@ -38,6 +38,7 @@ def current_save_path():
     paths.migrate_legacy_save(target)
     return target
 
+
 # Semantic action -> (dx, dy) in game coordinates. y grows downward.
 MOVE_DELTAS = {
     'move_n': (0, -1),
@@ -97,7 +98,10 @@ class GameState:
         self.player.power = power
 
         self.entities: list[Entity] = [
-            self.player, *self._spawn_level_monsters(), *spawn_chests(self.rooms)]
+            self.player,
+            *self._spawn_level_monsters(),
+            *spawn_chests(self.rooms),
+        ]
 
         # Monsters still owing a turn in the current round. See end_player_phase.
         self._pending_monsters: list[Monster] = []
@@ -246,8 +250,17 @@ class GameState:
         target = 'you' if defender is self.player else defender.name
         self.log(f'{subject} {verb} {target} for {damage}.')
         self._hit_serial += 1
-        self.combat_events.append(Hit(self._hit_serial, attacker, defender, damage,
-                                      defender.hp <= 0, defender.x, defender.y))
+        self.combat_events.append(
+            Hit(
+                self._hit_serial,
+                attacker,
+                defender,
+                damage,
+                defender.hp <= 0,
+                defender.x,
+                defender.y,
+            )
+        )
         if defender.hp <= 0:
             defender.alive = False
             if defender is not self.player:
@@ -268,8 +281,7 @@ class GameState:
         own action before any monster answers it.
         """
         self.update_fov()
-        self._pending_monsters = [e for e in self.entities
-                                  if isinstance(e, Monster) and e.alive]
+        self._pending_monsters = [e for e in self.entities if isinstance(e, Monster) and e.alive]
 
     def monster_phase_pending(self):
         return bool(self._pending_monsters)
@@ -307,8 +319,9 @@ class GameState:
                 self._finish_round()
                 return True
 
-            moved_in_view = ((monster.x, monster.y) != before
-                             and (was_seen or self.is_visible(monster.x, monster.y)))
+            moved_in_view = (monster.x, monster.y) != before and (
+                was_seen or self.is_visible(monster.x, monster.y)
+            )
             if result == 'attack' or moved_in_view:
                 return True
 
@@ -337,13 +350,13 @@ class GameState:
         return True
 
     def _finish_round(self):
-        self.entities = [e for e in self.entities
-                         if e is self.player or getattr(e, 'alive', True)]
+        self.entities = [e for e in self.entities if e is self.player or getattr(e, 'alive', True)]
         self.update_fov()
 
     def update_fov(self):
-        update_visibility(self.game_map, self.visible, self.seen,
-                          self.player.x, self.player.y, self.fov_radius)
+        update_visibility(
+            self.game_map, self.visible, self.seen, self.player.x, self.player.y, self.fov_radius
+        )
 
     # -- queries the renderer uses ----------------------------------------
 
@@ -356,9 +369,14 @@ class GameState:
     def melee_opponents(self):
         """Living monsters in view that are orthogonally adjacent to the
         player, i.e. close enough that one of the two can hit the other."""
-        return [e for e in self.entities
-                if isinstance(e, Monster) and e.alive and e.is_adjacent(self.player)
-                and self.visible[e.y][e.x]]
+        return [
+            e
+            for e in self.entities
+            if isinstance(e, Monster)
+            and e.alive
+            and e.is_adjacent(self.player)
+            and self.visible[e.y][e.x]
+        ]
 
     def chest_at(self, x, y):
         for e in self.entities:
@@ -373,8 +391,7 @@ class GameState:
         """Living entities in view. The `alive` filter matters now that the
         renderer draws mid-round: a monster killed during the player's half
         must not still be on screen while the monster half plays out."""
-        return [e for e in self.entities
-                if getattr(e, 'alive', True) and self.visible[e.y][e.x]]
+        return [e for e in self.entities if getattr(e, 'alive', True) and self.visible[e.y][e.x]]
 
     def log(self, text):
         self.messages.append(text)
