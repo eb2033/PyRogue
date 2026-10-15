@@ -232,6 +232,13 @@ class GameState:
             self.running = False
             return False
 
+        if action == 'ability':
+            # The class ability is not wired yet, so mid-game this is a no-op.
+            # On the death screen ('press q to quit') it is the quit key.
+            if self.game_over:
+                self.running = False
+            return False
+
         if self.game_over:
             return False
 

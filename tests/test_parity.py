@@ -26,10 +26,19 @@ def pygame_actions():
 @unittest.skipUnless(input_map, 'pygame-ce not installed')
 class ParityTest(unittest.TestCase):
     def test_every_action_reachable_in_pygame(self):
-        self.assertEqual(pygame_actions(), ALL_ACTIONS)
+        # QUIT comes from closing the window, not from a key.
+        self.assertEqual(pygame_actions() | {Action.QUIT}, ALL_ACTIONS)
+        self.assertNotIn(Action.QUIT, pygame_actions())
 
     def test_h_drinks(self):
         self.assertEqual(input_map.CHAR_ACTIONS['h'], Action.DRINK)
+
+    def test_space_waits_dot_waits_q_is_the_ability(self):
+        self.assertEqual(input_map.CHAR_ACTIONS[' '], Action.WAIT)
+        self.assertEqual(input_map.CHAR_ACTIONS['.'], Action.WAIT)
+        self.assertEqual(input_map.CHAR_ACTIONS['q'], Action.ABILITY)
+        # Space still confirms in menus.
+        self.assertIn(input_map.pygame.K_SPACE, input_map.CONFIRM_KEYS)
 
     def test_window_keys_never_shadow_game_keys(self):
         # F11 is the renderer's own (fullscreen); it must not also be an Action.

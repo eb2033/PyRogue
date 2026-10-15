@@ -882,6 +882,17 @@ class GameStateIntegrationTests(unittest.TestCase):
         self.assertFalse(handled)
         self.assertEqual(state.depth, 1)
 
+    def test_ability_key_does_nothing_in_play_and_quits_on_game_over(self):
+        random.seed(13)
+        state = GameState(50, 20)
+        turn = state.turn
+        self.assertFalse(state.handle_action('ability'))
+        self.assertEqual(state.turn, turn)
+        self.assertTrue(state.running)
+        state.game_over = True
+        self.assertFalse(state.handle_action('ability'))
+        self.assertFalse(state.running)
+
     def test_game_over_blocks_movement_but_not_quit(self):
         random.seed(13)
         state = GameState(50, 20)

@@ -21,9 +21,9 @@ Controls
 --------
   W A S D       move (walk into a monster to attack)
   Arrow keys    Warrior: move.  Archer: shoot an arrow in that direction
-  .             wait a turn
+  space or .    wait a turn
   e             go down the stairs (>) when standing on them
-  q             quit
+  q             class ability (on the death screen: quit)
   F11           fullscreen
 
 The menus also take the mouse.

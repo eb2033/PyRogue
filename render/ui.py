@@ -505,8 +505,8 @@ def paint_panel(canvas, state):
         put(CONTROLS_TOP, 'wasd move, arrows shoot')
     else:
         put(CONTROLS_TOP, 'wasd/arrows move')
-    put(CONTROLS_TOP + 1, '.  wait   e  descend')
-    put(CONTROLS_TOP + 2, 'h  drink  q  quit')
+    put(CONTROLS_TOP + 1, 'space  wait   e  descend')
+    put(CONTROLS_TOP + 2, 'h  drink  q  ability')
 
     put(LOG_TOP, '-- log --', bold=True)
     for i, line in enumerate(log_rows(state.messages, width, layout.log_lines())):

@@ -154,7 +154,8 @@ class PygameRendererTest(unittest.TestCase):
             key(pygame.K_w, 'w'),
             key(pygame.K_RIGHT),
             key(pygame.K_PERIOD, '.'),
-            key(pygame.K_q, 'q'),
+            key(pygame.K_q, 'q'),  # the ability key: does nothing mid-game
+            pygame.event.Event(pygame.QUIT),
         )
         self.assertTrue(self.renderer.show_title_screen())
         char_class = self.renderer.choose_class()

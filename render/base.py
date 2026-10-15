@@ -23,6 +23,9 @@ class Action:
     WAIT = 'wait'
     DESCEND = 'descend'
     QUIT = 'quit'
+    # 'q': the class ability (the archer's hop, the warrior's move -- not yet
+    # wired). On the game-over screen GameState treats it as "quit".
+    ABILITY = 'ability'
     # Keys 1-3: take that card of an opened chest's choice (GameState.choose).
     # Outside a choice they do nothing.
     CHOOSE_1 = 'choose_1'
