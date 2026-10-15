@@ -1,5 +1,13 @@
-"""The combat camera: which part of the map the window shows, and the beats
-that change it.
+"""The camera: which part of the map the window shows, and the beats that
+change it.
+
+Exploring, the window shows a fixed-size view of the map -- `view_size`: the
+base map (MAP_WIDTH x MAP_HEIGHT, which every floor's map is at least as big
+as) shrunk by `VIEW_ZOOM` on each axis -- centred on the player and clamped to
+the map's edges (`follow_view`). Deeper floors have bigger maps (game/dungeon.py
+map_size), so the view pans to follow the player rather than shrinking the
+tiles to fit; a map no bigger than the view is shown whole, centred, and never
+pans. Each step's pan is a short `Pan(..., follow=True)` beat.
 
 When a monster is in melee range the map zooms in on the fight -- the player
 and that monster centred, `MARGIN` squares of map around them -- and zooms
@@ -34,8 +42,10 @@ before showing the frame. Today there are three kinds:
                      map shakes for the length of the beat (`Shake`: harder
                      and longer on a crit), and the beat always plays out:
                      keys pressed meanwhile wait in the queue until it ends
-  Pan(start, end)    the view moving: zooming in, out, or across to another
-                     opponent
+  Pan(start, end, follow)
+                     the view moving: zooming in, out, or across to another
+                     opponent; `follow` when it is only the exploring view
+                     tracking the player (played shorter)
 
 A new effect (a lunge, a screen shake, a death animation) is another beat type
 here plus a player for it in the renderer; the loop in main.py never changes.
@@ -52,6 +62,12 @@ from collections import namedtuple
 
 from game.combat import Shot
 
+# The exploring zoom -- the one knob for it. The map area is laid out for
+# base map / VIEW_ZOOM cells per axis (view_size), so tiles are VIEW_ZOOM
+# times the size the whole base map would get: a 40x20 base shows 32x16 cells,
+# 50x20 shows 40x16. The layout still picks the tile from ui.TILE_SIZES
+# (16 px at the least), so it is never below the renderer's minimum.
+VIEW_ZOOM = 1.25
 MARGIN = 2  # squares of map shown around the fight
 ZOOM_CLASSES = frozenset({'warrior'})
 HOLD_RANGE = 3  # once zoomed, a monster this close keeps it
@@ -70,7 +86,8 @@ class View(namedtuple('View', 'left top width height')):
 
 Impact = namedtuple('Impact', 'hit shake held')
 Impact.__new__.__defaults__ = (None, ())
-Pan = namedtuple('Pan', 'start end')
+Pan = namedtuple('Pan', 'start end follow')
+Pan.__new__.__defaults__ = (False,)
 Flight = namedtuple('Flight', 'paths steps')
 FLIGHT_MS_PER_CELL = 40  # a 5-cell shot flies for 0.2 s
 
@@ -161,6 +178,27 @@ def full_view(map_width, map_height):
     return View(0, 0, map_width, map_height)
 
 
+def view_size(base_width, base_height, zoom=VIEW_ZOOM):
+    """(cols, rows) of map the window shows while exploring: the base map's
+    size over `zoom`, rounded, at least one cell."""
+    return max(1, round(base_width / zoom)), max(1, round(base_height / zoom))
+
+
+def follow_view(player, map_width, map_height, size):
+    """A `size` (cols, rows) view with `player` at its centre (to the cell),
+    clamped so it never runs past the map's edges. On an axis where the map
+    is no bigger than the view, the map is centred instead -- shown whole,
+    the same wherever the player stands."""
+
+    def axis(pos, extent, span):
+        if extent <= span:
+            return (extent - span) / 2
+        return min(max(0, pos - span // 2), extent - span)
+
+    cols, rows = size
+    return View(axis(player.x, map_width, cols), axis(player.y, map_height, rows), cols, rows)
+
+
 def combat_view(a, b, margin=MARGIN):
     """The two entities' bounding box plus `margin` cells on every side, so
     both sit at its centre. Not clamped to the map: near the border the view
@@ -207,9 +245,12 @@ def project(view, rect, cell):
 class Director:
     """Decides what the camera should show and stages the beats to get there.
 
-    Keeps the view (None = the whole map, whatever its size), the monster the
-    camera is following, and the serial of the last hit it staged. Reads the
-    GameState; never mutates it.
+    Keeps the combat view (None = not zoomed on a fight: the exploring view,
+    `explore_view`), the monster the camera is following, and the serial of
+    the last hit it staged. Reads the GameState; never mutates it.
+
+    `view_size`: (cols, rows) of the exploring view (see `view_size`); None
+    shows the whole map, whatever its size, and never follows the player.
 
     Two rules keep the zoom from jolting (both count *player turns* --
     `state.turn` -- never frames, so the monster phase and redrawn frames
@@ -226,9 +267,12 @@ class Director:
       once.
     """
 
-    def __init__(self, zoom=True):
+    def __init__(self, zoom=True, view_size=None):
         self.zoom = zoom
+        self.view_size = view_size
         self.view = None
+        self._map = None  # the level (its game_map) at the last frame
+        self._shown = None  # the view planned for the last frame
         self.focus = None
         self._last_hit = 0
         self._turn = None  # state.turn at the last frame
@@ -237,7 +281,15 @@ class Director:
         self._calm_since = None  # turn the hold's countdown started, or None
 
     def current(self, state):
-        return self.view or full_view(state.width, state.height)
+        """The view to paint: the fight's, else the exploring one."""
+        return self.view or self.explore_view(state)
+
+    def explore_view(self, state):
+        """The view while no fight is framed: following the player, or the
+        whole map if there is no view_size."""
+        if self.view_size is None:
+            return full_view(state.width, state.height)
+        return follow_view(state.player, state.width, state.height, self.view_size)
 
     def plan(self, state):
         """The beats to play before showing `state`: any new arrows' flights
@@ -257,14 +309,21 @@ class Director:
                 beats.append(Impact(event, shake_for(event)))
 
         self._track_turn(state)
-        start = self.current(state)
+        # A new floor: the old view belongs to another map, so no pan from it.
+        same_level = self._map is None or self._map is state.game_map
+        self._map = state.game_map
+        # Where the last frame's view was -- not current(), which follows the
+        # player to where they stand now.
+        start = self._shown if self._shown is not None else self.current(state)
+        was_zoomed = self.view is not None
         self.focus, view = self._frame(state)
         if view is None:
             self._calm_since = None
-        target = view or full_view(state.width, state.height)
-        if target != start:
-            beats.append(Pan(start, target))
+        target = view or self.explore_view(state)
+        if target != start and same_level:
+            beats.append(Pan(start, target, follow=not was_zoomed and view is None))
         self.view = view
+        self._shown = target
         return beats
 
     @staticmethod

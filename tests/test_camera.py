@@ -77,7 +77,7 @@ class DirectorTest(unittest.TestCase):
         director = Director()
         beats = director.plan(state)
         target = camera.combat_view(state.player, goblin)
-        self.assertEqual(beats, [Pan(camera.full_view(WIDTH, HEIGHT), target)])
+        self.assertEqual(beats, [Pan(camera.full_view(state.width, state.height), target)])
         self.assertEqual(director.view, target)
         self.assertIs(director.focus, goblin)
         # Already framed: the next frame stages nothing.
@@ -92,7 +92,7 @@ class DirectorTest(unittest.TestCase):
         beats = director.plan(state)
         self.assertEqual([type(b) for b in beats], [Impact, Pan])
         self.assertTrue(beats[0].hit.killed)
-        self.assertEqual(beats[1].end, camera.full_view(WIDTH, HEIGHT))  # fight over
+        self.assertEqual(beats[1].end, camera.full_view(state.width, state.height))  # fight over
         self.assertIsNone(director.view)
 
     def test_each_hit_is_staged_once(self):
@@ -118,7 +118,7 @@ class DirectorTest(unittest.TestCase):
         director = Director()
         director.plan(state)
         state.game_over = True
-        self.assertEqual(director.plan(state)[-1].end, camera.full_view(WIDTH, HEIGHT))
+        self.assertEqual(director.plan(state)[-1].end, camera.full_view(state.width, state.height))
 
     def test_focus_stays_on_the_fight_already_framed(self):
         state, goblin = lone_fight()
@@ -174,12 +174,18 @@ class SpearZoomTest(unittest.TestCase):
         director = Director()
         beats = director.plan(state)
         self.assertEqual(
-            beats, [Pan(camera.full_view(WIDTH, HEIGHT), camera.combat_view(state.player, m))]
+            beats,
+            [
+                Pan(
+                    camera.full_view(state.width, state.height),
+                    camera.combat_view(state.player, m),
+                )
+            ],
         )
         self.assertIs(director.focus, m)
         # fight over (monster dies): zoom back out
         m.alive = False
-        self.assertEqual(director.plan(state)[-1].end, camera.full_view(WIDTH, HEIGHT))
+        self.assertEqual(director.plan(state)[-1].end, camera.full_view(state.width, state.height))
 
     def test_wall_in_the_middle_does_not_zoom(self):
         state = self.arena()
@@ -274,7 +280,12 @@ class SmoothZoomTest(unittest.TestCase):
         state.handle_action('move_e')
         self.assertEqual(
             director.plan(state),
-            [Pan(camera.full_view(WIDTH, HEIGHT), camera.combat_view(state.player, goblin))],
+            [
+                Pan(
+                    camera.full_view(state.width, state.height),
+                    camera.combat_view(state.player, goblin),
+                )
+            ],
         )
         self.assertIs(director.focus, goblin)
 
@@ -308,7 +319,7 @@ class SmoothZoomTest(unittest.TestCase):
             state.cancel_monster_phase()  # keep the goblin where it is
         beats = director.plan(state)
         self.assertIsNone(director.view)
-        self.assertEqual(beats[-1].end, camera.full_view(WIDTH, HEIGHT))
+        self.assertEqual(beats[-1].end, camera.full_view(state.width, state.height))
 
     def test_a_monster_back_in_range_resets_the_hold(self):
         state = self.arena()
@@ -662,6 +673,106 @@ class ArrowFlightTest(unittest.TestCase):
         self.assertEqual([type(b) for b in beats[:2]], [Flight, Impact])
         self.assertEqual(flights[0].paths[0][-1], (10, 10))
         self.assertIs(beats[1].hit.defender, state.player)
+
+
+def open_floor(width, height):
+    """A level whose map is `width` x `height` of open floor inside a wall
+    border, with only the player on it, standing in the middle."""
+    state = GameState(WIDTH, HEIGHT)
+    state.width, state.height = width, height
+    state.game_map = [
+        [WALL if x in (0, width - 1) or y in (0, height - 1) else FLOOR for x in range(width)]
+        for y in range(height)
+    ]
+    state.visible = [[False] * width for _ in range(height)]
+    state.seen = [[False] * width for _ in range(height)]
+    state.entities = [state.player]
+    state.player.x, state.player.y = width // 2, height // 2
+    state.update_fov()
+    return state
+
+
+class FollowViewTest(unittest.TestCase):
+    """Exploring, the view is a fixed number of cells (VIEW_ZOOM) following
+    the player over maps bigger than it, clamped to the map's edges."""
+
+    SIZE = camera.view_size(WIDTH, HEIGHT)
+
+    def test_view_size_is_the_base_map_over_the_zoom(self):
+        self.assertEqual(camera.VIEW_ZOOM, 1.25)
+        self.assertEqual(camera.view_size(40, 20), (32, 16))
+        self.assertEqual(camera.view_size(50, 20), (40, 16))
+
+    def test_the_view_centres_the_player_and_clamps_to_the_map(self):
+        def at(x, y):
+            return camera.follow_view(Monster(x, y, 'goblin'), 100, 50, (32, 16))
+
+        self.assertEqual(at(50, 25), View(34, 17, 32, 16))  # player at its centre
+        self.assertEqual(at(1, 1), View(0, 0, 32, 16))
+        self.assertEqual(at(98, 48), View(68, 34, 32, 16))
+
+    def test_a_map_that_fits_is_shown_whole_and_centred(self):
+        for x, y in ((1, 1), (10, 5), (18, 8)):
+            view = camera.follow_view(Monster(x, y, 'goblin'), 20, 10, (32, 16))
+            self.assertEqual(view, View(-6, -3, 32, 16))
+
+    def test_the_view_pans_to_follow_the_player_on_a_big_map(self):
+        state = open_floor(100, 50)
+        director = Director(view_size=self.SIZE)
+        self.assertEqual(director.plan(state), [])
+        first = director.current(state)
+        state.player.x += 1
+        state.turn += 1
+        beats = director.plan(state)
+        self.assertEqual(len(beats), 1)
+        pan = beats[0]
+        self.assertIsInstance(pan, Pan)
+        self.assertTrue(pan.follow)
+        self.assertEqual((pan.start, pan.end.left - pan.start.left), (first, 1))
+        view = director.current(state)
+        self.assertEqual(view, pan.end)
+        self.assertTrue(view.left <= state.player.x < view.left + view.width)
+        self.assertTrue(view.top <= state.player.y < view.top + view.height)
+
+    def test_no_pan_on_a_map_that_fits(self):
+        state = open_floor(20, 10)
+        director = Director(view_size=self.SIZE)
+        director.plan(state)
+        for dx in (1, 1, -1, -1, -1):
+            state.player.x += dx
+            state.turn += 1
+            self.assertEqual(director.plan(state), [])
+        self.assertEqual(director.current(state), View(-6, -3, 32, 16))
+
+    def test_combat_zoom_runs_on_top_of_the_follow_view(self):
+        state = open_floor(100, 50)
+        director = Director(view_size=self.SIZE)
+        director.plan(state)
+        explore = director.current(state)
+        goblin = Monster(state.player.x + 1, state.player.y, 'goblin')
+        state.entities.append(goblin)
+        state.update_fov()
+        beats = director.plan(state)
+        self.assertEqual(beats, [Pan(explore, camera.combat_view(state.player, goblin))])
+        self.assertFalse(beats[0].follow)
+        # The fight ends: back out to the exploring view, not the whole map.
+        goblin.alive = False
+        state.entities.remove(goblin)
+        state.update_fov()
+        beats = director.plan(state)
+        self.assertEqual(beats[-1].end, director.explore_view(state))
+        self.assertEqual(beats[-1].end.width, self.SIZE[0])
+        self.assertIsNone(director.view)
+
+    def test_a_new_floor_does_not_pan_from_the_old_one(self):
+        state = GameState(WIDTH, HEIGHT)
+        director = Director(view_size=self.SIZE)
+        director.plan(state)
+        state.next_level()
+        self.assertEqual(director.plan(state), [])
+        view = director.current(state)
+        self.assertEqual((view.width, view.height), self.SIZE)
+        self.assertTrue(view.left <= state.player.x < view.left + view.width)
 
 
 if __name__ == '__main__':

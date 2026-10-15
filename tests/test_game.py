@@ -15,7 +15,17 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from game.damage import mitigate, round_damage
-from game.dungeon import generate_dungeon, make_empty_map, place_doors, place_stairs, wall_sides
+from game.dungeon import (
+    generate_dungeon,
+    generate_level,
+    make_empty_map,
+    map_size,
+    place_doors,
+    place_stairs,
+    room_growth,
+    room_size_range,
+    wall_sides,
+)
 from game.entity import Entity
 from game.fov import compute_fov, update_visibility
 from game.item import (
@@ -127,6 +137,85 @@ class DungeonGenerationTests(unittest.TestCase):
         sx, sy = place_stairs(game_map, rooms)
         self.assertEqual(game_map[sy][sx], STAIRS_DOWN)
         self.assertEqual((sx, sy), rooms[-1].center())
+
+
+class SizeByDepthTests(unittest.TestCase):
+    """Rooms grow with depth (dungeon.room_growth) and the map with them
+    (dungeon.map_size), keeping 4-6 rooms a floor."""
+
+    DEPTHS = (1, 8, 9, 16, 17, 30)
+
+    def test_room_growth_table(self):
+        self.assertEqual([room_growth(d) for d in self.DEPTHS], [2, 2, 5, 5, 6, 6])
+
+    def test_growth_is_added_on_every_side_of_the_base_room(self):
+        for depth in self.DEPTHS:
+            extra = 2 * room_growth(depth)
+            self.assertEqual(room_size_range(depth), (4 + extra, 8 + extra))
+
+    def test_map_grows_with_depth_and_never_shrinks(self):
+        for base in ((40, 20), (50, 20)):
+            sizes = [map_size(*base, depth) for depth in range(1, 41)]
+            for shallower, deeper in zip(sizes, sizes[1:]):
+                self.assertGreaterEqual(deeper[0], shallower[0])
+                self.assertGreaterEqual(deeper[1], shallower[1])
+            # Bigger than the base from floor 1, and again at each growth step.
+            self.assertGreater(sizes[0][0], base[0])
+            self.assertGreater(sizes[0][1], base[1])
+            self.assertGreater(sizes[8], sizes[7])  # floor 9
+            self.assertGreater(sizes[16], sizes[15])  # floor 17
+
+    def test_rooms_fit_inside_the_solid_border_at_every_depth(self):
+        for depth in range(1, 31):
+            random.seed(depth)
+            game_map, rooms = generate_level(40, 20, depth)
+            w, h = map_size(40, 20, depth)
+            self.assertEqual((len(game_map[0]), len(game_map)), (w, h))
+            low, high = room_size_range(depth)
+            for room in rooms:
+                self.assertTrue(1 <= room.x1 and room.x2 <= w - 1, (depth, vars(room)))
+                self.assertTrue(1 <= room.y1 and room.y2 <= h - 1, (depth, vars(room)))
+                self.assertTrue(low <= room.x2 - room.x1 <= high)
+                self.assertTrue(low <= room.y2 - room.y1 <= high)
+            for x in range(w):
+                self.assertEqual((game_map[0][x], game_map[h - 1][x]), (WALL, WALL))
+            for y in range(h):
+                self.assertEqual((game_map[y][0], game_map[y][w - 1]), (WALL, WALL))
+
+    def test_room_count_stays_in_range_at_every_depth(self):
+        for depth in self.DEPTHS:
+            for base in ((40, 20), (50, 20)):
+                for seed in range(6):
+                    random.seed(seed)
+                    _, rooms = generate_level(*base, depth)
+                    self.assertTrue(4 <= len(rooms) <= 6, (depth, base, seed, len(rooms)))
+
+    def test_next_level_rebuilds_the_map_size(self):
+        random.seed(5)
+        state = GameState(40, 20)
+        self.assertEqual((state.width, state.height), map_size(40, 20, 1))
+        while state.depth < 17:
+            state.next_level()
+            w, h = map_size(40, 20, state.depth)
+            self.assertEqual((state.width, state.height), (w, h))
+            for grid in (state.game_map, state.visible, state.seen):
+                self.assertEqual((len(grid[0]), len(grid)), (w, h))
+            self.assertTrue(state.visible[state.player.y][state.player.x])
+
+    def test_no_entity_is_placed_outside_the_map(self):
+        random.seed(6)
+        state = GameState(40, 20)
+        while state.depth <= 25:
+            for entity in state.entities:
+                self.assertTrue(0 < entity.x < state.width - 1, (state.depth, entity))
+                self.assertTrue(0 < entity.y < state.height - 1, (state.depth, entity))
+                self.assertNotEqual(state.game_map[entity.y][entity.x], WALL)
+            if is_boss_level(state.depth):
+                # A boss floor's arena is still one of its (grown) rooms.
+                self.assertIn(state.boss_arena, state.rooms[1:])
+                boss = next(m for m in state.entities if getattr(m, 'is_boss', False))
+                self.assertEqual((boss.x, boss.y), state.boss_arena.center())
+            state.next_level()
 
 
 class DoorPlacementTests(unittest.TestCase):

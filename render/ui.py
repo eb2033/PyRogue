@@ -100,6 +100,10 @@ class Layout:
     In both modes the panel goes right of the map, or -- `stacked` -- under
     it, whichever gives the map bigger cells (in tile mode, a tie goes to the
     bigger panel font; otherwise to side by side).
+
+    `map_width` x `map_height` is the map *area* in cells -- the renderer
+    passes camera.view_size, the exploring view, not the current floor's map
+    (which grows with depth and is panned under that view).
     """
 
     def __init__(self, map_width, map_height, font_path=None, tiles=False):

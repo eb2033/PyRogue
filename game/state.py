@@ -26,7 +26,7 @@ from typing import Any
 from game import archery
 from game.combat import Arrow, Hit, Shot
 from game.damage import mitigate, round_damage
-from game.dungeon import generate_dungeon, place_stairs
+from game.dungeon import generate_level, map_size, place_stairs
 from game.entity import Player
 from game.fov import update_visibility
 from game.item import (
@@ -118,8 +118,13 @@ def crit_chance(attacker):
 
 class GameState:
     def __init__(self, width, height, fov_radius=6, char_class=DEFAULT_CLASS):
-        self.width = width
-        self.height = height
+        """`width` x `height`: the base map size (MAP_WIDTH/MAP_HEIGHT), the
+        map for ungrown rooms. Each floor's map is bigger -- dungeon.map_size
+        -- and self.width/self.height are the current floor's, reset by
+        next_level."""
+        self.base_width = width
+        self.base_height = height
+        self.width, self.height = map_size(width, height, 1)
         self.fov_radius = fov_radius
         self.running = True
         self.game_over = False
@@ -156,10 +161,7 @@ class GameState:
         # _spawn_level_monsters on every new floor.
         self.boss_arena = None
 
-        self.game_map, self.rooms = generate_dungeon(width, height)
-        place_stairs(self.game_map, self.rooms)
-        self.visible = [[False] * width for _ in range(height)]
-        self.seen = [[False] * width for _ in range(height)]
+        self._build_map()
 
         char_class = char_class if char_class in CLASS_STATS else DEFAULT_CLASS
         hp, power = CLASS_STATS[char_class]
@@ -698,14 +700,10 @@ class GameState:
 
     def next_level(self):
         self.depth += 1
-        self.game_map, self.rooms = generate_dungeon(self.width, self.height)
-        place_stairs(self.game_map, self.rooms)
+        self._build_map()
 
         px, py = self.rooms[0].center()
         self.player.x, self.player.y = px, py
-
-        self.visible = [[False] * self.width for _ in range(self.height)]
-        self.seen = [[False] * self.width for _ in range(self.height)]
 
         self.cancel_monster_phase()
         self._clear_strikes()
@@ -717,6 +715,15 @@ class GameState:
         else:
             self.log(f'You descend to level {self.depth}.')
         self.update_fov()
+
+    def _build_map(self):
+        """This floor's map, rooms, stairs and empty FOV/fog grids, at this
+        floor's size (dungeon.map_size: it grows with depth)."""
+        self.width, self.height = map_size(self.base_width, self.base_height, self.depth)
+        self.game_map, self.rooms = generate_level(self.base_width, self.base_height, self.depth)
+        place_stairs(self.game_map, self.rooms)
+        self.visible = [[False] * self.width for _ in range(self.height)]
+        self.seen = [[False] * self.width for _ in range(self.height)]
 
     def next_event_serial(self):
         """The next serial for a combat record (a Hit or a Shot): one counter

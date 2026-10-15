@@ -54,7 +54,9 @@ class PygameRendererTest(unittest.TestCase):
     def test_draw_paints_the_player_cell(self):
         state = GameState(WIDTH, HEIGHT)
         self.renderer.draw(state)
-        cell = self.renderer.layout.cell_rect(state.player.x, state.player.y)
+        # The camera follows the player over a map bigger than the view, so
+        # the cell is wherever the current view puts it.
+        cell = self.renderer._map_cell_rect(state.player.x, state.player.y)
         screen = self.renderer.canvas.surface
         pixels = {
             tuple(screen.get_at((x, y)))[:3]
@@ -189,7 +191,7 @@ class PygameRendererTest(unittest.TestCase):
         state = GameState(WIDTH, HEIGHT)
         self.renderer.draw(state)
         self.renderer.toggle_fullscreen()
-        cell = self.renderer.layout.cell_rect(state.player.x, state.player.y)
+        cell = self.renderer._map_cell_rect(state.player.x, state.player.y)
         self.assertTrue(
             set(cell_pixels(self.renderer, cell)) - {BACKGROUND},
             'frame not repainted after going fullscreen',
@@ -234,11 +236,11 @@ class PygameRendererTest(unittest.TestCase):
         x, y = open_neighbour(state)
         boss = Monster(x, y, 'goblin', is_boss=True)
         state.entities.append(boss)
-        cell = self.renderer.layout.cell_rect(x, y)
         # The boss stands next to the player; this compares the unzoomed cell.
         self.renderer.director.zoom = False
 
         self.renderer.draw(state)
+        cell = self.renderer._map_cell_rect(x, y)  # where the camera put it
         boss_pixels = lit_pixels(self.renderer, cell)
         boss.is_boss = False
         self.renderer.draw(state)
@@ -449,9 +451,7 @@ class TileModeTest(unittest.TestCase):
         state = GameState(WIDTH, HEIGHT)
         self.renderer.draw(state)
         layout = self.renderer.layout
-        rect = pygame.Rect(
-            layout.map_cell_to_pixel(state.player.x, state.player.y), layout.map_cell_size()
-        )
+        rect = self.renderer._map_cell_rect(state.player.x, state.player.y)
         drawn = pygame.display.get_surface().subsurface(rect)
         expected = self.renderer.tileset.glyph('.', 0, layout.tile).copy()
         expected.blit(self.renderer.tileset.glyph('@', state.player.color, layout.tile), (0, 0))
@@ -462,9 +462,7 @@ class TileModeTest(unittest.TestCase):
         state = GameState(WIDTH, HEIGHT, char_class='archer')
         self.renderer.draw(state)
         layout = self.renderer.layout
-        rect = pygame.Rect(
-            layout.map_cell_to_pixel(state.player.x, state.player.y), layout.map_cell_size()
-        )
+        rect = self.renderer._map_cell_rect(state.player.x, state.player.y)
         drawn = pygame.display.get_surface().subsurface(rect)
         expected = self.renderer.tileset.glyph('.', 0, layout.tile).copy()
         expected.blit(self.renderer.tileset.glyph('&', state.player.color, layout.tile), (0, 0))
@@ -533,7 +531,9 @@ class TileModeTest(unittest.TestCase):
         goblin.hp = 1
         state.attack(state.player, goblin)
         self.renderer.draw(state)
-        self.assertIsNone(self.renderer._view)
+        # Back to the exploring view that follows the player.
+        self.assertIsNone(self.renderer.director.view)
+        self.assertEqual(self.renderer._view, self.renderer.director.explore_view(state))
 
     def test_beats_animate_and_a_queued_key_cuts_them_short(self):
         self.renderer.zoom_ms = 2000
@@ -1370,9 +1370,8 @@ class BossArenaTest(unittest.TestCase):
         return self.renderer.canvas.surface.copy()
 
     def cell(self, surface, x, y):
-        rect = self.renderer.layout.map_cell_to_pixel(x, y)
-        size = self.renderer.layout.map_cell_size()
-        return pygame.image.tobytes(surface.subsurface(pygame.Rect(rect, size)), 'RGB')
+        rect = self.renderer._map_cell_rect(x, y)
+        return pygame.image.tobytes(surface.subsurface(rect), 'RGB')
 
     def decal_cells(self):
         layout = self.renderer._arena_decals(self.arena)
@@ -1894,6 +1893,111 @@ def record_frames(renderer):
 
     renderer.draw = draw
     return frames
+
+
+def floor_level(width, height):
+    """A GameState whose map is `width` x `height` of open floor, the player
+    alone in the middle of it."""
+    state = GameState(WIDTH, HEIGHT)
+    state.width, state.height = width, height
+    state.game_map = [
+        ['#' if x in (0, width - 1) or y in (0, height - 1) else '.' for x in range(width)]
+        for y in range(height)
+    ]
+    state.visible = [[False] * width for _ in range(height)]
+    state.seen = [[False] * width for _ in range(height)]
+    state.entities = [state.player]
+    state.player.x, state.player.y = width // 2, height // 2
+    state.update_fov()
+    return state
+
+
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
+class FollowCameraTest(unittest.TestCase):
+    """The map area holds camera.view_size cells whatever the floor's size;
+    the view follows the player over a bigger map."""
+
+    def setUp(self):
+        from game.paths import resource_path
+        from render.tileset import Tileset
+
+        self.renderer = PygameRenderer(WIDTH, HEIGHT, tileset=Tileset(resource_path('assets')))
+        self.renderer.zoom_ms = self.renderer.follow_ms = 0
+        pygame.event.clear()
+
+    def tearDown(self):
+        self.renderer.close()
+
+    def assert_player_in_view(self, state):
+        rect = self.renderer._map_cell_rect(state.player.x, state.player.y)
+        self.assertTrue(self.renderer.layout.map_rect().contains(rect))
+
+    def test_the_layout_is_the_view_not_the_level(self):
+        layout = self.renderer.layout
+        self.assertEqual((layout.map_width, layout.map_height), camera.view_size(WIDTH, HEIGHT))
+        state = GameState(WIDTH, HEIGHT)
+        self.renderer.draw(state)
+        tile, map_rect = layout.tile, layout.map_rect()
+        state.next_level()
+        self.renderer.draw(state)
+        # A new, bigger floor: the same tiles in the same map area.
+        self.assertEqual((layout.tile, layout.map_rect()), (tile, map_rect))
+        self.assert_player_in_view(state)
+
+    def test_the_view_follows_the_player_on_a_big_map(self):
+        state = floor_level(100, 50)
+        self.renderer.draw(state)
+        self.assert_player_in_view(state)
+        before = self.renderer._view
+        # Exploring, cells are drawn at the layout's own tile: no shrinking.
+        self.assertEqual(self.renderer._map_cell_rect(0, 0).width, self.renderer.layout.tile)
+        for _ in range(10):
+            state.player.x += 1
+            state.turn += 1
+            self.renderer.draw(state)
+            self.assert_player_in_view(state)
+        self.assertEqual(self.renderer._view.left, before.left + 10)
+        # Run into the corner: the view stops at the map's edge.
+        state.player.x, state.player.y = 98, 48
+        state.turn += 1
+        self.renderer.draw(state)
+        self.assert_player_in_view(state)
+        view = self.renderer._view
+        self.assertEqual((view.left + view.width, view.top + view.height), (100, 50))
+
+    def test_a_map_that_fits_is_shown_whole_and_never_pans(self):
+        state = floor_level(20, 10)
+        self.renderer.draw(state)
+        view = self.renderer._view
+        map_rect = self.renderer.layout.map_rect()
+        for corner in ((0, 0), (19, 9)):
+            self.assertTrue(map_rect.contains(self.renderer._map_cell_rect(*corner)))
+        for dx in (3, -6):
+            state.player.x += dx
+            state.turn += 1
+            self.renderer.draw(state)
+            self.assertEqual(self.renderer._view, view)
+
+    def test_a_step_pans_for_follow_ms_and_a_zoom_for_zoom_ms(self):
+        state = floor_level(100, 50)
+        self.renderer.draw(state)
+        self.renderer.follow_ms, self.renderer.zoom_ms = 7, 999
+        played = []
+        with mock.patch.object(
+            self.renderer, '_play', side_effect=lambda ms, *a, **k: played.append(ms)
+        ):
+            state.player.x += 1
+            state.turn += 1
+            self.renderer.draw(state)
+            self.assertIn(7, played)
+            self.assertNotIn(999, played)
+            played.clear()
+            goblin = Monster(state.player.x + 1, state.player.y, 'goblin')
+            state.entities.append(goblin)
+            state.update_fov()
+            self.renderer.draw(state)
+            self.assertIn(999, played)
+        self.assertIsNotNone(self.renderer.director.view)  # zoomed on the fight
 
 
 if __name__ == '__main__':

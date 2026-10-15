@@ -94,6 +94,9 @@ def main():
     # Before anything reads the environment.
     settings.load()
 
+    # The base map size: each floor's map grows from it with depth
+    # (game/dungeon.py map_size), and the window's view is sized from it
+    # (render/camera.py view_size).
     width = env_int('MAP_WIDTH', DEFAULT_WIDTH)
     height = env_int('MAP_HEIGHT', DEFAULT_HEIGHT)
 

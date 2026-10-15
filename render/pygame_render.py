@@ -14,9 +14,10 @@ Division of labour with the other render modules:
   tileset.Tileset        tiles for map chars, None -> draw the glyph (WS-C)
   palette                Entity.color int -> RGB (this stream)
   input_map              key -> Action (this stream)
-  camera.Director        the combat zoom: what part of the map to show, and
-                         the beats (arrow flights, impacts, pans) staged
-                         before each frame
+  camera.Director        the camera: what part of the map to show (the
+                         exploring view that follows the player, or the
+                         combat zoom), and the beats (arrow flights,
+                         impacts, pans) staged before each frame
 """
 
 import copy
@@ -49,6 +50,7 @@ ICON_FILE = 'icon.png'
 # IMPACT_MS is a normal hit's beat; a crit's runs longer in proportion
 # (camera.CRIT_SHAKE_MS / camera.SHAKE_MS).
 ZOOM_MS = 220
+FOLLOW_MS = 90  # the exploring view's pan after a step (a Pan with follow)
 IMPACT_MS = camera.SHAKE_MS
 FLIGHT_MS = camera.FLIGHT_MS_PER_CELL  # per cell an arrow crosses
 FRAME_MS = 16
@@ -127,16 +129,22 @@ class PygameRenderer(Renderer):
         font_path=None,
         combat_zoom=True,
         zoom_ms=ZOOM_MS,
+        follow_ms=FOLLOW_MS,
         impact_ms=IMPACT_MS,
         flight_ms=FLIGHT_MS,
     ):
-        """`tileset`: a tileset.Tileset (None -> an unavailable one, i.e. glyphs).
+        """`width` x `height`: the base map size (MAP_WIDTH/MAP_HEIGHT). The
+        map area is laid out for camera.view_size of it -- a fixed number of
+        cells, whatever the current floor's size -- and the camera pans that
+        view over bigger maps (render/camera.py).
+        `tileset`: a tileset.Tileset (None -> an unavailable one, i.e. glyphs).
         An available one puts the layout in tile mode: square map cells.
         `font_path`: a TTF/OTF file for the grid text, handed to ui.Layout
         (None -> a system monospace font); a bundled font goes through here.
         `combat_zoom`: zoom the map in on melee fights (render/camera.py);
-        `zoom_ms` / `impact_ms`: how long a pan / a normal hit's flash and
-        shake play -- a crit's in proportion longer; `flight_ms`: how long
+        `zoom_ms` / `impact_ms`: how long a zoom's pan / a normal hit's flash and
+        shake play -- a crit's in proportion longer; `follow_ms`: how long
+        the exploring view takes to catch up with a step; `flight_ms`: how long
         an arrow takes to cross one cell (0 = no animation, the frame just
         changes)."""
         pygame.display.init()
@@ -146,7 +154,10 @@ class PygameRenderer(Renderer):
         pygame.key.set_repeat(300, 60)
 
         self.tileset = tileset or Tileset()
-        self.layout = ui.Layout(width, height, font_path=font_path, tiles=self.tileset.available)
+        # The map area is the exploring view's size, not the level's: a new,
+        # bigger floor never relayouts the window.
+        self.view_size = camera.view_size(width, height)
+        self.layout = ui.Layout(*self.view_size, font_path=font_path, tiles=self.tileset.available)
         self.fullscreen = False
         # Size to go back to when leaving fullscreen.
         self._windowed_size = self.layout.preferred_window_size()
@@ -161,11 +172,13 @@ class PygameRenderer(Renderer):
         # (a menu, a pause) is remembered and delivered by get_action.
         self._quit_requested = False
 
-        self.director = camera.Director(zoom=combat_zoom)
+        self.director = camera.Director(zoom=combat_zoom, view_size=self.view_size)
         self.zoom_ms = zoom_ms
+        self.follow_ms = follow_ms
         self.impact_ms = impact_ms
         self.flight_ms = flight_ms
-        # The view being painted (None = the whole map, the unzoomed layout),
+        # The view being painted (None = the map at the layout's own grid,
+        # only before the first draw),
         # its projection for the frame being painted, and whether a beat is
         # mid-play (in-between sizes are drawn uncached -- see _tile).
         self._view = None
@@ -393,8 +406,9 @@ class PygameRenderer(Renderer):
                     interruptible=False,
                 )
             elif isinstance(beat, camera.Pan):
-                self._play(self.zoom_ms, lambda t, pan=beat: self._paint_pan(state, pan, t))
-        self._view = self.director.view
+                ms = self.follow_ms if beat.follow else self.zoom_ms
+                self._play(ms, lambda t, pan=beat: self._paint_pan(state, pan, t))
+        self._view = self.director.current(state)
         if tilts:
             self._tilts = tilts
             try:
@@ -941,10 +955,14 @@ class PygameRenderer(Renderer):
     # -- map cells ------------------------------------------------------------
 
     def _map_cell_rect(self, x, y):
-        """Pixel rect of map cell (x, y) at the current view."""
-        if self._proj is None:
+        """Pixel rect of map cell (x, y) at the current view -- the frame
+        being painted, or else the one last shown."""
+        proj = self._proj
+        if proj is None and self._view is not None:
+            proj = camera.project(self._view, self.layout.map_rect(), self.layout.map_cell_size())
+        if proj is None:
             return pygame.Rect(self.layout.map_cell_to_pixel(x, y), self.layout.map_cell_size())
-        cell_w, cell_h, ox, oy = self._proj
+        cell_w, cell_h, ox, oy = proj
         return pygame.Rect(ox + x * cell_w, oy + y * cell_h, cell_w, cell_h)
 
     def _paint_cell(self, x, y, char, rgb, color_index=0, dim=False, angle=0):

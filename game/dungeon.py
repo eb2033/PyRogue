@@ -1,6 +1,8 @@
 """Room-and-corridor dungeon generation (spec §3).
 
-Room sizes follow the spec's 4-8. Placement is attempt-based rather than a
+Base room sizes follow the spec's 4-8; deeper floors add room_growth(depth)
+tiles to every side of a room, and map_size enlarges the map to match, so a
+floor still gets its 4-6 rooms (see "size by depth" below). Placement is attempt-based rather than a
 fixed number of tries (see max_attempts below): it keeps rolling random rooms
 until it either hits the target room count (min_rooms-max_rooms, default
 4-6) or runs out of attempts, so a 50x20 map reliably lands in that range
@@ -8,11 +10,64 @@ instead of stalling out around 2-3 rooms.
 """
 
 import heapq
+import math
 import random
 
 from game.rect import Rect
 from game.rng import Rng
 from game.tiles import DOOR, FLOOR, STAIRS_DOWN, WALL
+
+# -- size by depth ------------------------------------------------------------
+# THE one place to tune how rooms -- and with them the map -- grow with depth.
+# ROOM_GROWTH: (first floor, extra tiles on EACH of a room's four sides),
+# shallowest first; the last row holds for every floor below it (the cap).
+# A room's width and height grow by twice the value. The base room size is
+# the spec's, unchanged; the growth is added on top of it.
+ROOM_GROWTH = (
+    (1, 2),  # floors 1-8
+    (9, 5),  # floors 9-16
+    (17, 6),  # floors 17 and up
+)
+BASE_MIN_ROOM = 4
+BASE_MAX_ROOM = 8
+# The span an average base room takes along one axis: its mean size plus one
+# wall. map_size scales the map by how much growth widens that span, so as
+# many rooms fit as on an ungrown map.
+ROOM_FOOTPRINT = (BASE_MIN_ROOM + BASE_MAX_ROOM) / 2 + 1
+
+
+def room_growth(depth):
+    """Tiles added to each side of every room on floor `depth`."""
+    growth = ROOM_GROWTH[0][1]
+    for first, extra in ROOM_GROWTH:
+        if depth >= first:
+            growth = extra
+    return growth
+
+
+def room_size_range(depth):
+    """(min, max) room width/height on floor `depth`: the base range plus
+    room_growth on both sides."""
+    extra = 2 * room_growth(depth)
+    return BASE_MIN_ROOM + extra, BASE_MAX_ROOM + extra
+
+
+def map_size(base_w, base_h, depth):
+    """(w, h) of floor `depth`'s map. `base_w` x `base_h` is the map for
+    ungrown rooms (MAP_WIDTH/MAP_HEIGHT, 50x20 by default); each axis is
+    scaled by how much room_growth widens a room's footprint, rounded up, so
+    the room count stays in generate_dungeon's min_rooms-max_rooms. Never
+    shrinks with depth, because room_growth doesn't."""
+    scale = (ROOM_FOOTPRINT + 2 * room_growth(depth)) / ROOM_FOOTPRINT
+    return math.ceil(base_w * scale), math.ceil(base_h * scale)
+
+
+def generate_level(base_w, base_h, depth):
+    """(game_map, rooms) for floor `depth`: map_size's map holding
+    room_size_range's rooms. Its size is len(game_map[0]) x len(game_map)."""
+    w, h = map_size(base_w, base_h, depth)
+    min_size, max_size = room_size_range(depth)
+    return generate_dungeon(w, h, min_size=min_size, max_size=max_size)
 
 
 def make_empty_map(w, h, fill=WALL):
