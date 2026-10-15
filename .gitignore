@@ -5,6 +5,7 @@
 __pycache__/
 *.pyc
 .venv/
+.venv
 .hypothesis/
 .ruff_cache/
 

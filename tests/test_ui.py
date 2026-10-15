@@ -857,6 +857,7 @@ class CursesBeltTest(unittest.TestCase):
         self.assertIn((14, 'h  drink  q  quit'), [(y, t) for y, _, t, _ in writes])
 
 
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
 class GearLineSignTest(unittest.TestCase):
     def test_bonus_is_signed_once(self):
         _, rapier, _ = ui._gear_lines('Weapon', Item(0, 0, 'rapier', 'common'), 'atk')
