@@ -214,5 +214,187 @@ class SpearZoomTest(unittest.TestCase):
         self.assertIs(d.focus, m)
 
 
+class SmoothZoomTest(unittest.TestCase):
+    """The direction gate (no zooming in on a monster the player walks away
+    from) and the hold (stay zoomed while a monster is within HOLD_RANGE, and
+    for HOLD_TURNS player turns after) -- both counted in player turns."""
+
+    def arena(self):
+        state = GameState(WIDTH, HEIGHT, char_class='warrior')
+        for y in range(1, HEIGHT - 1):
+            for x in range(1, WIDTH - 1):
+                state.game_map[y][x] = '.'
+        state.player.x, state.player.y = 10, 10
+        state.entities = [state.player]
+        state.fov_radius = 10
+        state.update_fov()
+        return state
+
+    def add(self, state, x, y, kind='goblin'):
+        m = Monster(x, y, kind)
+        state.entities.append(m)
+        state.update_fov()
+        return m
+
+    def zoomed_on(self, state, monster):
+        director = Director()
+        director.plan(state)
+        self.assertIs(director.focus, monster)
+        self.assertIsNotNone(director.view)
+        return director
+
+    def test_no_zoom_in_while_stepping_away(self):
+        state = self.arena()
+        goblin = self.add(state, 12, 10)
+        director = Director()
+        self.assertEqual(director.plan(state), [])
+        state.handle_action('move_w')                # the player flees west
+        self.assertEqual(state.player.x, 9)
+        # The goblin closes in right behind (it had been out of sight, say):
+        # in range, but the player's last move took them away from it.
+        goblin.x = 10
+        state.update_fov()
+        self.assertEqual(state.zoom_opponents(), [goblin])
+        self.assertEqual(director.plan(state), [])
+        self.assertIsNone(director.view)
+        self.assertEqual(director.plan(state), [])   # redrawn: still out
+        # The player stands and fights: now it zooms in.
+        state.handle_action('wait')
+        self.assertEqual(director.plan(state)[-1].end,
+                         camera.combat_view(state.player, goblin))
+
+    def test_walking_toward_a_monster_zooms_in(self):
+        state = self.arena()
+        goblin = self.add(state, 12, 10)
+        director = Director()
+        self.assertEqual(director.plan(state), [])
+        state.handle_action('move_e')
+        self.assertEqual(director.plan(state),
+                         [Pan(camera.full_view(WIDTH, HEIGHT),
+                              camera.combat_view(state.player, goblin))])
+        self.assertIs(director.focus, goblin)
+
+    def test_stepping_away_once_zoomed_stays_zoomed(self):
+        # The reported jolt: fleeing an adjacent monster zoomed out, then
+        # back in when it caught up.
+        state = self.arena()
+        goblin = self.add(state, 11, 10)
+        director = self.zoomed_on(state, goblin)
+        state.handle_action('move_w')
+        director.plan(state)
+        self.assertIsNotNone(director.view)
+        self.assertIs(director.focus, goblin)
+        while state.step_monster_phase():             # the goblin follows
+            director.plan(state)
+            self.assertIsNotNone(director.view)
+        director.plan(state)
+        self.assertEqual(director.view, camera.combat_view(state.player, goblin))
+
+    def test_hold_lasts_exactly_two_player_turns(self):
+        state = self.arena()
+        goblin = self.add(state, 11, 10)
+        director = self.zoomed_on(state, goblin)
+        goblin.x = 15                                # out of HOLD_RANGE, in view
+        state.update_fov()
+        for _ in range(camera.HOLD_TURNS):
+            for _ in range(4):                       # redrawn frames don't count
+                director.plan(state)
+                self.assertIsNotNone(director.view)
+            state.handle_action('wait')
+            state.cancel_monster_phase()             # keep the goblin where it is
+        beats = director.plan(state)
+        self.assertIsNone(director.view)
+        self.assertEqual(beats[-1].end, camera.full_view(WIDTH, HEIGHT))
+
+    def test_a_monster_back_in_range_resets_the_hold(self):
+        state = self.arena()
+        goblin = self.add(state, 11, 10)
+        director = self.zoomed_on(state, goblin)
+        goblin.x = 15
+        state.update_fov()
+        director.plan(state)
+        state.handle_action('wait')
+        goblin.x = 13                                # within 3 again
+        director.plan(state)
+        self.assertEqual(director.view, camera.combat_view(state.player, goblin))
+        goblin.x = 15
+        for _ in range(camera.HOLD_TURNS):
+            state.handle_action('wait')
+            director.plan(state)
+            self.assertIsNotNone(director.view)      # a fresh countdown
+        state.handle_action('wait')
+        director.plan(state)
+        self.assertIsNone(director.view)
+
+    def test_second_monster_approaching_keeps_the_zoom(self):
+        # The other reported case: the first goblin dies while an orc is
+        # still on its way -- no zoom-out for a turn in between.
+        state = self.arena()
+        goblin = self.add(state, 11, 10)
+        orc = self.add(state, 15, 10, 'orc')
+        director = self.zoomed_on(state, goblin)
+        goblin.alive = False
+        for x in (14, 13, 12, 11):
+            director.plan(state)
+            self.assertIsNotNone(director.view, f'zoomed out with the orc at x={orc.x}')
+            state.handle_action('wait')
+            state.cancel_monster_phase()
+            orc.x = x
+        director.plan(state)
+        self.assertIs(director.focus, orc)
+        self.assertEqual(director.view, camera.combat_view(state.player, orc))
+
+    def test_monster_phase_frames_do_not_advance_the_hold(self):
+        state = self.arena()
+        goblin = self.add(state, 11, 10)
+        far = [self.add(state, 17, 10), self.add(state, 10, 17)]  # 7 away, chasing
+        director = self.zoomed_on(state, goblin)
+        goblin.alive = False
+        director.plan(state)                         # the countdown starts
+        state.handle_action('wait')                  # turn 1 of 2
+        director.plan(state)
+        frames = 0
+        while state.step_monster_phase():            # both far ones step closer
+            frames += 1
+            director.plan(state)
+            self.assertIsNotNone(director.view)
+        self.assertGreaterEqual(frames, 2)
+        director.plan(state)
+        self.assertIsNotNone(director.view)
+        self.assertTrue(all(m.distance_to(state.player) > camera.HOLD_RANGE for m in far))
+        state.handle_action('wait')                  # turn 2: the hold is over
+        director.plan(state)
+        self.assertIsNone(director.view)
+
+    def test_last_monster_gone_zooms_out_at_once(self):
+        state = self.arena()
+        goblin = self.add(state, 11, 10)
+        director = self.zoomed_on(state, goblin)
+        goblin.alive = False
+        director.plan(state)
+        self.assertIsNone(director.view)
+
+    def test_game_over_ends_a_hold(self):
+        state = self.arena()
+        goblin = self.add(state, 11, 10)
+        director = self.zoomed_on(state, goblin)
+        goblin.x = 13
+        director.plan(state)
+        self.assertIsNotNone(director.view)
+        state.game_over = True
+        director.plan(state)
+        self.assertIsNone(director.view)
+
+    def test_turn_counts_player_actions_only(self):
+        state = self.arena()
+        self.add(state, 17, 10)
+        state.handle_action('wait')
+        state.end_turn()
+        state.handle_action('move_n')
+        while state.step_monster_phase():
+            pass
+        self.assertEqual(state.turn, 2)
+
+
 if __name__ == '__main__':
     unittest.main()

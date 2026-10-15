@@ -114,6 +114,10 @@ class GameState:
         # the player acts; the serial keeps counting across rounds and levels.
         self.combat_events = []
         self._hit_serial = 0
+        # Player actions taken so far (+1 per turn-consuming action in
+        # handle_action; never per frame or per monster). The combat zoom's
+        # hold (render/camera.py) counts turns with it.
+        self.turn = 0
         # Items an opened gear chest is offering, or None. While set, the
         # player must choose() one before anything else happens.
         self.pending_choice = None
@@ -209,6 +213,7 @@ class GameState:
         if action in MOVE_DELTAS:
             dx, dy = MOVE_DELTAS[action]
             self.try_move_player(dx, dy)
+            self.turn += 1
             self.end_player_phase()
             return True
 
@@ -218,15 +223,20 @@ class GameState:
                 self.shoot_arrow(dx, dy)
             else:
                 self.try_move_player(dx, dy)
+            self.turn += 1
             self.end_player_phase()
             return True
 
         if action == 'wait':
+            self.turn += 1
             self.end_player_phase()
             return True
 
         if action == 'descend':
-            return self.try_descend()
+            if self.try_descend():
+                self.turn += 1
+                return True
+            return False
 
         return False
 
@@ -545,6 +555,18 @@ class GameState:
             if target is not None and target not in found:
                 found.append(target)
         return found
+
+    def visible_monsters(self):
+        """Living monsters in the player's view."""
+        return [e for e in self.entities
+                if isinstance(e, Monster) and e.alive and self.visible[e.y][e.x]]
+
+    def monsters_within(self, radius):
+        """Living monsters in view within `radius` of the player, by
+        Chebyshev distance (a loose "nearby" check, like chase range -- not
+        an adjacency test). The combat zoom holds while any is this close."""
+        return [m for m in self.visible_monsters()
+                if m.distance_to(self.player) <= radius]
 
     def chest_at(self, x, y):
         for e in self.entities:
