@@ -1989,6 +1989,7 @@ class WeaponTypeTests(unittest.TestCase):
         before = len(self.state.messages)
         with self.no_crit():
             self.state.handle_action('move_e')
+            self.state.resolve_player_phase()
         hits = [h for h in self.state.combat_events if h.attacker is p]
         self.assertEqual(len(hits), 2)
         self.assertEqual([h.damage for h in hits], expected)
@@ -2006,6 +2007,7 @@ class WeaponTypeTests(unittest.TestCase):
         for rolls, crits in (([0.0, 0.99], [True, False]), ([0.99, 0.0], [False, True])):
             with mock.patch('game.state.random.random', side_effect=rolls):
                 self.state.handle_action('move_e')
+                self.state.resolve_player_phase()
             hits = [h for h in self.state.combat_events if h.attacker is self.state.player]
             self.assertEqual([h.crit for h in hits], crits)
             self.assertEqual([h.damage for h in hits], [6 if c else 4 for c in crits])
@@ -2017,6 +2019,98 @@ class WeaponTypeTests(unittest.TestCase):
             self.state.melee(goblin)
         self.assertEqual(len(self.state.combat_events), 1)
         self.assertFalse(goblin.alive)
+
+    def test_rapier_second_strike_waits_until_stepped(self):
+        # handle_action lands strike 1 only and leaves the player's half
+        # open: no monster is queued until the second strike resolves.
+        self.equip('rapier', 'epic')
+        p = self.state.player
+        goblin = self.monster(11, 10)
+        with self.no_crit():
+            self.assertTrue(self.state.handle_action('move_e'))
+            self.assertEqual(len(self.state.combat_events), 1)
+            first = self.state.combat_events[0].damage
+            self.assertEqual(goblin.hp, 1000 - first)
+            self.assertTrue(self.state.strike_pending())
+            self.assertFalse(self.state.monster_phase_pending())
+            self.assertTrue(self.state.step_strike())
+        hits = self.state.combat_events
+        self.assertEqual([h.attacker for h in hits], [p, p])
+        self.assertEqual([h.defender for h in hits], [goblin, goblin])
+        self.assertLess(hits[0].serial, hits[1].serial)
+        self.assertEqual(goblin.hp, 1000 - first - hits[1].damage)
+        self.assertFalse(self.state.strike_pending())
+        self.assertTrue(self.state.monster_phase_pending())  # now the monsters
+
+    def test_rapier_kill_on_the_first_strike_ends_the_half_at_once(self):
+        self.equip('rapier', 'epic')
+        goblin = self.monster(11, 10, hp=1)
+        other = self.monster(20, 10)
+        with self.no_crit():
+            self.state.handle_action('move_e')
+        self.assertFalse(goblin.alive)
+        self.assertEqual(len(self.state.combat_events), 1)
+        self.assertFalse(self.state.strike_pending())
+        self.assertTrue(self.state.monster_phase_pending())
+        self.assertEqual(other.hp, 1000)
+
+    def test_rapier_second_strike_skips_a_vanished_target(self):
+        self.equip('rapier', 'epic')
+        goblin = self.monster(11, 10)
+        with self.no_crit():
+            self.state.handle_action('move_e')
+        self.state.entities.remove(goblin)  # gone before strike 2
+        hp = goblin.hp
+        self.assertFalse(self.state.step_strike())
+        self.assertEqual(goblin.hp, hp)
+        self.assertEqual(len(self.state.combat_events), 1)
+        self.assertFalse(self.state.strike_pending())
+
+    def test_rapier_second_strike_does_nothing_once_the_player_is_dead(self):
+        self.equip('rapier', 'epic')
+        goblin = self.monster(11, 10)
+        with self.no_crit():
+            self.state.handle_action('move_e')
+        self.state.player.hp = 0
+        self.state.player.alive = False
+        self.state.game_over = True
+        hp = goblin.hp
+        self.assertFalse(self.state.step_strike())
+        self.assertEqual(goblin.hp, hp)
+        self.assertFalse(self.state.strike_pending())
+        self.assertFalse(self.state.monster_phase_pending())
+
+    def test_rapier_with_no_monster_just_moves(self):
+        self.equip('rapier', 'epic')
+        self.assertTrue(self.state.handle_action('move_e'))
+        self.assertEqual((self.state.player.x, self.state.player.y), (11, 10))
+        self.assertFalse(self.state.strike_pending())
+        self.assertEqual(self.state.combat_events, [])
+
+    def test_rapier_end_turn_resolves_both_strikes_then_the_monsters(self):
+        self.equip('rapier', 'epic')
+        p = self.state.player
+        goblin = self.monster(11, 10)
+        goblin.power = 3
+        turn = self.state.turn
+        with self.no_crit():
+            self.state.handle_action('move_e')
+            self.state.end_turn()
+        attackers = [h.attacker for h in self.state.combat_events]
+        # Both of the player's strikes, then the goblin's reply.
+        self.assertEqual(attackers, [p, p, goblin])
+        self.assertEqual(self.state.turn, turn + 1)
+        self.assertFalse(self.state.strike_pending())
+        self.assertFalse(self.state.monster_phase_pending())
+
+    def test_warrior_single_strike_is_unchanged(self):
+        goblin = self.monster(11, 10)
+        with self.no_crit():
+            self.state.handle_action('move_e')
+        self.assertEqual(len(self.state.combat_events), 1)
+        self.assertFalse(self.state.strike_pending())
+        self.assertTrue(self.state.monster_phase_pending())
+        self.assertLess(goblin.hp, 1000)
 
     # -- Great Sword ---------------------------------------------------------
 

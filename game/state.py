@@ -11,6 +11,13 @@ drives step_monster_phase() until the queue drains. Monsters resolve strictly
 one at a time against the current world -- if the player dies partway through,
 the monsters still queued never act. end_turn() runs both halves back to back
 for callers that don't care about the split (tests, headless use).
+
+The player's half can itself take more than one step: a rapier's second
+strike is queued by handle_action rather than swung at once, so the first hit
+is drawn (and its beat played) before the second one's damage is rolled. The
+caller drives step_strike() while strike_pending(); the last strike ends the
+player's half (end_player_phase), and only then are the monsters queued.
+resolve_player_phase() does that in one go for headless callers.
 """
 
 import random
@@ -161,6 +168,10 @@ class GameState:
 
         # Monsters still owing a turn in the current round. See end_player_phase.
         self._pending_monsters: list[Monster] = []
+        # The player's melee strikes still owed this action (a rapier's 2nd),
+        # and the monster they are aimed at. See melee and step_strike.
+        self._strike_target: Monster | None = None
+        self._strikes_owed = 0
 
         self.update_fov()
 
@@ -189,6 +200,10 @@ class GameState:
         """Apply one semantic action. Returns True if a turn was consumed."""
         if action is None:
             return False
+        # A strike left over from the last action (a headless caller that
+        # never stepped it) lands first: the player's half of that round is
+        # always finished before anything else happens.
+        self.resolve_player_phase()
         self.combat_events = []
 
         if action == 'quit':
@@ -217,7 +232,7 @@ class GameState:
             if not self.try_move_player(dx, dy):
                 return False
             self.turn += 1
-            self.end_player_phase()
+            self._close_player_action()
             return True
 
         if action in SHOOT_DELTAS:
@@ -227,7 +242,7 @@ class GameState:
             elif not self.try_move_player(dx, dy):
                 return False
             self.turn += 1
-            self.end_player_phase()
+            self._close_player_action()
             return True
 
         if action == 'drink':
@@ -347,21 +362,73 @@ class GameState:
 
         - strikes (the rapier's 2): that many separate attack() calls --
           each its own crit roll, damage reduction, log line and Hit --
-          stopping early if the target dies.
+          stopping early if the target dies. Only the first lands here; the
+          rest are queued (strike_pending) and land one per step_strike()
+          call, so each hit is drawn before the next one's damage is rolled.
         - cleave (the Great Sword): one more living monster is hit by the
           same blow, with its own attack(). "Nearby" means ORTHOGONALLY
           ADJACENT TO THE PLAYER (Entity.is_adjacent) -- not to the target,
           and never diagonal or two tiles off -- i.e. a monster the player
           could have bumped instead. If several qualify, only the first in
           entity order is hit ("a 2nd adjacent foe"). It still swings
-          through if the main target died.
+          through if the main target died, after the last strike.
         """
         weapon = self.player.weapon
         strikes = weapon.strikes if weapon is not None else 1
-        for _ in range(strikes):
-            if not target.alive:
-                break
+        self.attack(self.player, target)
+        if strikes > 1 and target.alive:
+            self._strike_target = target
+            self._strikes_owed = strikes - 1
+            return
+        self._cleave(target)
+
+    def strike_pending(self):
+        """True while the player's current action still owes a melee strike
+        (a rapier's second) -- the player's half of the round isn't over."""
+        return self._strike_target is not None
+
+    def step_strike(self):
+        """Land the next queued strike. Returns True if it hit something
+        (so the caller should show it), False if it was skipped: the target
+        died or is gone, or the player is dead. Once no strike is owed the
+        player's half ends (end_player_phase) -- unless the player is dead,
+        when nothing more happens at all."""
+        target = self._strike_target
+        if target is None:
+            return False
+        if self.game_over or not self.player.alive:
+            self._clear_strikes()
+            return False
+        hit = target.alive and target in self.entities
+        if hit:
             self.attack(self.player, target)
+            self._strikes_owed -= 1
+        if not hit or not target.alive or self._strikes_owed <= 0:
+            self._clear_strikes()
+            self._cleave(target)
+            self.end_player_phase()
+        return hit
+
+    def resolve_player_phase(self):
+        """Land every queued strike at once, ending the player's half: the
+        headless equivalent of main.resolve_player_strikes. Does nothing
+        when no strike is owed."""
+        while self.strike_pending():
+            self.step_strike()
+
+    def _clear_strikes(self):
+        self._strike_target = None
+        self._strikes_owed = 0
+
+    def _close_player_action(self):
+        """End the player's half after a move -- unless it started a
+        multi-strike melee, whose last strike ends it (step_strike)."""
+        if not self.strike_pending():
+            self.end_player_phase()
+
+    def _cleave(self, target):
+        """The Great Sword's extra swing (see melee)."""
+        weapon = self.player.weapon
         if weapon is not None and weapon.cleave:
             other = next(
                 (
@@ -501,6 +568,7 @@ class GameState:
         self.seen = [[False] * self.width for _ in range(self.height)]
 
         self.cancel_monster_phase()
+        self._clear_strikes()
         self.pending_choice = None
         self.entities = self._populate_level()
         if is_boss_level(self.depth):
@@ -649,8 +717,11 @@ class GameState:
 
         The renderer-driven loop in main.py steps the phase frame by frame
         instead; this is the all-at-once equivalent for tests and any
-        headless caller.
+        headless caller. Any strike the player still owes lands first
+        (resolve_player_phase), so the player's half is always over before
+        the monsters' starts.
         """
+        self.resolve_player_phase()
         if not self.monster_phase_pending():
             self.end_player_phase()
         while self.step_monster_phase():

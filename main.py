@@ -48,6 +48,22 @@ def make_renderer(width, height):
     )
 
 
+def resolve_player_strikes(renderer, state, delay_ms):
+    """Drive the rest of the player's half: a rapier's queued second strike.
+
+    The first strike landed in handle_action. Each pass draws it -- the
+    renderer plays its hit beat (flash, damage number, shake) before the
+    frame shows -- holds that frame, and only then rolls the next strike, so
+    no strike's damage exists before the one before it has been seen. The
+    last strike ends the player's half (GameState.step_strike queues the
+    monsters), and resolve_monster_phase's first draw shows it.
+    """
+    while state.strike_pending():
+        renderer.draw(state)
+        renderer.pause(delay_ms)
+        state.step_strike()
+
+
 def resolve_monster_phase(renderer, state, delay_ms):
     """Drive the monster half of the round one visible step at a time.
 
@@ -70,6 +86,7 @@ def run(renderer, state, delay_ms=DEFAULT_TURN_DELAY_MS):
     while state.running:
         renderer.draw(state)
         state.handle_action(renderer.get_action())
+        resolve_player_strikes(renderer, state, delay_ms)
         resolve_monster_phase(renderer, state, delay_ms)
 
 
