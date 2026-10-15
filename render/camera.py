@@ -10,17 +10,27 @@ The camera is *staged*: `Director.plan(state)` turns what changed since the
 last frame into a list of beats, and the renderer plays them one after another
 before showing the frame. Today there are three kinds:
 
-  Flight(path)       an arrow flying cell to cell along `path` (the shooter's
-                     cell first), FLIGHT_MS_PER_CELL a cell. Planned from
-                     GameState.shots (game/combat.py's Shot): one Flight per
-                     stretch of the arrow's path, each ending on a monster it
-                     hit -- whose Impact comes right after it -- or on the
-                     tile it landed on. So the damage shows the moment the
-                     arrow arrives, and a pierce's second hit waits for the
-                     arrow to fly on to it. Plays out like an Impact: keys
-                     wait in the queue until it ends.
-  Impact(hit, shake) a blow landing -- played at the current view, so a
-                     killing blow is seen before the camera pulls back. The
+  Flight(paths, steps)
+                     arrows flying together, cell to cell, for `steps`
+                     cells at FLIGHT_MS_PER_CELL a cell: paths[i] is arrow
+                     i's cells over this stretch. Planned from
+                     GameState.shots (game/combat.py's Shot): every arrow in
+                     shot.arrows leaves the shooter's cell at the same moment
+                     (a volley's arrows fly side by side; any other bow, and
+                     the goblin archer, is a one-arrow Shot on the same path).
+                     The shot's timeline is cut at each step where an arrow
+                     reaches a monster it hit: a Flight up to there, that
+                     hit's Impact, then a Flight on. So each arrow's damage
+                     shows the moment that arrow arrives, and a pierce's
+                     second hit waits for the arrow to fly on to it. An arrow
+                     whose path ends inside a stretch (it landed, or left
+                     sight) is gone from then on. Plays out like an Impact:
+                     keys wait in the queue until it ends.
+  Impact(hit, shake, held)
+                     a blow landing -- played at the current view, so a
+                     killing blow is seen before the camera pulls back.
+                     `held`: the arrows still in the air at that moment, as
+                     (from, at) cell pairs, drawn hanging at `at`. The
                      map shakes for the length of the beat (`Shake`: harder
                      and longer on a crit), and the beat always plays out:
                      keys pressed meanwhile wait in the queue until it ends
@@ -58,10 +68,10 @@ class View(namedtuple('View', 'left top width height')):
         return self.left + self.width / 2, self.top + self.height / 2
 
 
-Impact = namedtuple('Impact', 'hit shake')
-Impact.__new__.__defaults__ = (None,)
+Impact = namedtuple('Impact', 'hit shake held')
+Impact.__new__.__defaults__ = (None, ())
 Pan = namedtuple('Pan', 'start end')
-Flight = namedtuple('Flight', 'path')
+Flight = namedtuple('Flight', 'paths steps')
 FLIGHT_MS_PER_CELL = 40  # a 5-cell shot flies for 0.2 s
 
 # The hit shake: `ms` is how long the impact beat (and its shake) lasts,
@@ -126,17 +136,24 @@ def _jitter(shake, t, peak, skip):
 
 
 def flight_ms(flight, per_cell=FLIGHT_MS_PER_CELL):
-    """How long `flight` plays: `per_cell` for every cell it crosses."""
-    return (len(flight.path) - 1) * per_cell
+    """How long `flight` plays: `per_cell` for every cell its arrows cross."""
+    return flight.steps * per_cell
 
 
-def flight_step(path, t):
-    """Where the arrow is at t (0 -> 1 over the flight): (a, b, f) -- it is
-    `f` of the way from cell a to the next cell b on `path`. Cells are
-    crossed at an even pace, so at t = 1 it is on the last cell (f = 1)."""
-    steps = len(path) - 1
+def flight_step(path, steps, t):
+    """Where an arrow on `path` is at t (0 -> 1 over a flight of `steps`
+    cells): (a, b, f) -- it is `f` of the way from cell a to the next cell b
+    on `path`. Cells are crossed at an even pace, the same for every arrow in
+    the flight, so at t = 1 a full-length path is on its last cell (f = 1).
+    None once a path shorter than `steps` has reached its end: that arrow
+    has landed (or flown out of sight)."""
+    cells = len(path) - 1
+    if cells < 1:
+        return None
     s = min(1.0, max(0.0, t)) * steps
-    i = min(int(s), steps - 1)
+    if s >= cells and cells < steps:
+        return None
+    i = min(int(s), cells - 1)
     return path[i], path[i + 1], s - i
 
 
@@ -235,7 +252,7 @@ class Director:
             self._last_hit = max(self._last_hit, event.serial)
             if isinstance(event, Shot):
                 beats += self._shot_beats(state, event)
-                staged.update(hit.serial for hit in event.hits)
+                staged.update(hit.serial for arrow in event.arrows for hit in arrow.hits)
             elif event.serial not in staged and state.visible[event.y][event.x]:
                 beats.append(Impact(event, shake_for(event)))
 
@@ -252,31 +269,51 @@ class Director:
 
     @staticmethod
     def _shot_beats(state, shot):
-        """An arrow's beats: a Flight to each monster it hit, that hit's
-        Impact (if in view), and a last Flight on to where it landed."""
+        """A shot's beats. Every arrow in shot.arrows leaves the shooter at
+        once and crosses a cell a step; the timeline is cut at each step where
+        an arrow reaches a monster it hit: a Flight of all the arrows still in
+        the air up to there, the hit's Impact (if in view) with the others
+        held in the air, and so on to where the last one lands."""
+        paths = [Director._in_sight(state, arrow.path) for arrow in shot.arrows]
+        arrivals = []  # (step, hit): when each arrow reaches each monster
+        for arrow in shot.arrows:
+            at = 0
+            for hit in arrow.hits:
+                cell = (hit.x, hit.y)
+                if cell not in arrow.path[at:]:
+                    continue  # not on its path: nothing to fly to
+                at = arrow.path.index(cell, at)
+                arrivals.append((at, hit))
+        arrivals.sort(key=lambda arrival: arrival[0])  # stable: aim arrow first
+        last = max(len(path) - 1 for path in paths)
         beats, at = [], 0
-        path = shot.path
-        for hit in shot.hits:
-            cell = (hit.x, hit.y)
-            if cell not in path[at:]:
-                continue  # not on its path: nothing to fly to
-            end = path.index(cell, at)
-            beats += Director._flight(state, path[at : end + 1])
+        for step, hit in arrivals:
+            beats += Director._flight(paths, at, min(step, last))
+            at = max(at, step)
             if state.visible[hit.y][hit.x]:
-                beats.append(Impact(hit, shake_for(hit)))
-            at = end
-        return beats + Director._flight(state, path[at:])
+                held = tuple((p[step - 1], p[step]) for p in paths if len(p) - 1 > step)
+                beats.append(Impact(hit, shake_for(hit), held))
+        return beats + Director._flight(paths, at, last)
 
     @staticmethod
-    def _flight(state, cells):
-        """A Flight over `cells`, cut short where the arrow leaves the
-        player's sight; none if it never enters a visible cell."""
-        seen = list(cells[:1])
-        for x, y in cells[1:]:
+    def _in_sight(state, path):
+        """`path` cut short where the arrow leaves the player's sight (the
+        shooter's cell is always kept)."""
+        seen = list(path[:1])
+        for x, y in path[1:]:
             if not state.visible[y][x]:
                 break
             seen.append((x, y))
-        return [Flight(tuple(seen))] if len(seen) > 1 else []
+        return tuple(seen)
+
+    @staticmethod
+    def _flight(paths, start, end):
+        """A Flight of every arrow in the air from step `start` to `end`;
+        none if that is no time, or no arrow is seen moving."""
+        if end <= start:
+            return []
+        stretch = tuple(p[start : end + 1] for p in paths if len(p) - 1 > start)
+        return [Flight(stretch, end - start)] if stretch else []
 
     def _track_turn(self, state):
         """Remember where the player stood before their latest turn. The

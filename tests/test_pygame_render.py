@@ -1480,7 +1480,8 @@ class ArcherVisualsTest(unittest.TestCase):
 
     def played(self):
         """(kind, ms, interruptible) of every beat draw() plays: 'flight' or
-        'impact', told apart by the paint's keyword arguments."""
+        'impact', told apart by the paint's keyword arguments (an impact may
+        also carry the arrows held in the air during it)."""
         calls = []
 
         def play(ms, paint, interruptible=True):
@@ -1489,12 +1490,17 @@ class ArcherVisualsTest(unittest.TestCase):
                 self.renderer, '_paint_game', side_effect=lambda state, **kw: seen.update(kw)
             ):
                 paint(0.5)
-            kind = 'flight' if seen.get('flight') else 'impact' if seen.get('impact') else '?'
+            kind = 'impact' if seen.get('impact') else 'flight' if seen.get('flight') else '?'
             calls.append((kind, ms, interruptible, seen))
 
         with mock.patch.object(self.renderer, '_play', side_effect=play):
             self.renderer.draw(self.state)
         return calls
+
+    @staticmethod
+    def flight_of(path):
+        """A one-arrow Flight over the whole of `path`."""
+        return camera.Flight((tuple(path),), len(path) - 1)
 
     # -- flight ---------------------------------------------------------------
 
@@ -1509,7 +1515,7 @@ class ArcherVisualsTest(unittest.TestCase):
         self.assertEqual(ms, 4 * FLIGHT_MS)
         self.assertFalse(interruptible)
         flight, _ = seen['flight']
-        self.assertEqual(flight.path[-1], (goblin.x, goblin.y))
+        self.assertEqual(flight.paths[0][-1], (goblin.x, goblin.y))
         # While the arrow flies the goblin is drawn as it was before the hit.
         self.assertEqual([h.defender for h in seen['pending']], [goblin])
         impact_hit, _ = calls[1][3]['impact']
@@ -1523,9 +1529,9 @@ class ArcherVisualsTest(unittest.TestCase):
         self.state.handle_action('shoot_e')
         calls = self.played()
         self.assertEqual([c[0] for c in calls], ['flight', 'impact', 'flight', 'impact'])
-        self.assertEqual(calls[0][3]['flight'][0].path[-1], (12, 10))
+        self.assertEqual(calls[0][3]['flight'][0].paths[0][-1], (12, 10))
         self.assertIs(calls[1][3]['impact'][0].defender, first)
-        self.assertEqual(calls[2][3]['flight'][0].path, ((12, 10), (13, 10), (14, 10)))
+        self.assertEqual(calls[2][3]['flight'][0].paths, (((12, 10), (13, 10), (14, 10)),))
         self.assertIs(calls[3][3]['impact'][0].defender, second)
 
     def test_a_miss_flies_to_the_pile_with_no_impact(self):
@@ -1533,18 +1539,18 @@ class ArcherVisualsTest(unittest.TestCase):
         self.state.handle_action('shoot_e')
         calls = self.played()
         self.assertEqual([c[0] for c in calls], ['flight'])
-        self.assertEqual(calls[0][3]['flight'][0].path[-1], (13, 10))
+        self.assertEqual(calls[0][3]['flight'][0].paths[0][-1], (13, 10))
         self.assertIsNotNone(self.state.arrows_at(13, 10))
 
     def test_the_arrow_is_drawn_along_its_path_pointing_the_way_it_flies(self):
         r = self.renderer
         self.state.game_map[10][16] = '#'
         self.state.handle_action('shoot_e')
-        flight = camera.Flight(self.state.shots[0].path)
-        centre, angle = r.flight_point(flight, 0.5)
+        flight = self.flight_of(self.state.shots[0].path)
+        ((centre, angle),) = r.flight_points(flight, 0.5)
         self.assertEqual(angle, 0)  # east
-        self.assertEqual(r.flight_point(flight, 1.0)[0], r._map_cell_rect(15, 10).center)
-        self.assertEqual(r.flight_point(camera.Flight(((5, 5), (5, 4))), 0.5)[1], 90)
+        self.assertEqual(r.flight_points(flight, 1.0)[0][0], r._map_cell_rect(15, 10).center)
+        self.assertEqual(r.flight_points(self.flight_of(((5, 5), (5, 4))), 0.5)[0][1], 90)
         r.canvas.clear()
         r._paint_game(self.state)
         without = r.canvas.surface.copy()
@@ -1565,7 +1571,7 @@ class ArcherVisualsTest(unittest.TestCase):
             mock.patch.object(r, '_paint_entity', side_effect=lambda e: order.append('entity')),
         ):
             hit = self.state.combat_events[-1]
-            flight = camera.Flight(self.state.shots[0].path)
+            flight = self.flight_of(self.state.shots[0].path)
             r._paint_game(self.state, impact=(hit, 0.1), flight=(flight, 0.9))
         self.assertIs(hit.defender, goblin)
         self.assertEqual(order[-2:], ['arrow', 'impact'])
@@ -1609,6 +1615,83 @@ class ArcherVisualsTest(unittest.TestCase):
         self.assertEqual(r.get_action(), Action.MOVE_E)
         self.assertEqual(r.get_action(), Action.MOVE_S)
 
+    def volley(self):
+        from game.item import Item
+
+        Item(0, 0, 'volley_bow', 'common').apply(self.state.player, self.state.log)
+
+    def test_a_volley_flies_all_its_arrows_at_once(self):
+        self.volley()
+        near, far = self.goblin(12, 9), self.goblin(14, 10)
+        self.state.handle_action('shoot_e')
+        shot = self.state.shots[0]
+        self.assertEqual(len(shot.arrows), 3)
+        calls = self.played()
+        kinds = [c[0] for c in calls]
+        self.assertEqual(kinds[0], 'flight')
+        self.assertTrue(all(not c[2] for c in calls))  # keys wait in the queue
+        first, _ = calls[0][3]['flight']
+        # One beat, all three arrows, each from the player's cell.
+        self.assertEqual(len(first.paths), 3)
+        self.assertEqual({p[0] for p in first.paths}, {(10, 10)})
+        # Each arrow's impact comes after the flight that brings it there.
+        impacts = [i for i, k in enumerate(kinds) if k == 'impact']
+        struck = [calls[i][3]['impact'][0].defender for i in impacts]
+        self.assertEqual(struck[:2], [near, far])
+        for i in impacts:
+            self.assertEqual(kinds[i - 1], 'flight')
+            hit = calls[i][3]['impact'][0]
+            self.assertIn((hit.x, hit.y), {p[-1] for p in calls[i - 1][3]['flight'][0].paths})
+        # The near goblin's impact: the aim arrow hangs in the air meanwhile.
+        held, t = calls[impacts[0]][3]['flight']
+        self.assertEqual(t, 1.0)
+        self.assertIn(shot.path[2], {p[-1] for p in held.paths})
+
+    def test_a_volleys_arrows_are_all_drawn_mid_flight(self):
+        r = self.renderer
+        self.volley()
+        self.state.handle_action('shoot_e')
+        beats = camera.Director().plan(self.state)
+        flight = beats[0]
+        points = r.flight_points(flight, 0.5)
+        self.assertEqual(len(points), 3)
+        self.assertEqual(len({c for c, _ in points}), 3)  # side by side
+        r.canvas.clear()
+        r._paint_game(self.state)
+        without = r.canvas.surface.copy()
+        r.canvas.clear()
+        r._paint_game(self.state, flight=(flight, 0.5))
+        for centre, _ in points:
+            around = pygame.Rect(0, 0, 8, 8)
+            around.center = centre
+            self.assertNotEqual(area_bytes(r.canvas.surface, around), area_bytes(without, around))
+
+    def test_a_goblin_archers_arrow_flies_and_lands_like_the_archers(self):
+        goblin = self.goblin(14, 10)
+        self.state.player.hp = 1000
+        with mock.patch.object(self.state, '_dodged', return_value=False):
+            self.state._monster_shot(goblin)
+        calls = self.played()
+        self.assertEqual([c[0] for c in calls[:2]], ['flight', 'impact'])
+        self.assertFalse(calls[0][2] or calls[1][2])
+        flight, _ = calls[0][3]['flight']
+        self.assertEqual(flight.paths, (((14, 10), (13, 10), (12, 10), (11, 10), (10, 10)),))
+        self.assertIs(calls[1][3]['impact'][0].defender, self.state.player)
+        # The same drawn arrow as the archer's, pointing west, at its size.
+        r = self.renderer
+        ((_, angle),) = r.flight_points(flight, 0.5)
+        self.assertEqual(angle, 180)
+        sprites = []
+        real = r.arrow_sprite
+
+        def record(*args):
+            sprites.append(args)
+            return real(*args)
+
+        with mock.patch.object(r, 'arrow_sprite', side_effect=record):
+            r._paint_game(self.state, flight=(flight, 0.5))
+        self.assertEqual(sprites, [(round(min(r._map_cell_rect(10, 10).size) * 0.9), 180)])
+
     # -- restock bar ----------------------------------------------------------
 
     def fill_pixels(self, bar):
@@ -1636,11 +1719,39 @@ class ArcherVisualsTest(unittest.TestCase):
         r = self.renderer
         cell = r._map_cell_rect(self.state.player.x, self.state.player.y)
         bar = r.restock_bar_rect(self.state.player)
-        self.assertTrue(cell.contains(bar))
         self.assertGreater(bar.top, cell.centery)  # along the bottom edge
+        self.assertLess(bar.bottom, cell.bottom)
         self.assertEqual(bar.centerx, cell.centerx)
-        self.assertLess(bar.width, cell.width)
-        self.assertLessEqual(bar.height, max(3, cell.height // 6))
+        # A little wider than the cell: it overhangs both sides evenly.
+        self.assertGreaterEqual(bar.width, cell.width)
+        self.assertLessEqual(bar.width, cell.width + max(2, cell.width // 10))
+        self.assertLessEqual(bar.height, max(3, cell.height // 5))
+
+    def test_restock_bar_is_one_and_a_half_times_the_old_size(self):
+        from render.pygame_render import (
+            RESTOCK_BAR_HEIGHT,
+            RESTOCK_BAR_WIDTH,
+            RESTOCK_FILL,
+            RESTOCK_TRACK,
+        )
+
+        self.assertAlmostEqual(RESTOCK_BAR_WIDTH, 1.5 * 0.7)
+        self.assertAlmostEqual(RESTOCK_BAR_HEIGHT, 1.5 * 0.1)
+        r = self.renderer
+        cell = r._map_cell_rect(self.state.player.x, self.state.player.y)
+        bar = r.restock_bar_rect(self.state.player)
+        # 1.5x the old 0.7 x 0.1 of the cell (at least 2 px, now 3), to the pixel.
+        self.assertEqual(bar.width, round(cell.width * 1.05))
+        self.assertEqual(bar.height, max(3, round(cell.height * 0.15)))
+        # The 1 px dark rim is painted round it, the fill inside it.
+        self.state.restock_progress = 3
+        r.canvas.clear()
+        r._paint_game(self.state)
+        screen = r.canvas.surface
+        self.assertEqual(tuple(screen.get_at((bar.left - 1, bar.centery)))[:3], RESTOCK_TRACK)
+        self.assertEqual(tuple(screen.get_at((bar.right, bar.centery)))[:3], RESTOCK_TRACK)
+        self.assertEqual(tuple(screen.get_at((bar.centerx, bar.top - 1)))[:3], RESTOCK_TRACK)
+        self.assertEqual(tuple(screen.get_at(bar.center))[:3], RESTOCK_FILL)
 
     def test_no_restock_bar_for_a_warrior(self):
         r = self.renderer
@@ -1664,9 +1775,12 @@ class ArcherVisualsTest(unittest.TestCase):
         r = self.renderer
         map_rect = r.layout.map_rect()
         player = self.state.player
-        for y in (0, 1, HEIGHT - 1):
-            player.y = y
-            self.assertTrue(map_rect.contains(r.restock_bar_rect(player)), y)
+        for x, y in ((0, 0), (1, 1), (WIDTH - 1, HEIGHT - 1), (0, HEIGHT - 1), (WIDTH - 1, 0)):
+            player.x, player.y = x, y
+            bar = r.restock_bar_rect(player)
+            # Its rim too: the overhang never crosses the map's edge.
+            self.assertTrue(map_rect.contains(bar.inflate(2, 2)), (x, y))
+        player.x = 10
         player.y = 10
         unzoomed = r.restock_bar_rect(player)
         # The combat zoom: the bar follows the projection, still on the map.
@@ -1677,8 +1791,10 @@ class ArcherVisualsTest(unittest.TestCase):
             cell = r._map_cell_rect(player.x, player.y)
         finally:
             r._proj = None
-        self.assertTrue(map_rect.contains(bar))
-        self.assertTrue(cell.contains(bar))
+        self.assertTrue(map_rect.contains(bar.inflate(2, 2)))
+        self.assertEqual(bar.centerx, cell.centerx)
+        self.assertTrue(cell.top < bar.top and bar.bottom < cell.bottom)
+        self.assertEqual(bar.width, round(cell.width * 1.05))
         self.assertGreater(bar.width, unzoomed.width)
         self.state.restock_progress = 2
         r.canvas.clear()

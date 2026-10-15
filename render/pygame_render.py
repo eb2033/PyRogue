@@ -75,13 +75,14 @@ HEALTH_BAR_COLORS = frozenset({HEALTH_GREEN, HEALTH_AMBER, HEALTH_RED, HEALTH_TR
 HEALTH_BAR_WIDTH = 0.7  # of the cell's width; a boss's spans the whole cell
 HEALTH_BAR_HEIGHT = 0.08  # of the cell's height, at least 2 px
 
-# The archer's restock bar: a thin light grey bar along the bottom edge of the
-# player's own cell (so it never leaves the map, and never meets a monster's
-# health bar), filled in proportion to restock_progress / RESTOCK_TURNS.
+# The archer's restock bar: a light grey bar along the bottom edge of the
+# player's own cell (never meeting a monster's health bar, which sits on top),
+# a touch wider than the cell and kept inside the map, filled in proportion to
+# restock_progress / RESTOCK_TURNS.
 RESTOCK_FILL = (205, 205, 205)
 RESTOCK_TRACK = (45, 45, 45)
-RESTOCK_BAR_WIDTH = 0.7  # of the cell's width
-RESTOCK_BAR_HEIGHT = 0.1  # of the cell's height, at least 2 px; the track
+RESTOCK_BAR_WIDTH = 1.05  # of the cell's width: overhangs its sides a little
+RESTOCK_BAR_HEIGHT = 0.15  # of the cell's height, at least 3 px; the track
 # (a 1 px dark rim round the bar) keeps it readable over the sprite's feet
 
 # Arrows, drawn rather than tiled (the bundled sheets have no arrow): the one
@@ -375,14 +376,19 @@ class PygameRenderer(Renderer):
                 )
             elif isinstance(beat, camera.Impact):
                 shake = beat.shake or camera.shake_for(beat.hit)
+                # Arrows still flying hang where they are while it lands.
+                held = (camera.Flight(beat.held, 1), 1.0) if beat.held else None
                 self._play(
                     self.impact_ms_for(shake),
-                    lambda t, hit=beat.hit, shake=shake, pending=pending: self._paint_game(
-                        state,
-                        impact=(hit, t),
-                        shake=self.shake_offset(shake, t),
-                        sprite_shake=shake,
-                        pending=pending,
+                    lambda t, hit=beat.hit, shake=shake, held=held, pending=pending: (
+                        self._paint_game(
+                            state,
+                            impact=(hit, t),
+                            shake=self.shake_offset(shake, t),
+                            sprite_shake=shake,
+                            flight=held,
+                            pending=pending,
+                        )
                     ),
                     interruptible=False,
                 )
@@ -489,8 +495,8 @@ class PygameRenderer(Renderer):
         panel. `impact`: (Hit, t) to draw a blow landing, t running 0 -> 1.
         `shake`: (dx, dy) pixels to shift the whole painted map by.
         `sprite_shake`: the impact's Shake, to jolt the struck sprite (and its
-        health bar) inside its cell as well. `flight`: (Flight, t) to draw an
-        arrow in the air, over the map and the monsters, under an impact.
+        health bar) inside its cell as well. `flight`: (Flight, t) to draw its
+        arrows in the air, over the map and the monsters, under an impact.
         `pending`: Hits not yet shown -- their monsters are drawn as they were
         before them (see _before_hits)."""
         surface = self.canvas.surface
@@ -624,15 +630,18 @@ class PygameRenderer(Renderer):
         return drawn
 
     def restock_bar_rect(self, player):
-        """Pixel rect of the archer's restock bar: centred along the bottom
-        edge, inside the player's own cell -- so it stays on the map wherever
-        the player stands, zoomed or not -- and moving with a shaking sprite."""
+        """Pixel rect of the archer's restock bar: centred on the player's
+        cell, just above its bottom edge, a little wider than the cell, and
+        moving with a shaking sprite. Pushed back inside the map (its 1 px rim
+        too) where the cell's overhang would cross the map's edge, zoomed or
+        not."""
         rect = self._map_cell_rect(player.x, player.y)
         width = max(4, round(rect.width * RESTOCK_BAR_WIDTH))
-        height = max(2, round(rect.height * RESTOCK_BAR_HEIGHT))
+        height = max(3, round(rect.height * RESTOCK_BAR_HEIGHT))
         gap = max(1, rect.height // 20)
         bar = pygame.Rect(rect.centerx - width // 2, rect.bottom - gap - height, width, height)
-        return bar.move(self._jolt_of(player))
+        bar = bar.move(self._jolt_of(player))
+        return bar.clamp(self.layout.map_rect().inflate(-2, -2))
 
     @staticmethod
     def restock_fill(width, progress):
@@ -698,25 +707,34 @@ class PygameRenderer(Renderer):
         self._arrow_sprites[key] = sprite
         return sprite
 
-    def flight_point(self, flight, t):
-        """(pixel centre, angle in degrees) of the arrow at t of `flight`."""
-        a, b, f = camera.flight_step(flight.path, t)
-        ra, rb = self._map_cell_rect(*a), self._map_cell_rect(*b)
-        centre = (
-            round(ra.centerx + (rb.centerx - ra.centerx) * f),
-            round(ra.centery + (rb.centery - ra.centery) * f),
-        )
-        angle = round(math.degrees(math.atan2(-(b[1] - a[1]), b[0] - a[0])))
-        return centre, angle
+    def flight_points(self, flight, t):
+        """(pixel centre, angle in degrees) of each of `flight`'s arrows
+        still in the air at t, in the order of flight.paths."""
+        points = []
+        for path in flight.paths:
+            step = camera.flight_step(path, flight.steps, t)
+            if step is None:
+                continue
+            a, b, f = step
+            ra, rb = self._map_cell_rect(*a), self._map_cell_rect(*b)
+            centre = (
+                round(ra.centerx + (rb.centerx - ra.centerx) * f),
+                round(ra.centery + (rb.centery - ra.centery) * f),
+            )
+            angle = round(math.degrees(math.atan2(-(b[1] - a[1]), b[0] - a[0])))
+            points.append((centre, angle))
+        return points
 
     def _paint_flight(self, flight, t):
-        """The arrow in the air, pointing the way it flies."""
-        centre, angle = self.flight_point(flight, t)
-        rect = self._map_cell_rect(*flight.path[-1])
-        sprite = self.arrow_sprite(round(min(rect.size) * ARROW_LENGTH), angle)
+        """The arrows in the air, each pointing the way it flies -- the same
+        drawn arrow for the archer's shots and the goblin archer's."""
+        rect = self._map_cell_rect(*flight.paths[0][-1])
+        length = round(min(rect.size) * ARROW_LENGTH)
         clip = self._clip_to_map()
         try:
-            self.canvas.surface.blit(sprite, sprite.get_rect(center=centre))
+            for centre, angle in self.flight_points(flight, t):
+                sprite = self.arrow_sprite(length, angle)
+                self.canvas.surface.blit(sprite, sprite.get_rect(center=centre))
         finally:
             self.canvas.surface.set_clip(clip)
 
