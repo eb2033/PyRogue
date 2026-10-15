@@ -527,7 +527,7 @@ def _gear_lines(label, item, stat_label):
     '(none)' and no stats line."""
     if item is None:
         return f'{label}: (none)', '', palette.INK
-    return (f'{label}: {item.name}', f'     +{item.bonus} {stat_label}  [{item.rarity}]',
+    return (f'{label}: {item.name}', f'     {item.bonus:+d} {stat_label}  [{item.rarity}]',
             palette.ink(item.color))
 
 

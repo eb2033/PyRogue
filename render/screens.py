@@ -11,7 +11,7 @@ import textwrap
 
 import pygame
 
-from render import palette
+from render import choice, palette
 
 TITLE_OPTIONS = ['Start', 'Quit']
 CLASS_OPTIONS = ['Warrior', 'Archer']
@@ -130,3 +130,101 @@ def paint_game_over(canvas, state):
     for i, line in enumerate(lines):
         text = canvas.text_surface(line, palette.DANGER)
         canvas.surface.blit(text, text.get_rect(centerx=box.centerx, top=top + i * line_h))
+
+# -- a chest's "choose one of three" ------------------------------------------
+#
+# The text on the cards is render/choice.py's, shared with the terminal, so
+# both show the same three items with the same numbers in the same order.
+# Geometry is in pixels here (tile mode's map cells aren't text cells).
+
+def _choice_text_w(layout, lines):
+    return max((layout.font.size(line)[0] for line in lines), default=0)
+
+
+def choice_rects(layout, state):
+    """(box, card rects, compact) for state.pending_choice: a box centred on
+    the map with a title row, the cards, and a hint row (half a line of
+    margin round each). Cards go side by side
+    when three fit across the map, else they stack in two-line compact form.
+    paint_choice and choice_card_at both use this."""
+    items = state.pending_choice or []
+    numbered = choice.cards(items)
+    line_h = layout.font.get_linesize()
+    pad = layout.cell_w
+    area = layout.map_rect()
+    frame_w = max(layout.font.size(choice.TITLE)[0], layout.font.size(choice.HINT)[0])
+
+    full = [line for n, item in numbered for line in choice.card_lines(n, item)]
+    card_w = _choice_text_w(layout, full) + 2 * pad
+    card_h = (len(full) // max(1, len(items))) * line_h + line_h
+    gap = pad
+    box_w = max(len(items) * card_w + (len(items) - 1) * gap, frame_w) + 2 * pad
+    box_h = card_h + 4 * line_h
+    compact = box_w > area.width or box_h > area.height
+    if compact:
+        lines = [line for n, item in numbered for line in choice.compact_lines(n, item)]
+        card_w = _choice_text_w(layout, lines) + 2 * pad
+        card_h = 2 * line_h + line_h // 2
+        gap = max(1, line_h // 4)
+        box_w = max(card_w, frame_w) + 2 * pad
+        box_h = len(items) * card_h + (len(items) - 1) * gap + 4 * line_h
+
+    box = pygame.Rect(0, 0, box_w, box_h)
+    box.center = area.center
+    top = box.top + 2 * line_h
+    cards = []
+    if compact:
+        for i in range(len(items)):
+            rect = pygame.Rect(0, top + i * (card_h + gap), card_w, card_h)
+            rect.centerx = box.centerx
+            cards.append(rect)
+    else:
+        row_w = len(items) * card_w + (len(items) - 1) * gap
+        left = box.centerx - row_w // 2
+        cards = [pygame.Rect(left + i * (card_w + gap), top, card_w, card_h)
+                 for i in range(len(items))]
+    return box, cards, compact
+
+
+def choice_card_at(layout, state, pixel):
+    """Index into state.pending_choice of the card under window pixel
+    `pixel`, or None (not choosing, or not on a card)."""
+    if state is None or not state.is_choosing:
+        return None
+    _, cards, _ = choice_rects(layout, state)
+    for i, rect in enumerate(cards):
+        if rect.collidepoint(pixel):
+            return i
+    return None
+
+
+def paint_choice(canvas, state):
+    """Overlay for a pending chest choice: a dark framed box over the map,
+    TEXT for the title and hint, and each card a parchment page (the panel's
+    paper) inked in its item's rarity colour."""
+    layout = canvas.layout
+    surface = canvas.surface
+    box, cards, compact = choice_rects(layout, state)
+    border = max(1, layout.cell_h // 12)
+    line_h = layout.font.get_linesize()
+    surface.fill(palette.BACKGROUND, box)
+    pygame.draw.rect(surface, palette.PAGE_EDGE, box, border)
+
+    title = canvas.text_surface(choice.TITLE, palette.TEXT, bold=True)
+    surface.blit(title, title.get_rect(centerx=box.centerx, top=box.top + line_h // 2))
+    hint = canvas.text_surface(choice.HINT, palette.TEXT)
+    surface.blit(hint, hint.get_rect(centerx=box.centerx, bottom=box.bottom - line_h // 2))
+
+    for (number, item), rect in zip(choice.cards(state.pending_choice), cards):
+        surface.fill(palette.PAGE, rect)
+        pygame.draw.rect(surface, palette.PAGE_EDGE, rect, border)
+        ink = palette.ink(item.color)
+        lines = (choice.compact_lines if compact else choice.card_lines)(number, item)
+        top = rect.top + (rect.height - len(lines) * line_h) // 2
+        for i, line in enumerate(lines):
+            text = canvas.text_surface(line, ink, bold=(i == 0))
+            if compact:
+                at = text.get_rect(left=rect.left + layout.cell_w, top=top + i * line_h)
+            else:
+                at = text.get_rect(centerx=rect.centerx, top=top + i * line_h)
+            surface.blit(text, at)

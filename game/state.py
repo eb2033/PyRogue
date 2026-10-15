@@ -13,15 +13,19 @@ the monsters still queued never act. end_turn() runs both halves back to back
 for callers that don't care about the split (tests, headless use).
 """
 
+import random
+
 from game import paths
 from game.combat import Hit
+from game.damage import mitigate, round_damage
 from game.dungeon import generate_dungeon, place_stairs
 from game.entity import Entity
 from game.fov import update_visibility
-from game.item import Chest, spawn_boss_chest, spawn_chests
+from game.item import (STARTING_WEAPON_RARITY, Chest, Item, gear_power,
+                       spawn_boss_chest, spawn_chests)
 from game.monster import Monster, is_boss_level, spawn_boss, spawn_monsters
 from game.save import apply_dict, load_game, save_game
-from game.tiles import STAIRS_DOWN, is_walkable
+from game.tiles import DOOR, STAIRS_DOWN, is_walkable
 
 # None means "use paths.save_path()" (the per-user data dir), resolved at
 # save/load time rather than import time. Tests -- or anything else that wants
@@ -57,6 +61,13 @@ SHOOT_DELTAS = {
     'shoot_e': (1, 0),
 }
 
+# Keys 1-3 on a chest's choice screen -> index into pending_choice.
+CHOOSE_INDEX = {
+    'choose_1': 0,
+    'choose_2': 1,
+    'choose_3': 2,
+}
+
 # class name -> (hp, power). Archers hit softer but get a free ranged option;
 # warriors are the straightforward melee bruiser the spec describes.
 CLASS_STATS = {
@@ -64,6 +75,29 @@ CLASS_STATS = {
     'archer': (18, 3),
 }
 DEFAULT_CLASS = 'warrior'
+
+
+def _describe(item):
+    """Short label for an item offered in a chest choice."""
+    if item.rarity is None:
+        return item.name
+    return f'{item.name} ({item.rarity})'
+
+
+# Chance that a player hit is critical; an equipped weapon's crit_bonus
+# (the dagger's) adds to it.
+BASE_CRIT_CHANCE = 0.10
+# A crit multiplies raw damage by this BEFORE defense reduction.
+CRIT_MULTIPLIER = 1.5
+MAX_CRIT_CHANCE = 1.0
+
+
+def crit_chance(attacker):
+    """BASE_CRIT_CHANCE plus the attacker's weapon's crit_bonus, capped at
+    MAX_CRIT_CHANCE. Only ever rolled for the player (see attack)."""
+    weapon = getattr(attacker, 'weapon', None)
+    bonus = weapon.crit_bonus if weapon is not None else 0.0
+    return min(MAX_CRIT_CHANCE, BASE_CRIT_CHANCE + bonus)
 
 
 class GameState:
@@ -79,6 +113,9 @@ class GameState:
         # the player acts; the serial keeps counting across rounds and levels.
         self.combat_events = []
         self._hit_serial = 0
+        # Items an opened gear chest is offering, or None. While set, the
+        # player must choose() one before anything else happens.
+        self.pending_choice = None
 
         self.game_map, self.rooms = generate_dungeon(width, height)
         place_stairs(self.game_map, self.rooms)
@@ -96,8 +133,9 @@ class GameState:
         self.player.base_power = power
         self.player.power = power
         self.player.defense = 0
-        self.player.weapon = None
+        self.player.weapon = Item(0, 0, 'weapon', STARTING_WEAPON_RARITY)
         self.player.armor = None
+        self.player.power = gear_power(self.player)
         self.player.inventory = []
         self.player.alive = True
 
@@ -151,6 +189,16 @@ class GameState:
         if self.game_over:
             return False
 
+        if action in CHOOSE_INDEX:
+            # Only means something on a choice screen; never takes a turn.
+            index = CHOOSE_INDEX[action]
+            if self.is_choosing and index < len(self.pending_choice):
+                self.choose(index)
+            return False
+
+        if self.is_choosing:
+            return False  # a chest's choice must be made first: see choose()
+
         if action in MOVE_DELTAS:
             dx, dy = MOVE_DELTAS[action]
             self.try_move_player(dx, dy)
@@ -182,7 +230,12 @@ class GameState:
 
         monster = self.monster_at(nx, ny)
         if monster is not None:
-            self.attack(self.player, monster)
+            self.melee(monster)
+            return
+
+        reach_target = self._reach_target(dx, dy)
+        if reach_target is not None:
+            self.melee(reach_target)
             return
 
         self.player.move(dx, dy, self.game_map)
@@ -191,14 +244,102 @@ class GameState:
         if chest is not None:
             self.open_chest(chest)
 
+    def _reach_target(self, dx, dy):
+        """The monster a reach weapon (the spear, reach 2) hits when the
+        player presses (dx, dy) and the adjacent tile holds no monster, or
+        None to move as usual.
+
+        Only exactly `reach` tiles away, straight along the pressed
+        direction (so never diagonally -- movement is 4-way). Every tile in
+        between must be walkable and unoccupied: no wall, no monster (the
+        player is behind, never in between; a chest is not an obstacle), and
+        no door -- a reach attack can't pass through one. The target must
+        also be in the player's view, so a spear can't strike an unseen
+        monster through a closed door (doors are walkable but opaque).
+        """
+        weapon = self.player.weapon
+        reach = weapon.reach if weapon is not None else 1
+        if reach < 2:
+            return None
+        px, py = self.player.x, self.player.y
+        for step in range(1, reach):
+            x, y = px + dx * step, py + dy * step
+            if (not is_walkable(self.game_map, x, y) or self.game_map[y][x] == DOOR
+                    or self.monster_at(x, y) is not None):
+                return None
+        tx, ty = px + dx * reach, py + dy * reach
+        if not (0 <= ty < self.height and 0 <= tx < self.width) or not self.visible[ty][tx]:
+            return None
+        return self.monster_at(tx, ty)
+
+    def melee(self, target):
+        """The player's melee attack on `target` (a bump, or a spear's
+        reach), with the equipped weapon's effects. Arrows don't come
+        through here: a bow shot is one plain attack().
+
+        - strikes (the rapier's 2): that many separate attack() calls --
+          each its own crit roll, damage reduction, log line and Hit --
+          stopping early if the target dies.
+        - cleave (the Great Sword): one more living monster is hit by the
+          same blow, with its own attack(). "Nearby" means ORTHOGONALLY
+          ADJACENT TO THE PLAYER (Entity.is_adjacent) -- not to the target,
+          and never diagonal or two tiles off -- i.e. a monster the player
+          could have bumped instead. If several qualify, only the first in
+          entity order is hit ("a 2nd adjacent foe"). It still swings
+          through if the main target died.
+        """
+        weapon = self.player.weapon
+        strikes = weapon.strikes if weapon is not None else 1
+        for _ in range(strikes):
+            if not target.alive:
+                break
+            self.attack(self.player, target)
+        if weapon is not None and weapon.cleave:
+            other = next((e for e in self.entities
+                          if isinstance(e, Monster) and e.alive and e is not target
+                          and e.is_adjacent(self.player)), None)
+            if other is not None:
+                self.log(f'Your swing carries on into {other.name}.')
+                self.attack(self.player, other)
+
     def open_chest(self, chest):
-        """Roll the item table (depth-scaled -- see game/item.py) and apply
-        whatever comes out immediately, same as walking onto a bare item
-        used to work."""
+        """Open a chest and remove it from the map. Its contents are rolled
+        now, against the current depth (see game/item.py). A potion chest's
+        potion is drunk at once; a gear or boss chest's drops become
+        `pending_choice`, and the player must choose() one of them."""
         self.log('You open the chest.')
-        item = chest.open(self.depth)
-        item.apply(self.player, self.log)
+        items = chest.open(self.depth)
         self.entities.remove(chest)
+        if not chest.offers_choice:
+            for item in items:
+                item.apply(self.player, self.log)
+            return
+        self.pending_choice = items
+        self.log('Choose one: ' + ', '.join(_describe(i) for i in items) + '.')
+
+    @property
+    def is_choosing(self):
+        """True while an opened chest is waiting for the player to pick an
+        item. Movement and every other turn action are blocked meanwhile."""
+        return self.pending_choice is not None
+
+    def choose(self, index):
+        """Take item `index` (0-based) of the pending chest choice.
+
+        Gear always equips into its slot, replacing (and discarding) what was
+        there -- the player chose it, so there is no "only if better" check.
+        Junk only logs a line. The other offers are lost. There is no cancel:
+        a choice stays pending until one is taken. Takes no turn.
+        Raises ValueError if nothing is pending or `index` is out of range.
+        """
+        if self.pending_choice is None:
+            raise ValueError('no chest choice is pending')
+        if not 0 <= index < len(self.pending_choice):
+            raise ValueError(f'choice index out of range: {index!r}')
+        item = self.pending_choice[index]
+        self.pending_choice = None
+        item.x, item.y = self.player.x, self.player.y
+        item.apply(self.player, self.log)
 
     def shoot_arrow(self, dx, dy):
         """Archer-only ranged attack: travels in a straight line until it
@@ -234,6 +375,7 @@ class GameState:
         self.seen = [[False] * self.width for _ in range(self.height)]
 
         self.cancel_monster_phase()
+        self.pending_choice = None
         self.entities = [self.player] + self._spawn_level_monsters() + spawn_chests(self.rooms)
         if is_boss_level(self.depth):
             self.log(f'You descend to level {self.depth}. Something powerful lurks here...')
@@ -243,15 +385,22 @@ class GameState:
 
     def attack(self, attacker, defender):
         defense = getattr(defender, 'defense', 0)
-        damage = max(1, attacker.power - defense)
+        raw = attacker.power
+        # Only the player crits (monsters never do); arrows are player hits too.
+        crit = attacker is self.player and random.random() < crit_chance(attacker)
+        if crit:
+            raw = raw * CRIT_MULTIPLIER
+        damage = round_damage(mitigate(raw, defense))
         defender.hp -= damage
         subject = 'You' if attacker is self.player else attacker.name.capitalize()
         verb = 'hit' if attacker is self.player else 'hits'
         target = 'you' if defender is self.player else defender.name
         self.log(f'{subject} {verb} {target} for {damage}.')
+        if crit:
+            self.log('Critical hit!')
         self._hit_serial += 1
         self.combat_events.append(Hit(self._hit_serial, attacker, defender, damage,
-                                      defender.hp <= 0, defender.x, defender.y))
+                                      defender.hp <= 0, defender.x, defender.y, crit))
         if defender.hp <= 0:
             defender.alive = False
             if defender is not self.player:
@@ -365,6 +514,17 @@ class GameState:
         return [e for e in self.entities
                 if isinstance(e, Monster) and e.alive and e.is_adjacent(self.player)
                 and self.visible[e.y][e.x]]
+
+    def zoom_opponents(self):
+        """Who the combat zoom frames: melee_opponents(), plus -- for a
+        reach weapon (the spear) -- every monster _reach_target would hit
+        in one of the four directions. Adjacent ones come first."""
+        found = self.melee_opponents()
+        for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
+            target = self._reach_target(dx, dy)
+            if target is not None and target not in found:
+                found.append(target)
+        return found
 
     def chest_at(self, x, y):
         for e in self.entities:

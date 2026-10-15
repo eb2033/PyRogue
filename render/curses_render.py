@@ -7,6 +7,7 @@ the game is (x, y); the flip happens here, at the boundary.
 import curses
 
 from render.banner import render_banner
+from render import choice
 from render.base import Action, Renderer
 from render.menu import Menu
 
@@ -29,6 +30,11 @@ KEY_ACTIONS = {
     ord('S'): Action.SAVE,
     ord('L'): Action.LOAD,
     ord('q'): Action.QUIT,
+    # A chest's choice cards (render/choice.py). Numpad digits send the same
+    # characters with num lock on.
+    ord('1'): Action.CHOOSE_1,
+    ord('2'): Action.CHOOSE_2,
+    ord('3'): Action.CHOOSE_3,
 }
 
 CONFIRM_KEYS = (curses.KEY_ENTER, ord('\n'), ord('\r'), ord(' '))
@@ -150,6 +156,8 @@ class CursesRenderer(Renderer):
         self._draw_map(state)
         self._draw_entities(state)
         self._draw_panel(state)
+        if state.is_choosing:
+            self._draw_choice(state)
         if state.game_over:
             self._draw_game_over(state)
         self.stdscr.refresh()
@@ -205,7 +213,8 @@ class CursesRenderer(Renderer):
         if item is None:
             self._put_str(y, x, f'{label}: (none)')
             return
-        text = f'{label}: {item.name} (+{item.bonus} {stat_label}) [{item.rarity}]'
+        # :+d, not a literal '+': a rapier's common bonus is -1.
+        text = f'{label}: {item.name} ({item.bonus:+d} {stat_label}) [{item.rarity}]'
         self._put_str(y, x, text, curses.color_pair(item.color))
 
     def _draw_game_over(self, state):
@@ -214,6 +223,52 @@ class CursesRenderer(Renderer):
         y = max_y // 2
         x = max(0, (state.width - len(text)) // 2)
         self._put_str(y, x, text, curses.color_pair(2) | curses.A_BOLD)
+
+    def _draw_choice(self, state):
+        """An opened chest's three offers, as cards in a framed box across the
+        map (render/choice.py has the text and the cell geometry). Clipped to
+        the terminal; every write goes through _put / _put_str."""
+        max_y, max_x = self.stdscr.getmaxyx()
+        items = state.pending_choice
+        (bx, by, bw, bh), rects, mode = choice.grid_layout(
+            items, min(state.width, max_x), min(state.height, max_y))
+        self._draw_frame(bx, by, bw, bh, fill=True)
+        inner = bw - 4
+        hint_y = by + bh - 2
+
+        def text(y, x, s, width, attr=0):
+            if width > 0:
+                self._put_str(y, x, s[:width], attr)
+
+        def centred(y, s, attr=0):
+            text(y, bx + 2 + max(0, (inner - len(s)) // 2), s, inner, attr)
+
+        centred(by + 1, choice.TITLE, curses.A_BOLD)
+        for (number, item), (cx, cy, cw, ch) in zip(choice.cards(items), rects):
+            attr = curses.color_pair(item.color)
+            lines = choice.LINES[mode](number, item)
+            if mode == choice.ACROSS:
+                self._draw_frame(cx, cy, cw, ch)
+                cx, cy, cw = cx + 2, cy + 1, cw - 4
+            for i, line in enumerate(lines):
+                if cy + i < hint_y:  # the hint always gets its row
+                    text(cy + i, cx, line, cw, attr | (curses.A_BOLD if i == 0 else 0))
+        if hint_y > by + 1:
+            centred(hint_y, choice.HINT)
+
+    def _draw_frame(self, x, y, w, h, fill=False):
+        """An ASCII box with its top-left cell at (x, y), (x, y) in, (y, x) out."""
+        if w < 2 or h < 2:
+            return
+        if fill:
+            for row in range(y + 1, y + h - 1):
+                self._put_str(row, x + 1, ' ' * (w - 2))
+        horizontal = '+' + '-' * (w - 2) + '+'
+        self._put_str(y, x, horizontal)
+        self._put_str(y + h - 1, x, horizontal)
+        for row in range(y + 1, y + h - 1):
+            self._put(row, x, '|')
+            self._put(row, x + w - 1, '|')
 
     # -- input -------------------------------------------------------------
 

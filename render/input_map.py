@@ -19,6 +19,10 @@ CHAR_ACTIONS = {
     'S': Action.SAVE,
     'L': Action.LOAD,
     'q': Action.QUIT,
+    # A chest's choice cards. The numpad's digits produce the same characters.
+    '1': Action.CHOOSE_1,
+    '2': Action.CHOOSE_2,
+    '3': Action.CHOOSE_3,
 }
 
 # Arrows are SHOOT_*, not MOVE_* -- GameState decides what that means per class.

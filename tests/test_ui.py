@@ -544,8 +544,10 @@ class PanelParityTest(unittest.TestCase):
         for _ in self.each_layout():
             for row in rows:
                 self.assertGreater(self.pixels(self.row_rect(row)), 0, f'row {row} blank')
-            # No gear: a slot's stats row stays empty.
-            for blank in (5, ui.GEAR_TOP + 2, ui.GEAR_TOP + 4, ui.GEAR_TOP + 5,
+            # Every run starts with a weapon, so its stats row (GEAR_TOP + 2)
+            # is drawn; no armor, so the armor's stats row stays empty.
+            self.assertGreater(self.pixels(self.row_rect(ui.GEAR_TOP + 2)), 0)
+            for blank in (5, ui.GEAR_TOP + 4, ui.GEAR_TOP + 5,
                           ui.CONTROLS_TOP + 4, ui.LOG_TOP + 3):
                 self.assertEqual(self.pixels(self.row_rect(blank)), 0, f'row {blank} drawn')
 
@@ -673,6 +675,16 @@ class PanelParityTest(unittest.TestCase):
     def test_panel_paints_nothing_on_the_map(self):
         for _ in self.each_layout():
             self.assertEqual(self.drawn(self.layout.map_rect()), 0)
+
+
+
+class GearLineSignTest(unittest.TestCase):
+    def test_bonus_is_signed_once(self):
+        _, rapier, _ = ui._gear_lines('Weapon', Item(0, 0, 'rapier', 'common'), 'atk')
+        self.assertIn('-1 atk', rapier)
+        self.assertNotIn('+-', rapier)
+        _, sword, _ = ui._gear_lines('Weapon', Item(0, 0, 'great_sword', 'common'), 'atk')
+        self.assertIn('+2 atk', sword)
 
 
 if __name__ == '__main__':

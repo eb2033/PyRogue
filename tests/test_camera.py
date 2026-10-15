@@ -139,5 +139,80 @@ class DirectorTest(unittest.TestCase):
         self.assertEqual(beats[-1].end, camera.combat_view(state.player, second))
 
 
+
+class SpearZoomTest(unittest.TestCase):
+    """A spear's reach (2) starts the combat zoom one square early."""
+
+    def arena(self, spear=True):
+        from game.item import Item
+        state = GameState(WIDTH, HEIGHT, char_class='warrior')
+        for y in range(1, HEIGHT - 1):
+            for x in range(1, WIDTH - 1):
+                state.game_map[y][x] = '.'
+        p = state.player
+        p.x, p.y = 10, 10
+        if spear:
+            Item(0, 0, 'spear', 'common').apply(p, state.log)
+        state.entities = [p]
+        state.update_fov()
+        return state
+
+    def add(self, state, x, y):
+        m = Monster(x, y, 'goblin')
+        state.entities.append(m)
+        state.update_fov()
+        return m
+
+    def test_spear_zooms_on_a_monster_two_away_in_a_line(self):
+        state = self.arena()
+        m = self.add(state, 12, 10)
+        self.assertIn(m, state.zoom_opponents())
+        self.assertNotIn(m, state.melee_opponents())
+        director = Director()
+        beats = director.plan(state)
+        self.assertEqual(beats, [Pan(camera.full_view(WIDTH, HEIGHT),
+                                     camera.combat_view(state.player, m))])
+        self.assertIs(director.focus, m)
+        # fight over (monster dies): zoom back out
+        m.alive = False
+        self.assertEqual(director.plan(state)[-1].end, camera.full_view(WIDTH, HEIGHT))
+
+    def test_wall_in_the_middle_does_not_zoom(self):
+        state = self.arena()
+        self.add(state, 10, 12)
+        state.game_map[11][10] = '#'
+        state.update_fov()
+        self.assertEqual(state.zoom_opponents(), [])
+        self.assertEqual(Director().plan(state), [])
+
+    def test_monster_in_the_middle_is_the_only_opponent(self):
+        state = self.arena()
+        near = self.add(state, 9, 10)
+        far = self.add(state, 8, 10)
+        self.assertEqual(state.zoom_opponents(), [near])
+        self.assertNotIn(far, state.zoom_opponents())
+
+    def test_diagonal_two_away_does_not_zoom(self):
+        state = self.arena()
+        self.add(state, 12, 12)
+        self.assertEqual(state.zoom_opponents(), [])
+        self.assertEqual(Director().plan(state), [])
+
+    def test_no_spear_two_away_does_not_zoom(self):
+        state = self.arena(spear=False)
+        self.add(state, 12, 10)
+        self.assertEqual(state.zoom_opponents(), [])
+        self.assertEqual(Director().plan(state), [])
+
+    def test_spear_with_adjacent_monster_still_zooms(self):
+        state = self.arena()
+        m = self.add(state, 11, 10)
+        self.assertEqual(state.zoom_opponents(), [m])
+        self.assertIs(Director().plan(state) and True, True)
+        d = Director()
+        d.plan(state)
+        self.assertIs(d.focus, m)
+
+
 if __name__ == '__main__':
     unittest.main()

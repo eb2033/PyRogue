@@ -123,7 +123,7 @@ class Director:
     def _pick_focus(self, state):
         if not self.zoom or state.game_over or state.player.char_class not in ZOOM_CLASSES:
             return None
-        opponents = state.melee_opponents()
+        opponents = state.zoom_opponents()
         if not opponents:
             return None
         if self.focus in opponents:

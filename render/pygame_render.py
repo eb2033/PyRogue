@@ -26,7 +26,7 @@ os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
 import pygame
 
 from game.paths import resource_path
-from render import camera, input_map, palette, screens, ui
+from render import camera, choice, input_map, palette, screens, ui
 from render.banner import render_banner
 from render.base import Action, Renderer
 from render.menu import Menu
@@ -49,6 +49,11 @@ REPAINT_EVENTS = (
     pygame.WINDOWRESIZED,
     pygame.WINDOWSIZECHANGED,
 )
+
+
+# Critical-hit damage numbers: bright yellow with a black outline.
+CRIT_RGB = (255, 235, 40)
+CRIT_OUTLINE_RGB = (0, 0, 0)
 
 
 class PygameRenderer(Renderer):
@@ -94,6 +99,9 @@ class PygameRenderer(Renderer):
         self._proj = None
         self._animating = False
         self._zoomed_glyphs = {}
+        # The state last drawn: get_action needs to know whether a chest's
+        # choice is on screen, the one time a mouse click means something.
+        self._state = None
 
     @staticmethod
     def _set_mode(size, flags):
@@ -249,6 +257,7 @@ class PygameRenderer(Renderer):
     def draw(self, state):
         """Play whatever the combat camera stages (impacts, then a pan), then
         show the frame. With nothing to stage this is just the paint."""
+        self._state = state
         for beat in self.director.plan(state):
             if isinstance(beat, camera.Impact):
                 self._play(self.impact_ms,
@@ -328,6 +337,8 @@ class PygameRenderer(Renderer):
             self._proj = None
 
         ui.paint_panel(self.canvas, state)
+        if state.is_choosing:
+            screens.paint_choice(self.canvas, state)
         if state.game_over:
             screens.paint_game_over(self.canvas, state)
 
@@ -353,10 +364,23 @@ class PygameRenderer(Renderer):
         flash = pygame.Surface(rect.size, pygame.SRCALPHA)
         flash.fill((*palette.DANGER, round(IMPACT_FLASH_ALPHA * (1 - t))))
         self.canvas.surface.blit(flash, rect)
-        number = self._glyph(f'-{hit.damage}', palette.brighten(palette.DANGER), bold=True)
         rise = round(rect.height * 0.5 * t)
-        self.canvas.surface.blit(number, number.get_rect(
-            midbottom=(rect.centerx, rect.top + rect.height // 3 - rise)))
+        midbottom = (rect.centerx, rect.top + rect.height // 3 - rise)
+        text = f'-{hit.damage}'
+        if getattr(hit, 'crit', False):
+            # Double size, bright yellow, black outline.
+            number = self._glyph(text, CRIT_RGB, bold=True, scale=2)
+            outline = self._glyph(text, CRIT_OUTLINE_RGB, bold=True, scale=2)
+            at = number.get_rect(midbottom=midbottom)
+            stroke = max(1, number.get_height() // 16)
+            for dx in (-stroke, 0, stroke):
+                for dy in (-stroke, 0, stroke):
+                    if dx or dy:
+                        self.canvas.surface.blit(outline, at.move(dx, dy))
+            self.canvas.surface.blit(number, at)
+            return
+        number = self._glyph(text, palette.brighten(palette.DANGER), bold=True)
+        self.canvas.surface.blit(number, number.get_rect(midbottom=midbottom))
 
     # -- map cells ------------------------------------------------------------
 
@@ -396,13 +420,16 @@ class PygameRenderer(Renderer):
         source = self.tileset.glyph(char, color_index, self.tileset.cell, dim)
         return None if source is None else pygame.transform.scale(source, (size, size))
 
-    def _glyph(self, text, rgb, bold=False, underline=False):
+    def _glyph(self, text, rgb, bold=False, underline=False, scale=1):
         """`text` rendered for a map cell at the current view: the layout's
         font when unzoomed, a proportionally bigger one when zoomed in."""
         if self._proj is None:
-            return self.canvas.text_surface(text, rgb, bold=bold, underline=underline)
-        zoom = self._proj[1] / self.layout.map_cell_size()[1]
-        size = max(ui.MIN_FONT_SIZE, round(self.layout.font_size * zoom))
+            if scale == 1:
+                return self.canvas.text_surface(text, rgb, bold=bold, underline=underline)
+            size = max(ui.MIN_FONT_SIZE, round(self.layout.font_size * scale))
+        else:
+            zoom = self._proj[1] / self.layout.map_cell_size()[1]
+            size = max(ui.MIN_FONT_SIZE, round(self.layout.font_size * zoom * scale))
         key = (text, rgb, size, bold, underline)
         glyph = self._zoomed_glyphs.get(key)
         if glyph is None:
@@ -437,10 +464,21 @@ class PygameRenderer(Renderer):
     # -- input ----------------------------------------------------------------
 
     def get_action(self):
-        event = self._wait_key()
-        if event is None:
-            return Action.QUIT
-        return input_map.lookup(event)
+        """The next key's Action. Gameplay is keyboard-only; the exception is
+        a chest's choice on screen, where a left click on a card is that
+        card's CHOOSE_* (a click anywhere else, or a motion, is ignored)."""
+        while True:
+            state = self._state
+            choosing = state is not None and state.is_choosing
+            event = self._wait_input(mouse=choosing) if choosing else self._wait_key()
+            if event is None:
+                return Action.QUIT
+            if event.type == pygame.KEYDOWN:
+                return input_map.lookup(event)
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                hit = screens.choice_card_at(self.layout, state, event.pos)
+                if hit is not None and hit < len(choice.CHOOSE_ACTIONS):
+                    return choice.CHOOSE_ACTIONS[hit]
 
     def pause(self, ms):
         """Hold the frame for `ms` while keeping the window serviced.

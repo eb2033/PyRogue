@@ -490,6 +490,28 @@ class TileModeTest(unittest.TestCase):
         self.assertTrue(frames)
         self.assertIs(frames[0][0].defender, state.player)
 
+    def test_crit_number_is_bigger_yellow_with_black_outline(self):
+        from render.pygame_render import CRIT_OUTLINE_RGB, CRIT_RGB
+        r = self.renderer
+        self.assertGreater(r._glyph('-12', CRIT_RGB, bold=True, scale=2).get_height(),
+                           r._glyph('-12', CRIT_RGB, bold=True).get_height())
+        state, goblin = self.fight()
+        r.draw(state)
+        state.player.power = 5
+        with mock.patch('game.state.BASE_CRIT_CHANCE', 1.0):
+            state.attack(state.player, goblin)
+        hit = state.combat_events[-1]
+        self.assertTrue(hit.crit)
+        r.canvas.surface.fill((50, 50, 50))
+        r._paint_impact(hit, 0.0)
+        rect = r._map_cell_rect(hit.x, hit.y)
+        area = r.canvas.surface.subsurface(rect.inflate(rect.width, rect.height)
+                                           .clip(r.canvas.surface.get_rect()))
+        pixels = {tuple(area.get_at((x, y)))[:3]
+                  for x in range(area.get_width()) for y in range(area.get_height())}
+        self.assertIn(CRIT_RGB, pixels)
+        self.assertIn(CRIT_OUTLINE_RGB, pixels)
+
     def test_char_without_a_tile_is_drawn_as_its_glyph(self):
         state = GameState(WIDTH, HEIGHT)
         stranger = Monster(state.player.x + 1, state.player.y, 'goblin')
@@ -526,6 +548,170 @@ class TileModeTest(unittest.TestCase):
             self.assertTrue(renderer.layout.tiles)
         finally:
             renderer.close()
+
+
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
+class ChestChoiceScreenTest(unittest.TestCase):
+    """The "choose one of three" overlay: drawn while state.is_choosing,
+    answered with 1/2/3 or a left click on a card."""
+
+    tiles = False
+
+    def setUp(self):
+        import random
+        from game.item import Item, JUNK
+        tileset = None
+        if self.tiles:
+            from game.paths import resource_path
+            from render.tileset import Tileset
+            tileset = Tileset(resource_path('assets'))
+        self.renderer = PygameRenderer(WIDTH, HEIGHT, tileset=tileset)
+        self.renderer._set_mode((1600, 900), pygame.RESIZABLE)
+        self.renderer._relayout()
+        pygame.event.clear()
+        random.seed(70)
+        self.state = GameState(WIDTH, HEIGHT)
+        self.items = [Item(0, 0, 'armor', 'rare'), Item(0, 0, 'weapon', 'epic'),
+                      Item(0, 0, JUNK)]
+        self.state.pending_choice = list(self.items)
+
+    def tearDown(self):
+        self.renderer.close()
+
+    def click(self, pos, button=1):
+        pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=pos, button=button))
+
+    def cards(self):
+        return screens.choice_rects(self.renderer.layout, self.state)[1]
+
+    def test_frame_while_choosing_differs_from_one_without(self):
+        box = screens.choice_rects(self.renderer.layout, self.state)[0]
+        self.renderer.draw(self.state)
+        with_choice = cell_pixels(self.renderer, box, as_list=True)
+        pending, self.state.pending_choice = self.state.pending_choice, None
+        self.renderer.draw(self.state)
+        without = cell_pixels(self.renderer, box, as_list=True)
+        self.state.pending_choice = pending
+        self.assertNotEqual(with_choice, without)
+
+    def test_three_cards_inside_the_box_and_apart(self):
+        box, cards, _ = screens.choice_rects(self.renderer.layout, self.state)
+        self.assertEqual(len(cards), 3)
+        for i, card in enumerate(cards):
+            self.assertTrue(box.contains(card))
+            for other in cards[i + 1:]:
+                self.assertFalse(card.colliderect(other))
+
+    def test_clicking_a_card_chooses_it(self):
+        self.renderer.draw(self.state)
+        self.click(self.cards()[1].center)
+        action = self.renderer.get_action()
+        self.assertEqual(action, Action.CHOOSE_2)
+        self.state.handle_action(action)
+        self.assertFalse(self.state.is_choosing)
+        self.assertIs(self.state.player.weapon, self.items[1])
+
+    def test_clicking_outside_the_cards_does_nothing(self):
+        self.renderer.draw(self.state)
+        box = screens.choice_rects(self.renderer.layout, self.state)[0]
+        self.click((box.left + 2, box.top + 2))          # the box, not a card
+        self.click((0, 0))                              # off the box entirely
+        self.click(self.cards()[0].center, button=3)    # right click
+        pygame.event.post(pygame.event.Event(pygame.MOUSEMOTION, pos=self.cards()[0].center,
+                                             rel=(1, 1), buttons=(0, 0, 0)))
+        pygame.event.post(key(pygame.K_PERIOD, '.'))
+        self.assertEqual(self.renderer.get_action(), Action.WAIT)
+        self.assertTrue(self.state.is_choosing)
+
+    def test_keyboard_2_chooses_the_second_item(self):
+        self.renderer.draw(self.state)
+        pygame.event.post(key(pygame.K_2, '2'))
+        self.state.handle_action(self.renderer.get_action())
+        self.assertIs(self.state.player.weapon, self.items[1])
+        self.assertIsNone(self.state.player.armor)
+
+    def test_card_clicks_mean_nothing_once_the_choice_is_made(self):
+        self.renderer.draw(self.state)
+        center = self.cards()[0].center
+        self.state.choose(2)
+        self.renderer.draw(self.state)
+        self.click(center)
+        pygame.event.post(key(pygame.K_d, 'd'))
+        self.assertEqual(self.renderer.get_action(), Action.MOVE_E)
+
+    def test_narrow_map_stacks_the_cards(self):
+        renderer = self.renderer
+        renderer._set_mode((420, 700), pygame.RESIZABLE)
+        renderer._relayout()
+        box, cards, compact = screens.choice_rects(renderer.layout, self.state)
+        if compact:
+            self.assertTrue(cards[0].bottom <= cards[1].top <= cards[1].bottom <= cards[2].top)
+        renderer.draw(self.state)  # paints without error either way
+
+
+class TileModeChestChoiceScreenTest(ChestChoiceScreenTest):
+    tiles = True
+
+
+class NewWeaponChoiceScreenTest(ChestChoiceScreenTest):
+    """The same overlay with the longest weapon-type cards on it."""
+
+    def setUp(self):
+        super().setUp()
+        from game.item import Item, JUNK
+        self.items = [Item(0, 0, 'great_sword', 'rare'), Item(0, 0, 'rapier', 'epic'),
+                      Item(0, 0, JUNK)]
+        self.state.pending_choice = list(self.items)
+
+
+class ChoiceCardTextTest(unittest.TestCase):
+    """render/choice.py's card text (stdlib only: no pygame needed)."""
+
+    def text(self, kind, rarity='common'):
+        from game.item import Item
+        from render import choice
+        return choice.stat_text(Item(0, 0, kind, rarity))
+
+    def test_each_kind_at_each_rarity(self):
+        expected = {
+            'weapon': ['+1 damage', '+2 damage', '+4 damage', '+7 damage'],
+            'armor': ['+3 defence', '+6 defence', '+12 defence', '+21 defence'],
+            'war_axe': ['+0 damage, +3 HP', '+1 damage, +6 HP', '+3 damage, +9 HP',
+                        '+6 damage, +15 HP'],
+            'rapier': ['-1 damage, strikes twice', '+0 damage, strikes twice',
+                       '+2 damage, strikes twice', '+5 damage, strikes twice'],
+            'great_sword': ['+2 damage, hits a 2nd adjacent foe',
+                            '+3 damage, hits a 2nd adjacent foe',
+                            '+5 damage, hits a 2nd adjacent foe',
+                            '+8 damage, hits a 2nd adjacent foe'],
+            'sword_shield': ['+1 damage, +3 defence', '+2 damage, +6 defence',
+                             '+4 damage, +9 defence', '+7 damage, +12 defence'],
+            'dagger': ['+0 damage, +5% crit', '+1 damage, +10% crit', '+3 damage, +15% crit',
+                       '+6 damage, +20% crit'],
+            'spear': ['+1 damage, reach 2', '+2 damage, reach 2', '+4 damage, reach 2',
+                      '+7 damage, reach 2'],
+        }
+        from game.item import GEAR_KINDS, RARITIES
+        self.assertEqual(set(expected), set(GEAR_KINDS))
+        for kind, lines in expected.items():
+            self.assertEqual([self.text(kind, r) for r in RARITIES], lines, kind)
+
+    def test_junk_still_shows_nothing_useful(self):
+        from game.item import Item, JUNK
+        from render import choice
+        junk = Item(0, 0, JUNK)
+        self.assertEqual(choice.stat_text(junk), 'nothing useful')
+        self.assertEqual(choice.card_lines(3, junk), ['[3]', 'Rusty scrap', 'junk',
+                                                     'nothing useful'])
+
+    def test_cards_name_and_rarity_for_a_new_kind(self):
+        from game.item import Item
+        from render import choice
+        item = Item(0, 0, 'dagger', 'rare')
+        self.assertEqual(choice.card_lines(1, item),
+                         ['[1]', item.name, 'rare', '+3 damage, +15% crit'])
+        self.assertIn('+15% crit', choice.tight_line(1, item))
+        self.assertIn('+15% crit', choice.compact_lines(1, item)[1])
 
 
 class DefaultRendererTest(unittest.TestCase):
