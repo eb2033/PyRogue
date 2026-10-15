@@ -1201,6 +1201,12 @@ class ChoiceCardTextTest(unittest.TestCase):
         expected = {
             'weapon': ['+1 damage', '+2 damage', '+4 damage', '+7 damage'],
             'armor': ['+3 defence', '+6 defence', '+12 defence', '+21 defence'],
+            'leather': [
+                '+2 defence, 4% dodge',
+                '+3 defence, 6% dodge',
+                '+6 defence, 9% dodge',
+                '+10 defence, 12% dodge',
+            ],
             'war_axe': [
                 '+0 damage, +3 HP',
                 '+1 damage, +6 HP',

@@ -29,10 +29,12 @@ from game.dungeon import generate_dungeon, place_stairs
 from game.entity import Player
 from game.fov import update_visibility
 from game.item import (
+    STARTING_ARMOR,
     STARTING_WEAPON_RARITY,
     Chest,
     Item,
     belt_capacity,
+    dodge_chance,
     gear_defense,
     gear_power,
     spawn_boss_chest,
@@ -160,7 +162,10 @@ class GameState:
         self.player.defense = 0
         self.player.weapon = Item(0, 0, 'weapon', STARTING_WEAPON_RARITY)
         self.player.armor = None
+        if char_class in STARTING_ARMOR:
+            self.player.armor = Item(0, 0, *STARTING_ARMOR[char_class])
         self.player.power = gear_power(self.player)
+        self.player.defense = gear_defense(self.player)
         self.player.inventory = []
         self.player.alive = True
 
@@ -578,6 +583,8 @@ class GameState:
         self.update_fov()
 
     def attack(self, attacker, defender):
+        if defender is self.player and self._dodged(attacker):
+            return
         defense = getattr(defender, 'defense', 0)
         raw = attacker.power
         # Only the player crits (monsters never do); arrows are player hits too.
@@ -622,6 +629,17 @@ class GameState:
             defender.enraged = True
             self.log(f'The {defender.kind} boss roars and calls for help!')
             self._summon_goblins(defender)
+
+    def _dodged(self, attacker):
+        """Roll the player's dodge against `attacker`'s blow (melee or a
+        slinger's shot: every monster hit comes through attack). On a dodge
+        the blow does nothing -- no damage, no Hit -- and is logged. With no
+        dodge nothing is rolled, so the rng sequence is untouched."""
+        chance = dodge_chance(self.player)
+        if chance <= 0 or random.random() * 100 >= chance:
+            return False
+        self.log(f"You dodge the {attacker.name}'s attack.")
+        return True
 
     def _summon_goblins(self, boss):
         """Enrage helper: put min(tier, 2) goblins on free floor within 3

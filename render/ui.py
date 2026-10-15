@@ -21,7 +21,7 @@ import textwrap
 
 import pygame
 
-from game.item import belt_capacity, belt_slot_label
+from game.item import belt_capacity, belt_slot_label, dodge_chance
 from game.paths import resource_path
 from game.shrine import BOON_COLOR, boons_text
 from render import noticeboard, palette
@@ -484,7 +484,7 @@ def paint_panel(canvas, state):
     danger = player.hp <= player.max_hp // 3
     put(HP_ROW, f'HP: {player.hp}/{player.max_hp}', palette.INK_DANGER if danger else palette.INK)
     _paint_hp_bar(canvas, x, top + HP_ROW, width, player.hp, player.max_hp, danger)
-    put(3, f'ATK {player.power}   DEF {player.defense}')
+    put(3, stats_text(player))
     put(4, f'Items: {len(player.inventory)}')
 
     put(GEAR_TOP, '-- gear --', bold=True)
@@ -510,6 +510,14 @@ def paint_panel(canvas, state):
     put(LOG_TOP, '-- log --', bold=True)
     for i, line in enumerate(log_rows(state.messages, width, layout.log_lines())):
         put(LOG_TOP + 1 + i, line)
+
+
+def stats_text(player):
+    """The panel's stats row: 'ATK n   DEF n', plus '   DODGE n%' when the
+    worn armor gives any dodge (game.item.dodge_chance)."""
+    text = f'ATK {player.power}   DEF {player.defense}'
+    dodge = dodge_chance(player)
+    return f'{text}   DODGE {dodge}%' if dodge else text
 
 
 def log_rows(messages, width, rows):

@@ -676,6 +676,25 @@ class PanelTest(unittest.TestCase):
                 self.assertGreater(self.pixels(armor, uncommon), 0)
                 self.assertEqual(self.pixels(armor, epic), 0)
 
+    def test_dodge_is_shown_for_leather_and_not_for_heavy_armor(self):
+        def wearing(kind):
+            def make():
+                state = self.state()
+                Item(0, 0, kind, 'uncommon').apply(state.player, state.log)
+                return state
+
+            return make
+
+        for state in self.each_layout(wearing('leather')):
+            text = ui.stats_text(state.player)
+            self.assertTrue(text.endswith('DODGE 6%'), text)
+            plain = len(f'ATK {state.player.power}   DEF {state.player.defense}')
+            self.assertGreater(self.pixels(self.row_rect(3, plain)), 0)
+        for state in self.each_layout(wearing('armor')):
+            text = ui.stats_text(state.player)
+            self.assertNotIn('DODGE', text)
+            self.assertEqual(self.pixels(self.row_rect(3, len(text))), 0)
+
     def test_no_gear_is_plain_text(self):
         for _ in self.each_layout():
             for row in (ui.GEAR_TOP + 1, ui.GEAR_TOP + 3):

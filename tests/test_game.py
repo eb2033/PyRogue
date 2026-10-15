@@ -21,6 +21,8 @@ from game.fov import compute_fov, update_visibility
 from game.item import (
     ARMOR_DEFENSE,
     ARMOR_DROP_CHANCE,
+    ARMOR_KINDS,
+    ARMOR_SPLIT,
     BELT_SLOTS,
     CHEST_COLOR,
     GEAR_BONUS,
@@ -32,6 +34,7 @@ from game.item import (
     JUNK,
     JUNK_CHANCE,
     JUNK_NAME,
+    MAX_DODGE,
     MAX_SCALING_DEPTH,
     POTION_CHEST_COLOR,
     POTION_HEAL,
@@ -41,6 +44,7 @@ from game.item import (
     Item,
     belt_capacity,
     belt_slot_label,
+    dodge_chance,
     rarity_weights_for_depth,
     roll_boss_drop,
     roll_gear_drop,
@@ -1884,12 +1888,12 @@ class WeaponTypeTests(unittest.TestCase):
         n = 20000
         gear = [roll_gear_drop(1, rng) for _ in range(n)]
         junk = sum(1 for d in gear if d.kind == JUNK) / n
-        armor = sum(1 for d in gear if d.kind == 'armor') / n
+        armor = sum(1 for d in gear if d.kind in ARMOR_KINDS) / n
         self.assertTrue(abs(junk - 0.15) < 0.01, junk)
         self.assertTrue(abs(armor - ARMOR_DROP_CHANCE) < 0.01, armor)
         boss = [roll_boss_drop(rng) for _ in range(n)]
         self.assertTrue(
-            abs(sum(1 for d in boss if d.kind == 'armor') / n - ARMOR_DROP_CHANCE) < 0.01
+            abs(sum(1 for d in boss if d.kind in ARMOR_KINDS) / n - ARMOR_DROP_CHANCE) < 0.01
         )
         self.assertNotIn('weapon', {d.kind for d in gear + boss})
 
@@ -2746,6 +2750,132 @@ class ShrineBoonTests(unittest.TestCase):
         state.pending_choice = [Item(0, 0, JUNK)] * 3
         self.assertFalse(state.handle_action('move_e'))
         self.assertEqual((state.player.x, state.player.y), self.start)
+
+
+class DodgeAndArmorKindTests(unittest.TestCase):
+    """Leather (defence + dodge) vs heavy armor (defence only), and the dodge
+    roll on monster hits (game/item.py ARMOR_SPLIT / dodge_chance,
+    GameState.attack)."""
+
+    def setUp(self):
+        self.state = GameState(50, 20)
+        p = self.state.player
+        self.goblin = Monster(p.x + 1, p.y, 'goblin')
+        p.hp = p.max_hp = 10**6
+        self.state.entities = [p, self.goblin]
+
+    def wear(self, kind, rarity='common'):
+        armor = Item(0, 0, kind, rarity)
+        armor.apply(self.state.player, self.state.log)
+        return armor
+
+    def test_numbers_by_rarity(self):
+        heavy = {'common': (3, 0), 'uncommon': (6, 0), 'rare': (12, 0), 'epic': (21, 0)}
+        leather = {'common': (2, 4), 'uncommon': (3, 6), 'rare': (6, 9), 'epic': (10, 12)}
+        self.assertEqual(ARMOR_SPLIT, {'armor': heavy, 'leather': leather})
+        for kind, table in ARMOR_SPLIT.items():
+            for rarity, (defense, dodge) in table.items():
+                item = Item(0, 0, kind, rarity)
+                self.assertEqual((item.bonus, item.dodge), (defense, dodge), (kind, rarity))
+                self.assertEqual(GEAR_SLOTS[kind], 'armor')
+
+    def test_leather_has_dodge_and_heavy_has_none(self):
+        for rarity in RARITIES:
+            self.assertGreater(Item(0, 0, 'leather', rarity).dodge, 0)
+            self.assertEqual(Item(0, 0, 'armor', rarity).dodge, 0)
+            heavy, leather = ARMOR_SPLIT['armor'][rarity], ARMOR_SPLIT['leather'][rarity]
+            self.assertGreater(heavy[0], leather[0])
+
+    def test_dodge_chance_is_the_armors_dodge_capped(self):
+        player = self.state.player
+        self.assertEqual(dodge_chance(player), 0)
+        self.wear('leather', 'rare')
+        self.assertEqual(dodge_chance(player), 9)
+        self.assertEqual(player.defense, 6)
+        self.wear('armor', 'rare')
+        self.assertEqual(dodge_chance(player), 0)
+        player.armor.dodge = 80
+        self.assertEqual(dodge_chance(player), MAX_DODGE)
+        self.assertEqual(MAX_DODGE, 50)
+
+    def test_a_dodge_avoids_damage_records_no_hit_and_logs(self):
+        self.wear('leather', 'epic')
+        hp = self.state.player.hp
+        self.state.combat_events.clear()
+        with mock.patch('game.state.random.random', return_value=0.0):
+            self.state.attack(self.goblin, self.state.player)
+        self.assertEqual(self.state.player.hp, hp)
+        self.assertEqual(self.state.combat_events, [])
+        self.assertEqual(self.state.messages[-1], "You dodge the goblin's attack.")
+
+    def test_seeded_dodges_happen_at_the_dodge_rate(self):
+        self.wear('leather', 'epic')  # 12%
+        random.seed(3)
+        n = 5000
+        for _ in range(n):
+            self.state.attack(self.goblin, self.state.player)
+        dodges = sum(1 for m in self.state.messages if m.startswith('You dodge'))
+        self.assertAlmostEqual(dodges / n, 0.12, delta=0.02)
+        self.assertEqual(len(self.state.combat_events), n - dodges)
+
+    def test_a_failed_dodge_roll_still_hits(self):
+        self.wear('leather', 'epic')
+        hp = self.state.player.hp
+        with mock.patch('game.state.random.random', return_value=0.99):
+            self.state.attack(self.goblin, self.state.player)
+        self.assertLess(self.state.player.hp, hp)
+        self.assertEqual(len(self.state.combat_events), 1)
+
+    def test_no_dodge_without_dodge(self):
+        self.wear('armor', 'epic')
+        random.seed(1)
+        for _ in range(500):
+            self.state.attack(self.goblin, self.state.player)
+        self.assertEqual(len(self.state.combat_events), 500)
+        self.assertFalse(any(m.startswith('You dodge') for m in self.state.messages))
+
+    def test_the_players_own_attacks_are_never_dodged(self):
+        self.wear('leather', 'epic')
+        self.state.player.armor.dodge = 50
+        self.goblin.hp = self.goblin.max_hp = 10**6
+        for _ in range(200):
+            self.state.attack(self.state.player, self.goblin)
+        self.assertEqual(len(self.state.combat_events), 200)
+
+    def test_a_slingers_shot_can_be_dodged(self):
+        p = self.state.player
+        slinger = Monster(p.x + 2, p.y, 'slinger')
+        self.wear('leather')
+        hp = p.hp
+        with mock.patch('game.state.random.random', return_value=0.0):
+            self.state.attack(slinger, p)
+        self.assertEqual(p.hp, hp)
+        self.assertIn(f"You dodge the {slinger.name}'s attack.", self.state.messages)
+
+    def test_starting_armor_by_class(self):
+        archer = GameState(50, 20, char_class='archer').player
+        self.assertEqual((archer.armor.kind, archer.armor.rarity), ('leather', 'common'))
+        self.assertEqual(archer.defense, ARMOR_SPLIT['leather']['common'][0])
+        self.assertEqual(dodge_chance(archer), ARMOR_SPLIT['leather']['common'][1])
+        warrior = GameState(50, 20, char_class='warrior').player
+        self.assertIsNone(warrior.armor)
+        self.assertEqual(warrior.defense, 0)
+
+    def test_armor_drops_split_evenly_between_the_kinds(self):
+        rng = random.Random(11)
+        n = 40000
+        drops = [roll_gear_drop(1, rng) for _ in range(n)]
+        heavy = sum(1 for d in drops if d.kind == 'armor') / n
+        leather = sum(1 for d in drops if d.kind == 'leather') / n
+        self.assertAlmostEqual(heavy + leather, ARMOR_DROP_CHANCE, delta=0.01)
+        self.assertAlmostEqual(heavy, ARMOR_DROP_CHANCE / 2, delta=0.01)
+        self.assertAlmostEqual(leather, ARMOR_DROP_CHANCE / 2, delta=0.01)
+        boss = [roll_boss_drop(rng) for _ in range(n)]
+        self.assertAlmostEqual(
+            sum(1 for d in boss if d.kind == 'leather') / n, ARMOR_DROP_CHANCE / 2, delta=0.01
+        )
+        self.assertEqual(set(ARMOR_KINDS), {'armor', 'leather'})
+        self.assertIn('leather', GEAR_DROP_KINDS)
 
 
 if __name__ == '__main__':
