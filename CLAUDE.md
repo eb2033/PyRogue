@@ -19,15 +19,33 @@ main.py` works with a bare system Python.
 
 Tests: `.venv/bin/python -m unittest discover -s tests -v`. The pygame suites run headless (they set
 `SDL_VIDEODRIVER=dummy` themselves) and skip cleanly when pygame isn't installed;
-`tests/test_frozen_smoke.py`'s launch test skips unless `dist/PyRogue/` exists. CI
-(`.github/workflows/ci.yml`) runs the suite on Ubuntu + Windows × Python 3.12/3.13/3.14, a
-nothing-installed job that guards the stdlib-only terminal path, and a `frozen-build` job that
+`tests/test_frozen_smoke.py`'s launch test skips unless `dist/PyRogue/` exists, and
+`tests/test_properties.py` skips without Hypothesis (`pip install -r requirements-test.txt`;
+`HYPOTHESIS_PROFILE=deep` runs ~20x the examples for a bug hunt). CI
+(`.github/workflows/ci.yml`) runs a `lint` job, the suite on Ubuntu + Windows × Python
+3.12/3.13/3.14 (with Hypothesis), a nothing-installed job that guards the stdlib-only terminal path, and a `frozen-build` job that
 freezes the game on Windows and Linux, smoke-tests it, and keeps the zips as artifacts for 7 days —
 that job is the only place the Windows exe gets built before a release. `frozen-build` runs only for
 pushes to `main`, tags, and manual runs ("Run workflow" on the Actions tab); other branches and PRs
-get the tests alone. No automated test touches
+get the tests and lint alone. No automated test touches
 the curses renderer itself (it needs a real terminal) — verify curses rendering/input changes by
 running the game.
+
+Static checks (`pip install -r requirements-lint.txt`; all configured in `pyproject.toml`; CI's
+`lint` job runs exactly these, and `frozen-build` waits for it):
+
+```bash
+.venv/bin/ruff check .            # lint (--fix for the safe fixes)
+.venv/bin/ruff format .           # format; CI runs `ruff format --check`
+.venv/bin/pyright                 # types, basic mode; reads .venv for pygame-ce
+.venv/bin/vulture                 # unused code, 60% confidence and up
+```
+
+pyright is clean across the repo, tests included; only the Optional checks are relaxed under
+`tests/` (the `pygame = None` skip pattern trips them). A vulture false positive goes in
+`vulture_allowlist.py` with the reason; real dead code gets deleted. Name test classes `*Tests` —
+vulture only knows those are used. `.github/dependabot.yml` opens weekly PRs for every pinned pip
+package and GitHub Action.
 
 ## Layout
 
@@ -42,7 +60,9 @@ running the game.
   hook), then re-raises.
 - `game/` — all game logic, standard library only, speaks `(x, y)` throughout. `state.py` owns turn
   resolution (`GameState`, including the archer's ranged attack); `dungeon.py`, `rect.py`, `tiles.py`
-  are dungeon generation; `entity.py`, `monster.py`, `item.py` are the entity hierarchy; `fov.py` is
+  are dungeon generation; `entity.py` (`Entity`, and `Player`, which declares the player's stats),
+  `monster.py`, `item.py` are the entity hierarchy; `rng.py` is the `Rng` type of every `rng=`
+  parameter (the `random` module or a seeded `random.Random`); `fov.py` is
   field of view; `save.py` is JSON save/load (atomic: temp file + `os.replace`). Platform layer:
   `paths.py` — `resource_path()` for anything bundled (`sys._MEIPASS` → exe dir → repo root; never
   a CWD-relative path) and `user_data_dir()` for anything written (`%APPDATA%\PyRogue`,
@@ -82,7 +102,10 @@ running the game.
   `CHANGELOG.md` section. Pushes to itch.io only if a `BUTLER_API_KEY` secret is set (plus an
   `ITCH_PROJECT` repo variable). `workflow_dispatch` builds artifacts without releasing.
 - `requirements.txt` (`pygame-ce`, pinned — the only runtime dependency, and only for the window),
-  `requirements-dev.txt` (`pyinstaller` + hooks, pinned), `CHANGELOG.md`.
+  `requirements-dev.txt` (`pyinstaller` + hooks, pinned), `requirements-test.txt` (`hypothesis`),
+  `requirements-lint.txt` (`ruff`, `pyright`, `vulture`), `CHANGELOG.md`. `pyproject.toml` is tool
+  config only (the game isn't an installable package). `.git-blame-ignore-revs` lists the one-off
+  `ruff format` commit.
 - `tests/` — headless `unittest` suites. `test_game.py` (`game/` logic: dungeon gen, FOV, combat,
   adjacency, turn phases, classes, items, save/load), `test_menu.py` (menu/banner helpers),
   `test_loop.py` (`main.resolve_monster_phase` with a recording stand-in renderer, asserting the
@@ -93,7 +116,11 @@ running the game.
   `test_parity.py` (both renderers' key tables
   reach every `Action`), `test_paths.py` / `test_settings.py` / `test_crashlog.py` (platform
   layer), `test_main.py` (`main.py` as a subprocess: config loading, crash logging),
-  `test_frozen_smoke.py` (launches `dist/PyRogue/` if it exists). There is intentionally no test
+  `test_frozen_smoke.py` (launches `dist/PyRogue/` if it exists), `test_properties.py`
+  (Hypothesis: dungeon border/reachability/doors on 3x3 to 90x45 maps, FOV bounds, loot and
+  scaling monotonicity, `.env` parsing, camera projection, log wrapping, and random playthroughs
+  checking invariants after every action plus a save/load round-trip). When it finds a
+  counterexample, fix it and pin the input as an example test. There is intentionally no test
   for the curses renderer's drawing/getch itself — it needs a real terminal (or a pty — see
   `agent_log.md`'s note on the `TERM=xterm` arrow-key SS3-vs-CSI trap if you script one).
 - **The next three docs are private: gitignored and untracked, on purpose.** They exist only in the
@@ -146,6 +173,7 @@ running the game.
 
 ## Conventions
 
+- **Formatting is `ruff format`** (single quotes, 99 columns); don't hand-align what it would undo.
 - **Coordinates are `(y, x)` in curses calls, `(x, y)` in game logic.** `stdscr.addstr(y, x, text)`
   and `stdscr.addch(y, x, ch)` take row first; `Entity`, `Rect.center()`, and `move(dx, dy)` use
   x-first. This mismatch is the most common source of bugs here.
@@ -339,11 +367,11 @@ unchanged.
   fonts with tall line heights like this one (see `_place_stacked_tiles`: the panel never overlaps
   the map, even if it has to run off the bottom).
 
-Test coverage: `test_game.py` (80 tests) + `test_menu.py` (7) + `test_loop.py` (7) +
+Test coverage: `test_game.py` (81 tests) + `test_menu.py` (7) + `test_loop.py` (7) +
 `test_pygame_render.py` (46) + `test_ui.py` (55) + `test_tileset.py` (12) + `test_camera.py` (14) +
 `test_parity.py` (4) +
 `test_paths.py` (28) + `test_settings.py` (18) + `test_crashlog.py` (7) + `test_main.py` (2) +
-`test_frozen_smoke.py` (7) = 287 unit tests, plus ad hoc fuzz/PTY smoke testing during development — see `agent_log.md` for
+`test_frozen_smoke.py` (7) + `test_properties.py` (15 properties) = 303 tests, plus ad hoc fuzz/PTY smoke testing during development — see `agent_log.md` for
 what was run and why.
 
 **Combat zoom** (2026-10-13, `render/camera.py`, window only): when a monster is orthogonally

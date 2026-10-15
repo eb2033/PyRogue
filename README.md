@@ -81,9 +81,15 @@ Saves and `crash.log` go to your user data folder: `%APPDATA%\PyRogue` on Window
 ## Development
 
 ```bash
+.venv/bin/pip install -r requirements-test.txt -r requirements-lint.txt
 .venv/bin/python -m unittest discover -s tests -v   # tests (pygame ones run headless)
+.venv/bin/ruff check . && .venv/bin/ruff format .   # lint + format
+.venv/bin/pyright && .venv/bin/vulture              # types + unused code
 ./packaging/build.sh                                # build the Linux zip into dist/
 ```
+
+CI runs all of these on every push. `git config blame.ignoreRevsFile .git-blame-ignore-revs` keeps
+the one-off formatting commit out of `git blame`.
 
 The Windows build is made by CI (`packaging/build.ps1` on a Windows runner); pushing a `v*` tag
 publishes a release. `CLAUDE.md` describes how the code is laid out, `CHANGELOG.md` what changed,
