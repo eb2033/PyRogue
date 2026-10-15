@@ -49,8 +49,8 @@ SPAWN_RULES = (
     SpawnRule('orc', 1, FIRST_BOSS_DEPTH, lambda depth: 1, 1, True),
     # ...after it, in a pair that never stands side by side.
     SpawnRule('orc', FIRST_BOSS_DEPTH + 1, None, lambda depth: 2, 1, True),
-    # A goblin slinger shoots from range; from floor 4 on, always alone.
-    SpawnRule('slinger', 4, None, lambda depth: 1, 1, True),
+    # A goblin archer shoots from range; from floor 4 on, always alone.
+    SpawnRule('goblin_archer', 4, None, lambda depth: 1, 1, True),
 )
 
 # Boss depth -> (kind, count) standing guard beside the boss. Boss floors

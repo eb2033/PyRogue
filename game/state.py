@@ -24,7 +24,7 @@ import random
 from typing import Any
 
 from game import archery
-from game.combat import Hit
+from game.combat import Arrow, Hit, Shot
 from game.damage import mitigate, round_damage
 from game.dungeon import generate_dungeon, place_stairs
 from game.entity import Player
@@ -718,7 +718,7 @@ class GameState:
 
     def _dodged(self, attacker):
         """Roll the player's dodge against `attacker`'s blow (melee or a
-        slinger's shot: every monster hit comes through attack). On a dodge
+        goblin archer's shot: every monster hit comes through attack). On a dodge
         the blow does nothing -- no damage, no Hit -- and is logged. With no
         dodge nothing is rolled, so the rng sequence is untouched."""
         chance = dodge_chance(self.player)
@@ -798,6 +798,8 @@ class GameState:
             )
             if result == 'attack':
                 self.attack(monster, self.player)
+            elif result == 'shoot':
+                self._monster_shot(monster)
             self.update_fov()
 
             if self._player_just_died():
@@ -810,11 +812,41 @@ class GameState:
             moved_in_view = (monster.x, monster.y) != before and (
                 was_seen or self.is_visible(monster.x, monster.y)
             )
-            if result == 'attack' or moved_in_view:
+            if result in ('attack', 'shoot') or moved_in_view:
                 return True
 
         self._finish_round()
         return False
+
+    def _monster_shot(self, monster):
+        """A ranged monster's arrow at the player (it has a clear shot, see
+        Monster.clear_shot). The damage goes through attack, so dodge,
+        defence and the log work as for a melee blow; the flight is recorded
+        as a one-Arrow Shot in self.shots, like the player's bow shots. Its
+        serial is taken before the arrow flies, so it sorts before its Hit.
+
+        The path runs from the monster's cell to the player's. A dodged arrow
+        (no Hit) flies on past the player and stops on the last free tile
+        before a wall or another creature."""
+        serial = self.next_event_serial()
+        first_event = len(self.combat_events)
+        self.attack(monster, self.player)
+        hits = tuple(self.combat_events[first_event:])
+        dx = (self.player.x > monster.x) - (self.player.x < monster.x)
+        dy = (self.player.y > monster.y) - (self.player.y < monster.y)
+        x, y = monster.x, monster.y
+        path = [(x, y)]
+        while (x, y) != (self.player.x, self.player.y):
+            x, y = x + dx, y + dy
+            path.append((x, y))
+        if not hits:
+            while is_walkable(self.game_map, x + dx, y + dy) and (
+                self.monster_at(x + dx, y + dy) is None
+            ):
+                x, y = x + dx, y + dy
+                path.append((x, y))
+        arrow = Arrow(tuple(path), hits)
+        self.shots.append(Shot(serial, arrow.path, arrow.hits, (arrow,)))
 
     def end_turn(self):
         """Run the monster half of the round in one go.

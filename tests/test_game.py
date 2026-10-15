@@ -2387,8 +2387,8 @@ class BossEnrageTests(unittest.TestCase):
         self.assertEqual(self._goblins(state), [])
 
 
-class SlingerTests(unittest.TestCase):
-    """The goblin slinger: shoots along a clear row/column up to SHOOT_RANGE,
+class GoblinArcherTests(unittest.TestCase):
+    """The goblin archer: shoots along a clear row/column up to SHOOT_RANGE,
     backs off when the player is within 2, chases when it can't see."""
 
     def _arena(self):
@@ -2404,25 +2404,25 @@ class SlingerTests(unittest.TestCase):
         return state
 
     def _add(self, state, x, y):
-        sling = Monster(x, y, 'slinger')
-        state.entities.append(sling)
+        shooter = Monster(x, y, 'goblin_archer')
+        state.entities.append(shooter)
         state.update_fov()
-        return sling
+        return shooter
 
     def _hits_by(self, state, attacker):
         return [h for h in state.combat_events if h.attacker is attacker]
 
     def test_stats_are_weaker_than_a_goblin(self):
         for depth in (1, 4, 7, 13, 25):
-            sling, gob = Monster(0, 0, 'slinger', depth), Monster(0, 0, 'goblin', depth)
-            self.assertLess(sling.power, gob.power, depth)
-            self.assertLess(sling.hp, gob.hp, depth)
-            self.assertEqual((sling.hp, sling.power), scale_stats(7, 1, depth))
+            shooter, gob = Monster(0, 0, 'goblin_archer', depth), Monster(0, 0, 'goblin', depth)
+            self.assertLess(shooter.power, gob.power, depth)
+            self.assertLess(shooter.hp, gob.hp, depth)
+            self.assertEqual((shooter.hp, shooter.power), scale_stats(7, 1, depth))
 
     def test_char_is_unique_among_monsters_and_items(self):
         chars = [c for c, *_ in MONSTER_TYPES.values()]
         self.assertEqual(len(chars), len(set(chars)))
-        self.assertEqual(MONSTER_TYPES['slinger'][0], 's')
+        self.assertEqual(MONSTER_TYPES['goblin_archer'][0], 's')
         self.assertNotIn(
             's', set(ITEM_CHARS.values()) | {'=', WALL, FLOOR, DOOR, STAIRS_DOWN, '@'}
         )
@@ -2432,113 +2432,159 @@ class SlingerTests(unittest.TestCase):
             for dx, dy in ORTHOGONAL_STEPS:
                 state = self._arena()
                 state.player.x, state.player.y = 9, 9
-                sling = self._add(state, 9 + dx * gap, 9 + dy * gap)
-                before = (sling.x, sling.y)
+                shooter = self._add(state, 9 + dx * gap, 9 + dy * gap)
+                before = (shooter.x, shooter.y)
                 hp = state.player.hp
                 state.end_turn()
-                self.assertEqual((sling.x, sling.y), before, 'a shooter stands still')
-                hits = self._hits_by(state, sling)
+                self.assertEqual((shooter.x, shooter.y), before, 'a shooter stands still')
+                hits = self._hits_by(state, shooter)
                 self.assertEqual(len(hits), 1, (gap, dx, dy))
                 self.assertEqual(hits[0].defender, state.player)
                 self.assertEqual(state.player.hp, hp - hits[0].damage)
                 self.assertGreater(hits[0].damage, 0)
-                self.assertIn('Slinger hits you', state.messages[-1])
+                self.assertIn('Goblin archer hits you', state.messages[-1])
 
     def test_shoots_from_two_tiles_when_cornered(self):
         state = self._arena()
         state.game_map = make_empty_map(20, 20, WALL)
         for x in range(1, 8):  # a dead-end corridor; nowhere to back off to
             state.game_map[10][x] = FLOOR
-        sling = self._add(state, 7, 10)
+        shooter = self._add(state, 7, 10)
         hp = state.player.hp
         state.end_turn()
-        self.assertEqual((sling.x, sling.y), (7, 10))
-        self.assertEqual(len(self._hits_by(state, sling)), 1)
+        self.assertEqual((shooter.x, shooter.y), (7, 10))
+        self.assertEqual(len(self._hits_by(state, shooter)), 1)
         self.assertLess(state.player.hp, hp)
 
     def test_out_of_range_or_off_line_it_does_not_shoot(self):
         state = self._arena()
-        sling = self._add(state, 5 + SHOOT_RANGE + 1, 10)
+        shooter = self._add(state, 5 + SHOOT_RANGE + 1, 10)
         state.end_turn()
-        self.assertEqual(self._hits_by(state, sling), [])
-        self.assertEqual((sling.x, sling.y), (5 + SHOOT_RANGE, 10), 'closes in instead')
+        self.assertEqual(self._hits_by(state, shooter), [])
+        self.assertEqual((shooter.x, shooter.y), (5 + SHOOT_RANGE, 10), 'closes in instead')
 
         state = self._arena()
-        sling = self._add(state, 9, 13)  # diagonal-ish: no straight line
+        shooter = self._add(state, 9, 13)  # diagonal-ish: no straight line
         state.end_turn()
-        self.assertEqual(self._hits_by(state, sling), [])
+        self.assertEqual(self._hits_by(state, shooter), [])
 
     def test_never_shoots_through_a_wall_or_closed_door(self):
         for blocker in (WALL, DOOR):
             state = self._arena()
             state.game_map[10][7] = blocker
-            sling = Monster(9, 10, 'slinger')
+            shooter = Monster(9, 10, 'goblin_archer')
             # Even if told it sees the player, the line itself is blocked.
-            result = sling.take_turn(state.player, state.game_map, sees_player=True)
+            result = shooter.take_turn(state.player, state.game_map, sees_player=True)
             self.assertIsNone(result, blocker)
-            self.assertFalse(sling.clear_shot(state.player, state.game_map), blocker)
+            self.assertFalse(shooter.clear_shot(state.player, state.game_map), blocker)
 
             state = self._arena()
             state.game_map[10][7] = blocker
-            sling = self._add(state, 9, 10)
+            shooter = self._add(state, 9, 10)
             hp = state.player.hp
             state.end_turn()
-            self.assertEqual(self._hits_by(state, sling), [], blocker)
+            self.assertEqual(self._hits_by(state, shooter), [], blocker)
             self.assertEqual(state.player.hp, hp, blocker)
 
     def test_does_not_shoot_through_another_monster(self):
         state = self._arena()
         state.entities.append(Monster(8, 10, 'goblin'))
-        sling = Monster(10, 10, 'slinger')
-        self.assertFalse(sling.clear_shot(state.player, state.game_map, {(8, 10)}))
+        shooter = Monster(10, 10, 'goblin_archer')
+        self.assertFalse(shooter.clear_shot(state.player, state.game_map, {(8, 10)}))
 
     def test_steps_away_when_the_player_is_within_two(self):
         for start in ((7, 10), (6, 10), (6, 11), (5, 12)):
             state = self._arena()
-            sling = self._add(state, *start)
-            gap = sling.distance_to(state.player)
+            shooter = self._add(state, *start)
+            gap = shooter.distance_to(state.player)
             hp = state.player.hp
             state.end_turn()
-            self.assertNotEqual((sling.x, sling.y), start)
-            self.assertEqual(sling.distance_to(state.player), gap + 1, start)
-            self.assertEqual(self._hits_by(state, sling), [], 'retreating, not shooting')
+            self.assertNotEqual((shooter.x, shooter.y), start)
+            self.assertEqual(shooter.distance_to(state.player), gap + 1, start)
+            self.assertEqual(self._hits_by(state, shooter), [], 'retreating, not shooting')
             self.assertEqual(state.player.hp, hp)
 
     def test_chases_when_it_cannot_see_the_player(self):
         game_map = [list(r) for r in ['#' * 20, '#' + '.' * 18 + '#', '#' * 20]]
         player = Entity(1, 1, '@')
-        sling = Monster(5, 1, 'slinger')
-        sling.chasing = True
-        result = sling.take_turn(player, game_map, sees_player=False)
+        shooter = Monster(5, 1, 'goblin_archer')
+        shooter.chasing = True
+        result = shooter.take_turn(player, game_map, sees_player=False)
         self.assertIsNone(result)
-        self.assertEqual((sling.x, sling.y), (4, 1), 'stepped toward the player')
+        self.assertEqual((shooter.x, shooter.y), (4, 1), 'stepped toward the player')
 
         # Through the game: a wall hides the player, so it walks round, not shoots.
         state = self._arena()
         for y in range(5, 16):
             state.game_map[y][8] = WALL
-        sling = self._add(state, 10, 10)
-        sling.chasing = True
+        shooter = self._add(state, 10, 10)
+        shooter.chasing = True
         self.assertFalse(state.is_visible(10, 10))
         state.end_turn()
-        self.assertEqual(self._hits_by(state, sling), [])
-        self.assertEqual((sling.x, sling.y), (9, 10), 'stepped toward the player')
+        self.assertEqual(self._hits_by(state, shooter), [])
+        self.assertEqual((shooter.x, shooter.y), (9, 10), 'stepped toward the player')
 
     def test_spawns_alone_per_room_from_depth_four(self):
         for depth in (1, 2, 3):
             for _rooms, monsters, _ in seeded_floors(depth, n=100):
-                self.assertFalse([m for m in monsters if m.kind == 'slinger'], depth)
+                self.assertFalse([m for m in monsters if m.kind == 'goblin_archer'], depth)
         seen = 0
         for depth in (4, 5, 9, 12, 20):
             for rooms, monsters, _ in seeded_floors(depth, n=100):
                 for room in rooms[1:]:
                     here = [m for m in monsters if in_room(room, m)]
-                    slings = [m for m in here if m.kind == 'slinger']
-                    if slings:
+                    shooters = [m for m in here if m.kind == 'goblin_archer']
+                    if shooters:
                         seen += 1
-                        self.assertEqual(len(slings), 1)
-                        self.assertEqual({m.kind for m in here}, {'slinger'})
+                        self.assertEqual(len(shooters), 1)
+                        self.assertEqual({m.kind for m in here}, {'goblin_archer'})
         self.assertGreater(seen, 0)
+
+    def test_name_and_log_say_goblin_archer(self):
+        state = self._arena()
+        shooter = self._add(state, 9, 10)
+        self.assertEqual(shooter.name, 'goblin archer')
+        with mock.patch('game.state.dodge_chance', return_value=0):
+            state.end_turn()
+        self.assertIn('Goblin archer hits you', ' '.join(state.messages))
+
+    def test_a_shot_records_one_arrow_from_its_cell_to_the_player(self):
+        state = self._arena()
+        shooter = self._add(state, 9, 10)
+        with mock.patch('game.state.dodge_chance', return_value=0):
+            state.end_turn()
+        (hit,) = self._hits_by(state, shooter)
+        (shot,) = state.shots
+        self.assertEqual(len(shot.arrows), 1)
+        (arrow,) = shot.arrows
+        self.assertEqual(arrow.path, ((9, 10), (8, 10), (7, 10), (6, 10), (5, 10)))
+        self.assertEqual(arrow.hits, (hit,))
+        self.assertIs(hit.defender, state.player)
+        self.assertEqual((shot.path, shot.hits), (arrow.path, arrow.hits))
+        self.assertLess(shot.serial, hit.serial, 'the shot sorts before its hit')
+
+    def test_a_melee_blow_records_no_shot(self):
+        state = self._arena()
+        state.entities.append(Monster(6, 10, 'goblin'))
+        state.update_fov()
+        with mock.patch('game.state.dodge_chance', return_value=0):
+            state.end_turn()
+        self.assertEqual(state.shots, [])
+
+    def test_a_dodged_shot_flies_past_the_player_to_the_wall(self):
+        state = self._arena()
+        shooter = self._add(state, 9, 10)
+        hp = state.player.hp
+        with mock.patch('game.state.dodge_chance', return_value=100):
+            state.end_turn()
+        self.assertEqual(state.player.hp, hp)
+        self.assertEqual(self._hits_by(state, shooter), [])
+        self.assertIn("You dodge the goblin archer's attack.", state.messages)
+        (shot,) = state.shots
+        self.assertEqual(shot.hits, ())
+        self.assertEqual(shot.path[0], (9, 10))
+        self.assertIn((5, 10), shot.path)
+        self.assertEqual(shot.path[-1], (1, 10), 'the last floor tile before the wall')
 
 
 def _in_room(room, e):
@@ -2857,15 +2903,15 @@ class DodgeAndArmorKindTests(unittest.TestCase):
             self.state.attack(self.state.player, self.goblin)
         self.assertEqual(len(self.state.combat_events), 200)
 
-    def test_a_slingers_shot_can_be_dodged(self):
+    def test_a_goblin_archers_shot_can_be_dodged(self):
         p = self.state.player
-        slinger = Monster(p.x + 2, p.y, 'slinger')
+        shooter = Monster(p.x + 2, p.y, 'goblin_archer')
         self.wear('leather')
         hp = p.hp
         with mock.patch('game.state.random.random', return_value=0.0):
-            self.state.attack(slinger, p)
+            self.state.attack(shooter, p)
         self.assertEqual(p.hp, hp)
-        self.assertIn(f"You dodge the {slinger.name}'s attack.", self.state.messages)
+        self.assertIn(f"You dodge the {shooter.name}'s attack.", self.state.messages)
 
     def test_starting_armor_by_class(self):
         archer = GameState(50, 20, char_class='archer').player
