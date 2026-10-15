@@ -31,10 +31,10 @@ from game.item import (
     spawn_boss_chest,
     spawn_chests,
 )
-from game.monster import Monster, is_boss_level
+from game.monster import Monster, is_boss_level, tier_for_depth
 from game.save import apply_dict, load_game, save_game
 from game.spawn import spawn_level
-from game.tiles import DOOR, STAIRS_DOWN, is_walkable
+from game.tiles import DOOR, FLOOR, STAIRS_DOWN, is_walkable
 
 # None means "use paths.save_path()" (the per-user data dir), resolved at
 # save/load time rather than import time. Tests -- or anything else that wants
@@ -96,6 +96,8 @@ def _describe(item):
 
 # Chance that a player hit is critical; an equipped weapon's crit_bonus
 # (the dagger's) adds to it.
+MAX_SUMMONS = 2  # goblins a boss calls when it enrages
+SUMMON_RADIUS = 3
 BASE_CRIT_CHANCE = 0.10
 # A crit multiplies raw damage by this BEFORE defense reduction.
 CRIT_MULTIPLIER = 1.5
@@ -522,6 +524,35 @@ class GameState:
                 if getattr(defender, 'is_boss', False):
                     self.entities.append(spawn_boss_chest(defender.x, defender.y))
                     self.log('The boss drops a chest!')
+        elif (
+            getattr(defender, 'is_boss', False)
+            and not defender.enraged
+            and defender.hp <= defender.max_hp / 2
+        ):
+            defender.enraged = True
+            self.log(f'The {defender.kind} boss roars and calls for help!')
+            self._summon_goblins(defender)
+
+    def _summon_goblins(self, boss):
+        """Enrage helper: put min(tier, 2) goblins on free floor within 3
+        tiles of `boss`. They join the entity list only; the round's queue is
+        built after the player's half (end_player_phase), so they act in the
+        same round's monster phase like any other monster."""
+        count = min(tier_for_depth(self.depth), MAX_SUMMONS)
+        taken = {(self.player.x, self.player.y)}
+        taken.update((e.x, e.y) for e in self.entities if isinstance(e, Monster) and e.alive)
+        free = [
+            (x, y)
+            for y in range(boss.y - SUMMON_RADIUS, boss.y + SUMMON_RADIUS + 1)
+            for x in range(boss.x - SUMMON_RADIUS, boss.x + SUMMON_RADIUS + 1)
+            if 0 <= y < self.height
+            and 0 <= x < self.width
+            and self.game_map[y][x] == FLOOR
+            and (x, y) not in taken
+        ]
+        random.shuffle(free)
+        for x, y in free[:count]:
+            self.entities.append(Monster(x, y, 'goblin', depth=self.depth))
 
     # -- the round, in two halves ------------------------------------------
 

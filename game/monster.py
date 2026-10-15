@@ -90,6 +90,7 @@ class Monster(Entity):
         self.power = power
         self.alive = True
         self.is_boss = is_boss
+        self.enraged = False  # a boss summons help once, at half HP
         self.chasing = False  # pursuing the player (see take_turn)
         self.lost_sight = 0  # consecutive chasing turns without sight of the player
 

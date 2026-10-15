@@ -29,6 +29,7 @@ def _entity_to_dict(e):
             power=e.power,
             alive=e.alive,
             is_boss=e.is_boss,
+            enraged=e.enraged,
             chasing=e.chasing,
             lost_sight=e.lost_sight,
         )
@@ -51,6 +52,7 @@ def _entity_from_dict(d):
         # the monster picks the chase back up as soon as it sees the player.
         m.chasing = bool(d.get('chasing', False))
         m.lost_sight = int(d.get('lost_sight', 0))
+        m.enraged = bool(d.get('enraged', False))
         return m
     if d['type'] == 'chest':
         # A save from before chests had a kind gets one rolled now.

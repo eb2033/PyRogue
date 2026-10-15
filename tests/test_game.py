@@ -2499,5 +2499,90 @@ class WeaponTypeTests(unittest.TestCase):
         self.assertEqual((fp.weapon.strikes, fp.weapon.reach, fp.weapon.cleave), (1, 1, False))
 
 
+class BossEnrageTests(unittest.TestCase):
+    def _arena(self, depth=8):
+        """Open 20x20 floor; player at (5,10), a boss orc at (7,10) with hp 20."""
+        state = GameState(20, 20)
+        state.game_map = make_empty_map(20, 20, WALL)
+        for y in range(1, 19):
+            for x in range(1, 19):
+                state.game_map[y][x] = FLOOR
+        state.depth = depth
+        state.player.x, state.player.y = 5, 10
+        state.player.power = 1
+        boss = Monster(7, 10, 'orc', depth=depth, is_boss=True)
+        boss.max_hp, boss.hp = 20, 20
+        state.entities = [state.player, boss]
+        return state, boss
+
+    def _goblins(self, state):
+        return [e for e in state.entities if isinstance(e, Monster) and e.kind == 'goblin']
+
+    def test_enrages_once_at_half_hp_not_before(self):
+        state, boss = self._arena()
+        state.attack(state.player, boss)  # 20 -> ~19, well above half
+        self.assertFalse(boss.enraged)
+        self.assertEqual(self._goblins(state), [])
+        boss.hp = 11
+        state.attack(state.player, boss)
+        self.assertLessEqual(boss.hp, 10)
+        self.assertTrue(boss.enraged)
+        count = len(self._goblins(state))
+        self.assertEqual(count, 2)
+        self.assertTrue(any('calls for help' in m for m in state.messages))
+        state.attack(state.player, boss)
+        self.assertEqual(len(self._goblins(state)), count)
+
+    def test_summon_count_follows_tier_capped_at_two(self):
+        for depth, expected in ((1, 0), (4, 1), (7, 2), (16, 2)):
+            state, boss = self._arena(depth)
+            boss.hp = 10
+            state.attack(state.player, boss)
+            self.assertEqual(len(self._goblins(state)), expected, depth)
+
+    def test_summons_on_free_floor_within_three_tiles(self):
+        for seed in range(30):
+            random.seed(seed)
+            state, boss = self._arena()
+            blocker = Monster(8, 10, 'goblin')
+            state.entities.append(blocker)
+            boss.hp = 10
+            state.attack(state.player, boss)
+            new = [g for g in self._goblins(state) if g is not blocker]
+            self.assertEqual(len(new), 2)
+            spots = [(g.x, g.y) for g in new]
+            self.assertEqual(len(set(spots)), 2)
+            for x, y in spots:
+                self.assertEqual(state.game_map[y][x], FLOOR)
+                self.assertLessEqual(max(abs(x - boss.x), abs(y - boss.y)), 3)
+                self.assertNotIn((x, y), [(5, 10), (boss.x, boss.y), (8, 10)])
+
+    def test_no_free_tile_means_no_summons_and_no_crash(self):
+        state, boss = self._arena()
+        for y in range(20):
+            for x in range(20):
+                state.game_map[y][x] = WALL
+        state.game_map[10][7] = FLOOR
+        state.game_map[10][5] = FLOOR
+        boss.hp = 10
+        state.attack(state.player, boss)
+        self.assertTrue(boss.enraged)
+        self.assertEqual(self._goblins(state), [])
+
+    def test_enraged_round_trips_and_old_save_defaults_false(self):
+        state, boss = self._arena()
+        boss.enraged = True
+        data = state_to_dict(state)
+        fresh = GameState(20, 20)
+        apply_dict(fresh, data)
+        loaded = next(e for e in fresh.entities if isinstance(e, Monster) and e.is_boss)
+        self.assertTrue(loaded.enraged)
+        for e in data['entities']:
+            e.pop('enraged', None)
+        apply_dict(fresh, data)
+        loaded = next(e for e in fresh.entities if isinstance(e, Monster) and e.is_boss)
+        self.assertFalse(loaded.enraged)
+
+
 if __name__ == '__main__':
     unittest.main()
