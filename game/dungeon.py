@@ -11,6 +11,7 @@ import heapq
 import random
 
 from game.rect import Rect
+from game.rng import Rng
 from game.tiles import DOOR, FLOOR, STAIRS_DOWN, WALL
 
 
@@ -160,7 +161,7 @@ def _along_side(pos, side_no):
     return ((x, y - 1), (x, y + 1))
 
 
-def connect_rooms(game_map, rooms, rng=random):
+def connect_rooms(game_map, rooms, rng: Rng = random):
     """Corridors joining each room to the one placed before it, routed by
     route_corridor once every room is carved -- so no room can later land
     with its wall along an existing corridor. Falls back to the spec's

@@ -1,0 +1,33 @@
+# Weekly dependency PRs. Every pin in the repo is exact, so each update is a
+# reviewable PR that CI tests before anything changes.
+#
+# Before merging a pygame-ce bump: re-check the F11 fullscreen call
+# (CLAUDE.md, "Windowed renderer") and the third-party notices --
+# tests/test_frozen_smoke.py's NoticesTest fails if a new native library
+# isn't covered. A pyinstaller bump needs a frozen build, which PRs don't get:
+# run CI by hand on the branch (Actions tab, "Run workflow").
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # The check tools release often; one PR for the lot.
+      dev-tools:
+        patterns: [ruff, pyright, vulture, hypothesis]
+      packaging:
+        patterns: [pyinstaller, pyinstaller-hooks-contrib]
+    commit-message:
+      prefix: deps
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
+    commit-message:
+      prefix: ci

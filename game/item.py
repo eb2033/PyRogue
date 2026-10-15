@@ -19,6 +19,7 @@ at the moment of spawning.
 import random
 
 from game.entity import Entity
+from game.rng import Rng
 
 RARITIES = ['common', 'uncommon', 'rare', 'epic']
 
@@ -68,11 +69,11 @@ def rarity_weights_for_depth(depth):
             for shallow, deep in zip(RARITY_WEIGHTS_SHALLOW, RARITY_WEIGHTS_DEEP)]
 
 
-def roll_rarity(depth=1, rng=random):
+def roll_rarity(depth=1, rng: Rng = random):
     return rng.choices(RARITIES, weights=rarity_weights_for_depth(depth))[0]
 
 
-def roll_kind(rng=random):
+def roll_kind(rng: Rng = random):
     return rng.choices(list(ITEM_KIND_WEIGHTS), weights=list(ITEM_KIND_WEIGHTS.values()))[0]
 
 
@@ -129,7 +130,7 @@ class Chest(Entity):
     drop"), rather than using the normal depth-scaled table.
     """
 
-    def __init__(self, x, y, guaranteed_min_rarity=None, kind=None, rng=random):
+    def __init__(self, x, y, guaranteed_min_rarity=None, kind=None, rng: Rng = random):
         if kind is None:
             kind = roll_kind(rng)
         color = POTION_CHEST_COLOR if kind == 'potion' else CHEST_COLOR
@@ -137,7 +138,7 @@ class Chest(Entity):
         self.guaranteed_min_rarity = guaranteed_min_rarity
         self.kind = kind
 
-    def open(self, depth, rng=random):
+    def open(self, depth, rng: Rng = random):
         kind = self.kind
         if self.guaranteed_min_rarity == 'rare':
             rarity = rng.choices(BOSS_CHEST_MIN_RARITIES, weights=BOSS_CHEST_MIN_WEIGHTS)[0]
@@ -146,7 +147,7 @@ class Chest(Entity):
         return Item(self.x, self.y, kind, rarity)
 
 
-def spawn_chests(rooms, rng=random):
+def spawn_chests(rooms, rng: Rng = random):
     chests = []
     occupied = set()
     for room in rooms[1:]:

@@ -17,7 +17,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from game import crashlog, paths, settings, state as state_module
+from game import crashlog, paths, settings
+from game import state as state_module
 from game.state import GameState
 from game.version import __version__
 

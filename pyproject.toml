@@ -1,0 +1,52 @@
+# Tool configuration only -- PyRogue is not an installable package. The
+# checks run in CI's `lint` job (.github/workflows/ci.yml); the pinned
+# versions live in requirements-lint.txt.
+
+[tool.ruff]
+target-version = 'py312'   # the oldest Python in CI's test matrix
+line-length = 99
+extend-exclude = ['build', 'dist', '.claude', '.agents', '.hypothesis']
+
+[tool.ruff.format]
+quote-style = 'single'     # the codebase's existing style
+
+[tool.ruff.lint]
+select = [
+    'E', 'W',    # pycodestyle
+    'F',         # pyflakes
+    'I',         # import order
+    'B',         # bugbear
+    'UP',        # pyupgrade
+    'PLW1510',   # subprocess.run without check=
+    'RUF100',    # stale noqa comments
+]
+ignore = [
+    'E501',      # the formatter owns line length; it leaves long strings alone
+    'B905',      # zip(strict=): pairwise zips like zip(xs, xs[1:]) differ in length on purpose
+]
+external = ['BLE001']   # crashlog.py's "catch everything" noqa, kept as documentation
+
+[tool.pyright]
+include = ['main.py', 'game', 'render', 'packaging', 'tests']
+pythonVersion = '3.12'
+typeCheckingMode = 'basic'
+# The checkout's own venv (CLAUDE.md), so it sees pygame-ce. CI's lint job
+# makes one the same way.
+venvPath = '.'
+venv = '.venv'
+
+# The tests import pygame as `pygame = None` when it is missing and skip, and
+# reach into renderers through mocks, so the Optional checks only add noise
+# there. Everything else still applies.
+[[tool.pyright.executionEnvironments]]
+root = 'tests'
+extraPaths = ['.', 'packaging']   # test_frozen_smoke imports version_info
+reportOptionalMemberAccess = false
+reportOptionalIterable = false
+reportOptionalOperand = false
+reportOptionalSubscript = false
+reportPossiblyUnboundVariable = false
+
+[tool.vulture]
+paths = ['main.py', 'game', 'render', 'packaging', 'tests', 'vulture_allowlist.py']
+min_confidence = 60

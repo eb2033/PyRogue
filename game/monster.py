@@ -20,6 +20,7 @@ knows to guarantee a rare+ drop on its death.
 import random
 
 from game.entity import Entity
+from game.rng import Rng
 from game.tiles import is_walkable
 
 # name -> (char, color, hp, power)
@@ -125,7 +126,7 @@ class Monster(Entity):
         return None
 
 
-def spawn_monsters(rooms, depth=1, rng=random):
+def spawn_monsters(rooms, depth=1, rng: Rng = random):
     """One roll per room (skipping the player's starting room) for 0-2 monsters."""
     monsters = []
     occupied = set()
@@ -143,7 +144,7 @@ def spawn_monsters(rooms, depth=1, rng=random):
     return monsters
 
 
-def spawn_boss(rooms, depth, rng=random):
+def spawn_boss(rooms, depth, rng: Rng = random):
     """One boss, placed in a room other than the player's start when possible."""
     room = rng.choice(rooms[1:]) if len(rooms) > 1 else rooms[-1]
     x = rng.randint(room.x1, room.x2 - 1)

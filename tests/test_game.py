@@ -16,14 +16,32 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from game.dungeon import generate_dungeon, make_empty_map, place_doors, place_stairs, wall_sides
 from game.entity import Entity
 from game.fov import compute_fov, update_visibility
-from game.item import (CHEST_COLOR, Chest, ITEM_KIND_WEIGHTS, Item, MAX_SCALING_DEPTH,
-                       POTION_CHEST_COLOR, RARITIES, rarity_weights_for_depth, roll_rarity,
-                       spawn_chests)
-from game.monster import (BOSS_REFERENCE_KIND, MONSTER_TYPES, ORTHOGONAL_STEPS, Monster,
-                          is_boss_level, scale_stats, spawn_boss, spawn_monsters,
-                          tier_for_depth)
+from game.item import (
+    CHEST_COLOR,
+    GEAR_BONUS,
+    ITEM_KIND_WEIGHTS,
+    MAX_SCALING_DEPTH,
+    POTION_CHEST_COLOR,
+    RARITIES,
+    Chest,
+    Item,
+    rarity_weights_for_depth,
+    roll_rarity,
+    spawn_chests,
+)
+from game.monster import (
+    BOSS_REFERENCE_KIND,
+    MONSTER_TYPES,
+    ORTHOGONAL_STEPS,
+    Monster,
+    is_boss_level,
+    scale_stats,
+    spawn_boss,
+    spawn_monsters,
+    tier_for_depth,
+)
 from game.rect import Rect
-from game.save import apply_dict, load_game, save_game, state_to_dict
+from game.save import apply_dict, load_game, save_game
 from game.state import GameState
 from game.tiles import DOOR, FLOOR, STAIRS_DOWN, WALL, is_walkable
 
@@ -633,7 +651,7 @@ class GearTests(unittest.TestCase):
         weapon = Item(0, 0, 'weapon', 'rare')
         weapon.apply(state.player, state.log)
         self.assertIs(state.player.weapon, weapon)
-        self.assertEqual(state.player.power, base_power + weapon.bonus)
+        self.assertEqual(state.player.power, base_power + GEAR_BONUS['rare'])
 
     def test_swapping_weapon_does_not_stack_bonus(self):
         random.seed(43)
@@ -643,7 +661,7 @@ class GearTests(unittest.TestCase):
         w1.apply(state.player, state.log)
         w2 = Item(state.player.x, state.player.y, 'weapon', 'epic')
         w2.apply(state.player, state.log)
-        self.assertEqual(state.player.power, base_power + w2.bonus)
+        self.assertEqual(state.player.power, base_power + GEAR_BONUS['epic'])
         self.assertIs(state.player.weapon, w2)
         self.assertIn('swap', state.messages[-1])
 
@@ -656,7 +674,7 @@ class GearTests(unittest.TestCase):
         common = Item(state.player.x, state.player.y, 'weapon', 'common')
         common.apply(state.player, state.log)
         self.assertIs(state.player.weapon, epic)
-        self.assertEqual(state.player.power, base_power + epic.bonus)
+        self.assertEqual(state.player.power, base_power + GEAR_BONUS['epic'])
         self.assertNotIn(common.name, state.player.inventory)
         self.assertIn('leave', state.messages[-1])
 
@@ -856,7 +874,7 @@ class SaveLoadTests(unittest.TestCase):
 
         self.assertEqual(fresh.player.weapon.rarity, 'rare')
         self.assertEqual(fresh.player.armor.rarity, 'uncommon')
-        self.assertEqual(fresh.player.power, fresh.player.base_power + weapon.bonus)
+        self.assertEqual(fresh.player.power, fresh.player.base_power + GEAR_BONUS['rare'])
         self.assertEqual(fresh.player.defense, armor.bonus)
 
     def test_chest_on_the_map_round_trips(self):

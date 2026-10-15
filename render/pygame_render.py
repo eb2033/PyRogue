@@ -105,7 +105,9 @@ class PygameRenderer(Renderer):
 
     def _relayout(self):
         """Pick up the current window surface and size, then repaint."""
-        self.canvas.surface = pygame.display.get_surface()
+        surface = pygame.display.get_surface()
+        assert surface is not None, 'no display surface'
+        self.canvas.surface = surface
         self.layout.fit(self.canvas.surface.get_size())
         self._repaint()
 
@@ -278,7 +280,7 @@ class PygameRenderer(Renderer):
                 t = (pygame.time.get_ticks() - start) / ms
                 if t >= 1:
                     break
-                self._show(lambda: paint(t))
+                self._show(lambda t=t: paint(t))
                 self._service_window()
                 pygame.time.wait(FRAME_MS)
         finally:

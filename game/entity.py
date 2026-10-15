@@ -3,7 +3,12 @@
 Monster and Item subtypes go here too — stretch goals #3 and #4.
 """
 
+from typing import TYPE_CHECKING
+
 from game.tiles import is_walkable
+
+if TYPE_CHECKING:
+    from game.item import Item
 
 
 class Entity:
@@ -42,3 +47,22 @@ class Entity:
         no way to answer.
         """
         return abs(self.x - other.x) + abs(self.y - other.y) == 1
+
+
+class Player(Entity):
+    """The player: an Entity plus the stats GameState and save.py fill in.
+
+    The defaults here are placeholders; GameState sets them from CLASS_STATS
+    straight after construction, and apply_dict overwrites them on load.
+    """
+
+    def __init__(self, x, y, char='@', color=1, name='you'):
+        super().__init__(x, y, char, color=color, name=name)
+        self.char_class = 'warrior'
+        self.hp = self.max_hp = 1
+        self.base_power = self.power = 0
+        self.defense = 0
+        self.weapon: Item | None = None
+        self.armor: Item | None = None
+        self.inventory: list[str] = []   # item names, newest last
+        self.alive = True

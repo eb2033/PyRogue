@@ -69,13 +69,13 @@ class TileLayoutTest(unittest.TestCase):
 
     def test_map_cells_are_square_tiles(self):
         self.layout.fit((1600, 900))
-        self.assertIn(self.layout.tile, ui.TILE_SIZES)
-        self.assertEqual(self.layout.map_cell_size(), (self.layout.tile, self.layout.tile))
-        self.assertEqual(self.layout.map_rect().size,
-                         (WIDTH * self.layout.tile, HEIGHT * self.layout.tile))
+        tile = self.layout.tile
+        assert tile is not None
+        self.assertIn(tile, ui.TILE_SIZES)
+        self.assertEqual(self.layout.map_cell_size(), (tile, tile))
+        self.assertEqual(self.layout.map_rect().size, (WIDTH * tile, HEIGHT * tile))
         x0, y0 = self.layout.map_cell_to_pixel(0, 0)
-        self.assertEqual(self.layout.map_cell_to_pixel(3, 2),
-                         (x0 + 3 * self.layout.tile, y0 + 2 * self.layout.tile))
+        self.assertEqual(self.layout.map_cell_to_pixel(3, 2), (x0 + 3 * tile, y0 + 2 * tile))
 
     def test_bigger_window_never_gets_smaller_tiles(self):
         sizes = [(1024, 600), (1280, 720), (1600, 900), (1920, 1080), (3840, 2160)]
@@ -430,7 +430,9 @@ class NoticeboardTest(unittest.TestCase):
     def test_common_window_sizes_get_bigger_tiles(self):
         for size, tile in [((1280, 720), 24), ((1600, 900), 32), ((1920, 1080), 40)]:
             with self.subTest(size=size):
-                self.assertGreaterEqual(fitted(size, tiles=True).tile, tile)
+                fitted_tile = fitted(size, tiles=True).tile
+                assert fitted_tile is not None
+                self.assertGreaterEqual(fitted_tile, tile)
 
     def test_board_and_page_are_drawn_behind_the_text(self):
         for tiles, size in [(False, (1280, 720)), (True, (1920, 1080)), (True, (600, 1000))]:
@@ -633,7 +635,7 @@ class PanelParityTest(unittest.TestCase):
                 self.paint(state, tiles, size)
                 class_row, items_row = self.row_bytes(1), self.row_bytes(4)
                 state.depth += 1
-                state.player.inventory.append(Item(0, 0))
+                state.player.inventory.append(Item(0, 0).name)
                 self.paint(state, tiles, size)
                 self.assertNotEqual(self.row_bytes(1), class_row)
                 self.assertNotEqual(self.row_bytes(4), items_row)

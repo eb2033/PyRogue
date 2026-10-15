@@ -1,6 +1,7 @@
-# Unit tests on every push and PR. Owned by WS-F (desktop_build_plan.md §5).
-# The pygame tests run headless through SDL's dummy drivers, which is what
-# makes the windowed renderer testable here at all.
+# Lint, type checks and unit tests on every push and PR. Owned by WS-F
+# (desktop_build_plan.md §5). The pygame tests run headless through SDL's
+# dummy drivers, which is what makes the windowed renderer testable here at
+# all.
 name: ci
 
 on:
@@ -9,6 +10,35 @@ on:
   workflow_dispatch:   # "Run workflow" on the Actions tab: tests + both frozen builds
 
 jobs:
+  # Static checks, configured in pyproject.toml and pinned in
+  # requirements-lint.txt. Same commands as a local checkout (CLAUDE.md):
+  # pyright reads the project's .venv, so the job makes one. Every step runs
+  # even if an earlier one failed, so one push shows every kind of problem.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-lint.txt
+      - run: python -m venv .venv
+      - run: .venv/bin/pip install -r requirements.txt -r requirements-lint.txt
+      - name: ruff check
+        run: .venv/bin/ruff check --output-format=github .
+      - name: ruff format
+        if: ${{ !cancelled() }}
+        run: .venv/bin/ruff format --check --diff .
+      - name: pyright
+        if: ${{ !cancelled() }}
+        run: .venv/bin/pyright
+      - name: vulture (unused code)
+        if: ${{ !cancelled() }}
+        run: .venv/bin/vulture
+
   test:
     strategy:
       fail-fast: false
@@ -25,8 +55,10 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
-          cache-dependency-path: requirements.txt
-      - run: python -m pip install -r requirements.txt
+          cache-dependency-path: |
+            requirements.txt
+            requirements-test.txt
+      - run: python -m pip install -r requirements.txt -r requirements-test.txt
       - run: python -m unittest discover -s tests -v
 
   # The terminal build must keep working with zero installs. game/ and the
@@ -51,7 +83,7 @@ jobs:
   # The slow part: freeze and smoke-test the exe on both OSes. Only for main,
   # tags and manual runs -- branches and PRs get the tests alone.
   frozen-build:
-    needs: test
+    needs: [lint, test]
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' &&

@@ -9,6 +9,7 @@ import collections
 import os
 import sys
 import unittest
+from typing import cast
 from unittest import mock
 
 os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
@@ -209,10 +210,12 @@ class PygameRendererTest(unittest.TestCase):
         self.renderer.draw(GameState(WIDTH, HEIGHT))
 
     def test_make_renderer_uses_the_bundled_font(self):
-        renderer = main.make_renderer('pygame', WIDTH, HEIGHT)
+        renderer = cast('PygameRenderer', main.make_renderer('pygame', WIDTH, HEIGHT))
         try:
-            self.assertTrue(renderer.layout.font_path.endswith(main.BUNDLED_FONT))
-            self.assertTrue(os.path.isfile(renderer.layout.font_path))
+            font_path = renderer.layout.font_path
+            assert font_path is not None
+            self.assertTrue(font_path.endswith(main.BUNDLED_FONT))
+            self.assertTrue(os.path.isfile(font_path))
         finally:
             renderer.close()
 
@@ -272,7 +275,7 @@ class PygameRendererTest(unittest.TestCase):
 
     def test_mouse_events_are_ignored_during_get_action(self):
         self.post(self.motion(), self.click(), self.click(button=3), key(pygame.K_d, 'd'))
-        with mock.patch.object(screens, 'option_at', lambda *a: 0) as hit:
+        with mock.patch.object(screens, 'option_at', lambda *a: 0):
             self.assertEqual(self.renderer.get_action(), Action.MOVE_E)
 
     def test_pause_keeps_keys_when_mouse_events_are_queued(self):
@@ -358,11 +361,11 @@ class PygameRendererTest(unittest.TestCase):
                              layout.map_cell_size())
         self.assertFalse(row.colliderect(player), 'the banner hides the player')
         self.renderer.draw(state)
-        with_overlay = cell_pixels(self.renderer, row, as_list=True)
+        with_overlay = pixel_list(self.renderer, row)
         state.game_over = False
         try:
             self.renderer.draw(state)
-            without = cell_pixels(self.renderer, row, as_list=True)
+            without = pixel_list(self.renderer, row)
         finally:
             state.game_over = True
             self.renderer.draw(state)
@@ -417,6 +420,7 @@ class TileModeTest(unittest.TestCase):
         # area on its tighter axis.
         view = self.renderer._view
         cell, _, ox, oy = camera.project(view, map_rect, layout.map_cell_size())
+        assert layout.tile is not None
         self.assertGreater(cell, layout.tile)
         self.assertLessEqual(min(map_rect.w // cell, map_rect.h // cell) - 1,
                              min(view.width, view.height))
@@ -437,6 +441,7 @@ class TileModeTest(unittest.TestCase):
         self.renderer.zoom_ms = self.renderer.impact_ms = 0
         state, _ = self.fight()
         screen = pygame.display.get_surface()
+        assert screen is not None
         self.renderer.draw(state)
         self.assertIsNotNone(self.renderer._view)
         zoomed = screen.copy()
@@ -512,7 +517,7 @@ class TileModeTest(unittest.TestCase):
 
     def test_tiles_env_zero_keeps_glyph_mode(self):
         with mock.patch.dict(os.environ, {'TILES': '0'}):
-            renderer = main.make_renderer('pygame', WIDTH, HEIGHT)
+            renderer = cast('PygameRenderer', main.make_renderer('pygame', WIDTH, HEIGHT))
         try:
             self.assertFalse(renderer.layout.tiles)
         finally:
@@ -521,7 +526,7 @@ class TileModeTest(unittest.TestCase):
     def test_make_renderer_uses_the_bundled_tiles_by_default(self):
         with mock.patch.dict(os.environ):
             os.environ.pop('TILES', None)
-            renderer = main.make_renderer('pygame', WIDTH, HEIGHT)
+            renderer = cast('PygameRenderer', main.make_renderer('pygame', WIDTH, HEIGHT))
         try:
             self.assertTrue(renderer.layout.tiles)
         finally:
@@ -556,15 +561,18 @@ class DefaultRendererTest(unittest.TestCase):
 
 # -- helpers -----------------------------------------------------------------
 
-def cell_pixels(renderer, rect, as_list=False):
+def pixel_list(renderer, rect):
     screen = renderer.canvas.surface
-    pixels = [tuple(screen.get_at((x, y)))[:3]
-              for y in range(rect.top, rect.bottom) for x in range(rect.left, rect.right)]
-    return pixels if as_list else set(pixels)
+    return [tuple(screen.get_at((x, y)))[:3]
+            for y in range(rect.top, rect.bottom) for x in range(rect.left, rect.right)]
+
+
+def cell_pixels(renderer, rect):
+    return set(pixel_list(renderer, rect))
 
 
 def lit_pixels(renderer, rect):
-    return [p for p in cell_pixels(renderer, rect, as_list=True) if p != BACKGROUND]
+    return [p for p in pixel_list(renderer, rect) if p != BACKGROUND]
 
 
 def find_tile(state, char):

@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 try:
-    import pygame  # noqa: F401
+    import pygame
 except ImportError:  # pragma: no cover - terminal-only checkout
     pygame = None
 
@@ -27,7 +27,7 @@ def run_main(*args, **env):
     full_env.update(env)
     return subprocess.run([sys.executable, str(ROOT / 'main.py'), *args],
                           cwd=env.get('PYROGUE_DATA_DIR'), env=full_env,
-                          capture_output=True, text=True, timeout=60)
+                          capture_output=True, text=True, timeout=60, check=False)
 
 
 class MainProcessTest(unittest.TestCase):

@@ -93,7 +93,8 @@ class CrashlogTest(unittest.TestCase):
         ''')
         env = dict(os.environ, PYROGUE_DATA_DIR=str(self.tmp / 'data'))
         proc = subprocess.run([sys.executable, '-c', script], cwd=str(paths.SOURCE_ROOT),
-                              env=env, capture_output=True, text=True, timeout=60)
+                              env=env, capture_output=True, text=True, timeout=60,
+                              check=False)
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn('RuntimeError: forced crash for the test', proc.stderr)
         text = (self.tmp / 'data' / 'crash.log').read_text(encoding='utf-8')

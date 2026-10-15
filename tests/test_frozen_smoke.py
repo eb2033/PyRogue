@@ -45,9 +45,9 @@ def visible_windows_of(pid):
     import ctypes
     from ctypes import wintypes
 
-    user32 = ctypes.WinDLL('user32', use_last_error=True)
+    user32 = ctypes.WinDLL('user32', use_last_error=True)  # pyright: ignore[reportAttributeAccessIssue]
     titles = []
-    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)  # pyright: ignore[reportAttributeAccessIssue]
 
     def callback(hwnd, _lparam):
         owner = wintypes.DWORD()
@@ -192,6 +192,7 @@ class NoticesTest(unittest.TestCase):
             key = next((k for k in sorted(LIBRARY_COMPONENTS, key=len, reverse=True)
                         if k in lib.lower()), None)
             self.assertIsNotNone(key, f'{lib}: unknown library, add it to the notices')
+            assert key is not None
             self.assertIn(LIBRARY_COMPONENTS[key], notices, lib)
 
     def test_build_scripts_ship_the_notices(self):

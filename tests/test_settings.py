@@ -99,7 +99,7 @@ class LoadTest(_EnvTest):
 
     def test_bom_and_crlf_are_tolerated(self):
         p = self.tmp / '.env'
-        p.write_bytes('﻿PYROGUE_T_A=1\r\nPYROGUE_T_B=2\r\n'.encode('utf-8'))
+        p.write_bytes('﻿PYROGUE_T_A=1\r\nPYROGUE_T_B=2\r\n'.encode())
         settings.load(p)
         self.assertEqual(os.environ['PYROGUE_T_A'], '1')
         self.assertEqual(os.environ['PYROGUE_T_B'], '2')

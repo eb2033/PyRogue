@@ -16,7 +16,7 @@ for callers that don't care about the split (tests, headless use).
 from game import paths
 from game.combat import Hit
 from game.dungeon import generate_dungeon, place_stairs
-from game.entity import Entity
+from game.entity import Entity, Player
 from game.fov import update_visibility
 from game.item import Chest, spawn_boss_chest, spawn_chests
 from game.monster import Monster, is_boss_level, spawn_boss, spawn_monsters
@@ -89,22 +89,18 @@ class GameState:
         hp, power = CLASS_STATS[char_class]
 
         px, py = self.rooms[0].center()
-        self.player = Entity(px, py, '@', color=1, name='you')
+        self.player = Player(px, py)
         self.player.char_class = char_class
         self.player.hp = hp
         self.player.max_hp = hp
         self.player.base_power = power
         self.player.power = power
-        self.player.defense = 0
-        self.player.weapon = None
-        self.player.armor = None
-        self.player.inventory = []
-        self.player.alive = True
 
-        self.entities = [self.player] + self._spawn_level_monsters() + spawn_chests(self.rooms)
+        self.entities: list[Entity] = [
+            self.player, *self._spawn_level_monsters(), *spawn_chests(self.rooms)]
 
         # Monsters still owing a turn in the current round. See end_player_phase.
-        self._pending_monsters = []
+        self._pending_monsters: list[Monster] = []
 
         self.update_fov()
 
@@ -234,7 +230,7 @@ class GameState:
         self.seen = [[False] * self.width for _ in range(self.height)]
 
         self.cancel_monster_phase()
-        self.entities = [self.player] + self._spawn_level_monsters() + spawn_chests(self.rooms)
+        self.entities = [self.player, *self._spawn_level_monsters(), *spawn_chests(self.rooms)]
         if is_boss_level(self.depth):
             self.log(f'You descend to level {self.depth}. Something powerful lurks here...')
         else:
@@ -273,9 +269,7 @@ class GameState:
         """
         self.update_fov()
         self._pending_monsters = [e for e in self.entities
-                                  if e is not self.player
-                                  and getattr(e, 'alive', True)
-                                  and getattr(e, 'take_turn', None) is not None]
+                                  if isinstance(e, Monster) and e.alive]
 
     def monster_phase_pending(self):
         return bool(self._pending_monsters)

@@ -49,7 +49,7 @@ def ink(index, default=INK):
     return INK_COLORS.get(index, default)
 
 
-def color(index, default=TEXT):
+def color(index: int, default: tuple[int, int, int] = TEXT) -> tuple[int, int, int]:
     """RGB for an Entity.color int, falling back for unknown values."""
     return COLORS.get(index, default)
 
