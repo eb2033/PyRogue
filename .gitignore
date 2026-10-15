@@ -5,6 +5,9 @@
 __pycache__/
 *.pyc
 .venv/
+.venv
+.hypothesis/
+.ruff_cache/
 
 # Build output (PyInstaller, see desktop_build_plan.md WS-E)
 build/

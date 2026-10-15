@@ -28,8 +28,7 @@ def _blocked(game_map, x, y, w, h):
     return not is_transparent(game_map, x, y)
 
 
-def _cast_light(game_map, visible, cx, cy, row, start, end, radius,
-                xx, xy, yx, yy, w, h):
+def _cast_light(game_map, visible, cx, cy, row, start, end, radius, xx, xy, yx, yy, w, h):
     if start < end:
         return
 
@@ -62,8 +61,22 @@ def _cast_light(game_map, visible, cx, cy, row, start, end, radius,
             else:
                 if wall and j < radius:
                     blocked = True
-                    _cast_light(game_map, visible, cx, cy, j + 1, start, l_slope,
-                                radius, xx, xy, yx, yy, w, h)
+                    _cast_light(
+                        game_map,
+                        visible,
+                        cx,
+                        cy,
+                        j + 1,
+                        start,
+                        l_slope,
+                        radius,
+                        xx,
+                        xy,
+                        yx,
+                        yy,
+                        w,
+                        h,
+                    )
                     new_start = r_slope
 
         if blocked:

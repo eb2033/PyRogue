@@ -10,8 +10,16 @@ from game import paths, settings
 
 _REAL_APP_DIR = paths.app_dir
 
-KEYS = ('PYROGUE_T_A', 'PYROGUE_T_B', 'PYROGUE_T_C', 'PYROGUE_T_D', 'PYROGUE_T_E',
-        'PYROGUE_T_F', 'PYROGUE_T_G', 'PYROGUE_T_INT')
+KEYS = (
+    'PYROGUE_T_A',
+    'PYROGUE_T_B',
+    'PYROGUE_T_C',
+    'PYROGUE_T_D',
+    'PYROGUE_T_E',
+    'PYROGUE_T_F',
+    'PYROGUE_T_G',
+    'PYROGUE_T_INT',
+)
 
 
 class _EnvTest(unittest.TestCase):
@@ -47,18 +55,23 @@ class EnvIntTest(_EnvTest):
 
 class LoadTest(_EnvTest):
     def test_parses_values_comments_and_quotes(self):
-        path = self.write('.env', '\n'.join([
-            '# a comment',
-            '',
-            '   ',
-            'PYROGUE_T_A=1',
-            '  PYROGUE_T_B  =  two words  ',
-            'PYROGUE_T_C="quoted # not a comment"',
-            "PYROGUE_T_D='single'",
-            'PYROGUE_T_E=40 # trailing comment',
-            'export PYROGUE_T_F=exported',
-            'PYROGUE_T_G=',
-        ]))
+        path = self.write(
+            '.env',
+            '\n'.join(
+                [
+                    '# a comment',
+                    '',
+                    '   ',
+                    'PYROGUE_T_A=1',
+                    '  PYROGUE_T_B  =  two words  ',
+                    'PYROGUE_T_C="quoted # not a comment"',
+                    "PYROGUE_T_D='single'",
+                    'PYROGUE_T_E=40 # trailing comment',
+                    'export PYROGUE_T_F=exported',
+                    'PYROGUE_T_G=',
+                ]
+            ),
+        )
         settings.load(path)
         self.assertEqual(os.environ['PYROGUE_T_A'], '1')
         self.assertEqual(os.environ['PYROGUE_T_B'], 'two words')
@@ -77,14 +90,19 @@ class LoadTest(_EnvTest):
         self.assertEqual(applied, {'PYROGUE_T_B': 'from-file'})
 
     def test_garbage_lines_are_skipped(self):
-        path = self.write('.env', '\n'.join([
-            'this line has no equals sign',
-            '=value-without-key',
-            'BAD KEY=spaces in key',
-            '"',
-            'PYROGUE_T_A=ok',
-            '\x00\x01 binary-ish junk',
-        ]))
+        path = self.write(
+            '.env',
+            '\n'.join(
+                [
+                    'this line has no equals sign',
+                    '=value-without-key',
+                    'BAD KEY=spaces in key',
+                    '"',
+                    'PYROGUE_T_A=ok',
+                    '\x00\x01 binary-ish junk',
+                ]
+            ),
+        )
         settings.load(path)
         self.assertEqual(os.environ['PYROGUE_T_A'], 'ok')
         self.assertNotIn('BAD KEY', os.environ)
@@ -99,7 +117,7 @@ class LoadTest(_EnvTest):
 
     def test_bom_and_crlf_are_tolerated(self):
         p = self.tmp / '.env'
-        p.write_bytes('﻿PYROGUE_T_A=1\r\nPYROGUE_T_B=2\r\n'.encode('utf-8'))
+        p.write_bytes('﻿PYROGUE_T_A=1\r\nPYROGUE_T_B=2\r\n'.encode())
         settings.load(p)
         self.assertEqual(os.environ['PYROGUE_T_A'], '1')
         self.assertEqual(os.environ['PYROGUE_T_B'], '2')
@@ -162,9 +180,11 @@ class FindConfigTest(_EnvTest):
         exe_dir.mkdir()
         p = self.write('dist/.env', 'X=1')
         # Undo setUp's app_dir() stub so the real frozen branch runs.
-        with mock.patch.object(paths, 'app_dir', _REAL_APP_DIR), \
-                mock.patch.object(paths.sys, 'frozen', True, create=True), \
-                mock.patch.object(paths.sys, 'executable', str(exe_dir / 'PyRogue.exe')):
+        with (
+            mock.patch.object(paths, 'app_dir', _REAL_APP_DIR),
+            mock.patch.object(paths.sys, 'frozen', True, create=True),
+            mock.patch.object(paths.sys, 'executable', str(exe_dir / 'PyRogue.exe')),
+        ):
             self.assertEqual(settings.find_config(), exe_dir.resolve() / '.env')
         self.assertTrue(p.is_file())
 

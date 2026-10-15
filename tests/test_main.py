@@ -16,18 +16,23 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 try:
-    import pygame  # noqa: F401
+    import pygame
 except ImportError:  # pragma: no cover - terminal-only checkout
     pygame = None
 
 
 def run_main(*args, **env):
-    full_env = {k: v for k, v in os.environ.items()
-                if k not in ('RENDERER', 'PYROGUE_CONFIG')}
+    full_env = {k: v for k, v in os.environ.items() if k not in ('RENDERER', 'PYROGUE_CONFIG')}
     full_env.update(env)
-    return subprocess.run([sys.executable, str(ROOT / 'main.py'), *args],
-                          cwd=env.get('PYROGUE_DATA_DIR'), env=full_env,
-                          capture_output=True, text=True, timeout=60)
+    return subprocess.run(
+        [sys.executable, str(ROOT / 'main.py'), *args],
+        cwd=env.get('PYROGUE_DATA_DIR'),
+        env=full_env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
 
 
 class MainProcessTest(unittest.TestCase):
@@ -39,8 +44,13 @@ class MainProcessTest(unittest.TestCase):
     @unittest.skipUnless(pygame, 'pygame-ce not installed')
     def test_crash_is_logged_and_still_reported(self):
         # A display that can't open is a real-world crash for the windowed build.
-        result = run_main('--renderer', 'pygame', PYROGUE_DATA_DIR=str(self.data),
-                          SDL_VIDEODRIVER='no-such-driver', PYGAME_HIDE_SUPPORT_PROMPT='1')
+        result = run_main(
+            '--renderer',
+            'pygame',
+            PYROGUE_DATA_DIR=str(self.data),
+            SDL_VIDEODRIVER='no-such-driver',
+            PYGAME_HIDE_SUPPORT_PROMPT='1',
+        )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Traceback', result.stderr, 'the default hook must still run')
         log = (self.data / 'crash.log').read_text(encoding='utf-8')

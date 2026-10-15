@@ -13,12 +13,20 @@ try:
 except ImportError:  # pragma: no cover - terminal-only checkout
     pygame = None
 
-from game.item import Item
+from typing import Any, cast
+from unittest import mock
+
+from game.item import BELT_SLOTS, POTION_HEAL, Item, belt_slot_label
 from game.state import GameState
 from render.menu import Menu
 
 if pygame is not None:
     from render import noticeboard, palette, screens, ui
+
+try:
+    from render import curses_render
+except ImportError:  # pragma: no cover - Windows without windows-curses
+    curses_render = None
 
 WIDTH, HEIGHT = 40, 20
 
@@ -62,20 +70,23 @@ class TileLayoutTest(unittest.TestCase):
         window = pygame.Rect((0, 0), size)
         map_rect, panel_rect = self.layout.map_rect(), self.layout.panel_rect()
         self.assertTrue(window.contains(map_rect), (map_rect, size))
-        panel_text = pygame.Rect(panel_rect.topleft,
-                                 (panel_rect.w, self.layout.cell_h * ui.PANEL_ROWS))
+        panel_text = pygame.Rect(
+            panel_rect.topleft, (panel_rect.w, self.layout.cell_h * ui.PANEL_ROWS)
+        )
         self.assertTrue(window.contains(panel_text), (panel_text, size))
         self.assertFalse(map_rect.colliderect(panel_rect))
 
     def test_map_cells_are_square_tiles(self):
         self.layout.fit((1600, 900))
-        self.assertIn(self.layout.tile, ui.TILE_SIZES)
-        self.assertEqual(self.layout.map_cell_size(), (self.layout.tile, self.layout.tile))
-        self.assertEqual(self.layout.map_rect().size,
-                         (WIDTH * self.layout.tile, HEIGHT * self.layout.tile))
+        tile = cast(int, self.layout.tile)
+        self.assertIn(tile, ui.TILE_SIZES)
+        self.assertEqual(self.layout.map_cell_size(), (tile, tile))
+        self.assertEqual(self.layout.map_rect().size, (WIDTH * tile, HEIGHT * tile))
         x0, y0 = self.layout.map_cell_to_pixel(0, 0)
-        self.assertEqual(self.layout.map_cell_to_pixel(3, 2),
-                         (x0 + 3 * self.layout.tile, y0 + 2 * self.layout.tile))
+        self.assertEqual(
+            self.layout.map_cell_to_pixel(3, 2),
+            (x0 + 3 * tile, y0 + 2 * tile),
+        )
 
     def test_bigger_window_never_gets_smaller_tiles(self):
         sizes = [(1024, 600), (1280, 720), (1600, 900), (1920, 1080), (3840, 2160)]
@@ -89,8 +100,9 @@ class TileLayoutTest(unittest.TestCase):
 
     def test_panel_font_stays_readable_when_tiles_grow(self):
         self.layout.fit((1920, 1080))
-        self.assertGreaterEqual(self.layout.font.get_height(),
-                                self.layout._font(ui.MIN_TILE_FONT_SIZE).get_height())
+        self.assertGreaterEqual(
+            self.layout.font.get_height(), self.layout._font(ui.MIN_TILE_FONT_SIZE).get_height()
+        )
 
     def test_tiny_window_does_not_raise(self):
         self.layout.fit((200, 100))
@@ -104,8 +116,16 @@ class TileLayoutTest(unittest.TestCase):
 
 
 # Window sizes every layout test sweeps: landscape, 4K, portrait, narrow, tiny.
-SIZES = [(1280, 720), (1920, 1080), (3840, 2160), (800, 1200), (700, 900),
-         (1024, 600), (2000, 700), (300, 200)]
+SIZES = [
+    (1280, 720),
+    (1920, 1080),
+    (3840, 2160),
+    (800, 1200),
+    (700, 900),
+    (1024, 600),
+    (2000, 700),
+    (300, 200),
+]
 
 
 def fitted(size, tiles=False):
@@ -124,8 +144,7 @@ class StackedLayoutTest(unittest.TestCase):
         self.assertFalse(map_rect.colliderect(panel_rect), (map_rect, panel_rect))
         self.assertTrue(window.contains(map_rect), (map_rect, size))
         # The panel's minimum rows of text, at its full width, are on screen.
-        panel_text = pygame.Rect(panel_rect.topleft,
-                                 (panel_rect.w, layout.cell_h * ui.PANEL_ROWS))
+        panel_text = pygame.Rect(panel_rect.topleft, (panel_rect.w, layout.cell_h * ui.PANEL_ROWS))
         self.assertTrue(window.contains(panel_text), (panel_text, size))
         self.assertGreaterEqual(layout.rows - layout.panel_y, ui.PANEL_ROWS)
         self.assertGreaterEqual(layout.panel_width(), ui.PANEL_COLS)
@@ -186,8 +205,9 @@ class StackedLayoutTest(unittest.TestCase):
 
     def test_4k_tile_panel_font_grows_past_the_tile_cap(self):
         layout = fitted((3840, 2160), tiles=True)
-        self.assertGreater(layout.font.get_height(),
-                           layout._font(ui.MAX_TILE_FONT_SIZE).get_height())
+        self.assertGreater(
+            layout.font.get_height(), layout._font(ui.MAX_TILE_FONT_SIZE).get_height()
+        )
 
 
 @unittest.skipUnless(pygame, 'pygame-ce not installed')
@@ -241,8 +261,9 @@ class CanvasBoldTest(unittest.TestCase):
         self.canvas = ui.Canvas(pygame.Surface((1200, 600)), self.layout)
 
     def cell_bytes(self, x, y):
-        return pygame.image.tobytes(self.canvas.surface.subsurface(self.layout.cell_rect(x, y)),
-                                    'RGB')
+        return pygame.image.tobytes(
+            self.canvas.surface.subsurface(self.layout.cell_rect(x, y)), 'RGB'
+        )
 
     def test_bold_glyph_differs_from_plain_and_is_cached_separately(self):
         self.canvas.clear()
@@ -318,10 +339,12 @@ class OptionAtTest(unittest.TestCase):
                     menu = Menu(options)
                     for i, bar in self.highlights(layout, menu, banner).items():
                         with self.subTest(tiles=tiles, size=size, banner=banner, option=i):
-                            for point in (bar.center, bar.topleft,
-                                          (bar.right - 1, bar.bottom - 1)):
-                                self.assertEqual(
-                                    screens.option_at(layout, menu, banner, point), i)
+                            for point in (
+                                bar.center,
+                                bar.topleft,
+                                (bar.right - 1, bar.bottom - 1),
+                            ):
+                                self.assertEqual(screens.option_at(layout, menu, banner, point), i)
 
     def test_rows_between_and_around_options_hit_nothing(self):
         for tiles, size, layout in self.layouts():
@@ -330,9 +353,13 @@ class OptionAtTest(unittest.TestCase):
             first, second = self.highlights(layout, menu, banner).values()
             x = first.centerx
             with self.subTest(tiles=tiles, size=size):
-                for point in [(x, first.top - 1), (x, first.bottom + layout.cell_h // 2),
-                              (x, second.bottom), (layout.origin_x, first.centery),
-                              (-1, -1)]:
+                for point in [
+                    (x, first.top - 1),
+                    (x, first.bottom + layout.cell_h // 2),
+                    (x, second.bottom),
+                    (layout.origin_x, first.centery),
+                    (-1, -1),
+                ]:
                     self.assertIsNone(screens.option_at(layout, menu, banner, point), point)
 
     def test_hit_area_spans_the_widest_option(self):
@@ -342,8 +369,9 @@ class OptionAtTest(unittest.TestCase):
         self.assertLess(archer.w, warrior.w)
         for x in (warrior.left, warrior.right - 1):
             self.assertEqual(screens.option_at(layout, menu, ['x'], (x, archer.centery)), 1)
-        self.assertIsNone(screens.option_at(layout, menu, ['x'],
-                                            (warrior.right + 1, archer.centery)))
+        self.assertIsNone(
+            screens.option_at(layout, menu, ['x'], (warrior.right + 1, archer.centery))
+        )
 
     def test_hint_wraps_in_a_narrow_grid(self):
         layout = fitted((600, 1000))
@@ -375,51 +403,60 @@ class PaintTest(unittest.TestCase):
         # Windows CI, Liberation Mono) even though ~1600 pixels are lit.
         area = self.canvas.surface.subsurface(rect)
         untouched = pygame.mask.from_threshold(area, palette.BACKGROUND, (1, 1, 1, 255))
-        self.assertLess(untouched.count(), area.get_width() * area.get_height(),
-                        'nothing drawn in this area')
+        self.assertLess(
+            untouched.count(), area.get_width() * area.get_height(), 'nothing drawn in this area'
+        )
 
     def test_panel(self):
         ui.paint_panel(self.canvas, GameState(WIDTH, HEIGHT))
         self.assertDrewSomething(self.layout.panel_rect())
 
     def test_menu(self):
-        screens.paint_menu(self.canvas, Menu(screens.CLASS_OPTIONS), ['Choose your class'],
-                           screens.CLASS_DESCRIPTIONS)
+        screens.paint_menu(
+            self.canvas,
+            Menu(screens.CLASS_OPTIONS),
+            ['Choose your class'],
+            screens.CLASS_DESCRIPTIONS,
+        )
         self.assertDrewSomething(self.canvas.surface.get_rect())
 
     def test_game_over(self):
-        screens.paint_game_over(self.canvas, GameState(WIDTH, HEIGHT))
+        screens.paint_game_over(self.canvas)
         self.assertDrewSomething(self.layout.map_rect())
 
 
 @unittest.skipUnless(pygame, 'pygame-ce not installed')
 class GameOverBannerTest(unittest.TestCase):
-    """The banner sits at the end of the map away from the player."""
+    """The banner is centred across the top of the map, its title four
+    times the map's font."""
 
-    def test_banner_never_covers_the_player(self):
+    def test_banner_is_centred_at_the_top_of_the_map(self):
         for tiles in (False, True):
             for width, height in [(WIDTH, HEIGHT), (20, 10)]:
-                layout = ui.Layout(width, height, tiles=tiles)
-                layout.fit((1280, 720))
-                state = GameState(width, height)
-                for y in (1, height // 2 - 1, height // 2, height - 2):
-                    with self.subTest(tiles=tiles, map=(width, height), player_y=y):
-                        state.player.y = y
-                        box = screens.game_over_rect(layout, state)
-                        player = pygame.Rect(layout.map_cell_to_pixel(state.player.x, y),
-                                             layout.map_cell_size())
-                        self.assertFalse(box.colliderect(player))
-                        self.assertTrue(layout.map_rect().contains(box))
+                with self.subTest(tiles=tiles, map=(width, height)):
+                    layout = ui.Layout(width, height, tiles=tiles)
+                    layout.fit((1280, 720))
+                    box = screens.game_over_rect(layout)
+                    area = layout.map_rect()
+                    self.assertTrue(area.contains(box))
+                    self.assertEqual(box.centerx, area.centerx)
+                    self.assertLess(box.top - area.top, layout.cell_h * 2)
 
-    def test_banner_goes_to_the_far_end(self):
+    def test_title_is_four_times_the_map_font(self):
         layout = fitted((1280, 720), tiles=True)
-        state = GameState(WIDTH, HEIGHT)
-        state.player.y = 2
-        self.assertGreater(screens.game_over_rect(layout, state).centery,
-                           layout.map_rect().centery)
-        state.player.y = HEIGHT - 3
-        self.assertLess(screens.game_over_rect(layout, state).centery,
-                        layout.map_rect().centery)
+        title_font, hint_font = screens.game_over_fonts(layout)
+        self.assertEqual(title_font.get_height(), layout._font(layout.font_size * 4).get_height())
+        self.assertEqual(hint_font, layout.font)
+
+    def test_title_shrinks_to_fit_a_narrow_map(self):
+        layout = ui.Layout(12, 10, tiles=False)
+        layout.fit((1280, 720))
+        title_font, _ = screens.game_over_fonts(layout)
+        self.assertLessEqual(
+            title_font.size(screens.GAME_OVER_TITLE)[0],
+            layout.map_rect().width - 2 * layout.cell_w,
+        )
+        self.assertGreaterEqual(title_font.get_height(), layout.font.get_height())
 
 
 @unittest.skipUnless(pygame, 'pygame-ce not installed')
@@ -430,7 +467,7 @@ class NoticeboardTest(unittest.TestCase):
     def test_common_window_sizes_get_bigger_tiles(self):
         for size, tile in [((1280, 720), 24), ((1600, 900), 32), ((1920, 1080), 40)]:
             with self.subTest(size=size):
-                self.assertGreaterEqual(fitted(size, tiles=True).tile, tile)
+                self.assertGreaterEqual(cast(int, fitted(size, tiles=True).tile), tile)
 
     def test_board_and_page_are_drawn_behind_the_text(self):
         for tiles, size in [(False, (1280, 720)), (True, (1920, 1080)), (True, (600, 1000))]:
@@ -447,8 +484,10 @@ class NoticeboardTest(unittest.TestCase):
                 self.assertNotEqual(frame, palette.BACKGROUND)
                 self.assertNotEqual(frame, palette.PAGE)
                 # Paper under the text is flat: a blank row reads as pure PAGE.
-                blank = pygame.Rect(layout.cell_to_pixel(layout.text_x, layout.text_y + 5),
-                                    (layout.text_width() * layout.cell_w, layout.cell_h))
+                blank = pygame.Rect(
+                    layout.cell_to_pixel(layout.text_x, layout.text_y + 5),
+                    (layout.text_width() * layout.cell_w, layout.cell_h),
+                )
                 area = surface.subsurface(blank)
                 paper = pygame.mask.from_threshold(area, palette.PAGE, (1, 1, 1, 255))
                 self.assertEqual(paper.count(), area.get_width() * area.get_height())
@@ -478,13 +517,18 @@ class PanelParityTest(unittest.TestCase):
       [x] 0  title                        [x] 6  '-- gear --'
       [x] 1  'Class - Depth: n' (live)    [x] 7-8  weapon, rarity ink / (none)
       [x] 2  HP, red at <= 1/3 max        [x] 9-10 armor, rarity ink / (none)
-          + bar beside it (extra)         [x] 12 class-dependent controls line
-      [x] 3  ATK / DEF                    [x] 13-15 shared controls
-      [x] 4  item count (live)            [x] 17 '-- log --', 18+ newest messages
+          + bar beside it (extra)         [x] 11 potion belt, 3 slots, rarity ink
+      [x] 3  ATK / DEF                    [x] 13 class-dependent controls line
+      [x] 4  item count (live)            [x] 14-16 shared controls (+ 'h drink')
+                                          [x] 18 '-- log --', 19+ newest messages
     """
 
-    LAYOUTS = [(False, (1280, 720)), (False, (800, 1200)), (True, (1920, 1080)),
-               (True, (700, 900))]
+    LAYOUTS = [
+        (False, (1280, 720)),
+        (False, (800, 1200)),
+        (True, (1920, 1080)),
+        (True, (700, 900)),
+    ]
 
     def paint(self, state, tiles, size):
         self.layout = fitted(size, tiles)
@@ -495,8 +539,10 @@ class PanelParityTest(unittest.TestCase):
     def row_rect(self, row, first_col=0, cols=None):
         layout = self.layout
         cols = layout.text_width() - first_col if cols is None else cols
-        return pygame.Rect(layout.cell_to_pixel(layout.text_x + first_col, layout.text_y + row),
-                           (cols * layout.cell_w, layout.cell_h))
+        return pygame.Rect(
+            layout.cell_to_pixel(layout.text_x + first_col, layout.text_y + row),
+            (cols * layout.cell_w, layout.cell_h),
+        )
 
     def pixels(self, rect, color=None):
         """Ink (non-page) pixels in `rect`, or pixels close to `color`."""
@@ -531,22 +577,46 @@ class PanelParityTest(unittest.TestCase):
         return state
 
     def test_rows_follow_curses_with_two_row_gear_slots(self):
-        # _draw_panel: HP on row 2, gear_start = 6, controls_start =
-        # gear_start + 4, log_start = controls_start + 5 -- here each of the
-        # two gear slots takes one extra row.
-        self.assertEqual((ui.HP_ROW, ui.GEAR_TOP, ui.CONTROLS_TOP, ui.LOG_TOP),
-                         (2, 6, 6 + 4 + 2, 6 + 4 + 2 + 5))
+        # _draw_panel: HP on row 2, gear_start = 6, belt on gear_start + 3,
+        # controls_start = gear_start + 5, log_start = controls_start + 5 --
+        # here each of the two gear slots takes one extra row.
+        self.assertEqual(
+            (ui.HP_ROW, ui.GEAR_TOP, ui.BELT_ROW, ui.CONTROLS_TOP, ui.LOG_TOP),
+            (2, 6, 6 + 3 + 2, 6 + 5 + 2, 6 + 5 + 2 + 5),
+        )
 
     def test_every_text_row_is_painted_and_the_gaps_are_not(self):
-        rows = [0, 1, ui.HP_ROW, 3, 4, ui.GEAR_TOP, ui.GEAR_TOP + 1, ui.GEAR_TOP + 3,
-                ui.CONTROLS_TOP, ui.CONTROLS_TOP + 1, ui.CONTROLS_TOP + 2,
-                ui.CONTROLS_TOP + 3, ui.LOG_TOP, ui.LOG_TOP + 1, ui.LOG_TOP + 2]
+        rows = [
+            0,
+            1,
+            ui.HP_ROW,
+            3,
+            4,
+            ui.GEAR_TOP,
+            ui.GEAR_TOP + 1,
+            ui.GEAR_TOP + 3,
+            ui.BELT_ROW,
+            ui.CONTROLS_TOP,
+            ui.CONTROLS_TOP + 1,
+            ui.CONTROLS_TOP + 2,
+            ui.CONTROLS_TOP + 3,
+            ui.LOG_TOP,
+            ui.LOG_TOP + 1,
+            ui.LOG_TOP + 2,
+        ]
         for _ in self.each_layout():
             for row in rows:
                 self.assertGreater(self.pixels(self.row_rect(row)), 0, f'row {row} blank')
-            # No gear: a slot's stats row stays empty.
-            for blank in (5, ui.GEAR_TOP + 2, ui.GEAR_TOP + 4, ui.GEAR_TOP + 5,
-                          ui.CONTROLS_TOP + 4, ui.LOG_TOP + 3):
+            # Every run starts with a weapon, so its stats row (GEAR_TOP + 2)
+            # is drawn; no armor, so the armor's stats row stays empty.
+            self.assertGreater(self.pixels(self.row_rect(ui.GEAR_TOP + 2)), 0)
+            for blank in (
+                5,
+                ui.GEAR_TOP + 4,
+                ui.BELT_ROW + 1,
+                ui.CONTROLS_TOP + 4,
+                ui.LOG_TOP + 3,
+            ):
                 self.assertEqual(self.pixels(self.row_rect(blank)), 0, f'row {blank} drawn')
 
     def hp_colours(self, hp):
@@ -554,8 +624,12 @@ class PanelParityTest(unittest.TestCase):
         for _ in self.each_layout(lambda: self.state(hp=hp)):
             text = self.row_rect(ui.HP_ROW, 0, ui.HP_BAR_COL)
             bar = self.row_rect(ui.HP_ROW, ui.HP_BAR_COL, ui.HP_BAR_COLS)
-            yield (self.pixels(text, palette.INK_DANGER), self.pixels(bar, palette.INK_DANGER),
-                   self.pixels(bar, ui.HP_BAR_COLOR), self.pixels(bar, ui.HP_BAR_TRACK))
+            yield (
+                self.pixels(text, palette.INK_DANGER),
+                self.pixels(bar, palette.INK_DANGER),
+                self.pixels(bar, ui.HP_BAR_COLOR),
+                self.pixels(bar, ui.HP_BAR_TRACK),
+            )
 
     def test_full_hp_is_plain_text_and_a_full_green_bar(self):
         max_hp = self.state().player.max_hp
@@ -598,6 +672,7 @@ class PanelParityTest(unittest.TestCase):
             state.player.weapon = Item(0, 0, 'weapon', 'epic')
             state.player.armor = Item(0, 0, 'armor', 'uncommon')
             return state
+
         for state in self.each_layout(make):
             epic = palette.ink(state.player.weapon.color)
             uncommon = palette.ink(state.player.armor.color)
@@ -633,7 +708,7 @@ class PanelParityTest(unittest.TestCase):
                 self.paint(state, tiles, size)
                 class_row, items_row = self.row_bytes(1), self.row_bytes(4)
                 state.depth += 1
-                state.player.inventory.append(Item(0, 0))
+                state.player.inventory.append(Item(0, 0).name)
                 self.paint(state, tiles, size)
                 self.assertNotEqual(self.row_bytes(1), class_row)
                 self.assertNotEqual(self.row_bytes(4), items_row)
@@ -645,6 +720,7 @@ class PanelParityTest(unittest.TestCase):
             state = self.state()
             state.messages[:] = [f'message {i}' for i in range(30)]
             return state
+
         for _ in self.each_layout(make):
             lines = self.layout.log_lines()
             self.assertGreaterEqual(lines, ui.MIN_LOG_LINES)
@@ -662,10 +738,12 @@ class PanelParityTest(unittest.TestCase):
             state = self.state()
             state.messages[:] = ['word ' * 40, 'x' * 120]
             return state
+
         for _ in self.each_layout(make):
             panel = self.layout.panel_rect()
-            right = pygame.Rect(panel.right, panel.top,
-                                self.canvas.surface.get_width() - panel.right, panel.height)
+            right = pygame.Rect(
+                panel.right, panel.top, self.canvas.surface.get_width() - panel.right, panel.height
+            )
             if right.width > 0:
                 self.assertEqual(self.drawn(right), 0, 'text overran the panel')
             self.assertGreater(self.pixels(self.row_rect(ui.LOG_TOP + 2)), 0, 'not wrapped')
@@ -673,6 +751,120 @@ class PanelParityTest(unittest.TestCase):
     def test_panel_paints_nothing_on_the_map(self):
         for _ in self.each_layout():
             self.assertEqual(self.drawn(self.layout.map_rect()), 0)
+
+    def belt_slot_rects(self, belt):
+        """Pixel rects of the three belt slots' text on BELT_ROW, from the
+        same column arithmetic as ui._paint_belt."""
+        col, rects = len('Belt: '), []
+        for i in range(BELT_SLOTS):
+            text = belt_slot_label(belt[i] if i < len(belt) else None)
+            if i == 0:
+                text = f'[{text}]'
+            rects.append(self.row_rect(ui.BELT_ROW, col, len(text)))
+            col += len(text) + 1
+        return rects
+
+    def test_belt_shows_three_slots_each_in_its_rarity_ink(self):
+        def make():
+            state = self.state()
+            state.belt[:] = [Item(0, 0, 'potion', 'epic'), Item(0, 0, 'potion', 'uncommon')]
+            return state
+
+        for state in self.each_layout(make):
+            first, second, empty = self.belt_slot_rects(state.belt)
+            epic, uncommon = palette.ink(6), palette.ink(4)
+            self.assertGreater(self.pixels(first, epic), 0)
+            self.assertEqual(self.pixels(first, uncommon), 0)
+            self.assertGreater(self.pixels(second, uncommon), 0)
+            self.assertEqual(self.pixels(second, epic), 0)
+            # The empty third slot is drawn ('---') in plain ink.
+            self.assertGreater(self.pixels(empty, palette.INK), 0)
+            self.assertEqual(self.pixels(empty, epic) + self.pixels(empty, uncommon), 0)
+
+    def test_belt_row_changes_with_its_contents(self):
+        for tiles, size in self.LAYOUTS:
+            with self.subTest(tiles=tiles, size=size):
+                state = self.state()
+                self.paint(state, tiles, size)
+                empty = self.row_bytes(ui.BELT_ROW)
+                self.assertGreater(self.pixels(self.row_rect(ui.BELT_ROW)), 0)
+                state.belt.append(Item(0, 0, 'potion', 'common'))
+                self.paint(state, tiles, size)
+                self.assertNotEqual(self.row_bytes(ui.BELT_ROW), empty)
+
+
+class _FakeScreen:
+    """Just enough of a curses window for CursesRenderer._draw_panel:
+    records every addstr as (y, x, text, attr)."""
+
+    def __init__(self, rows=40, cols=120):
+        self.size = (rows, cols)
+        self.writes = []
+
+    def getmaxyx(self):
+        return self.size
+
+    def addstr(self, y, x, text, attr=0):
+        self.writes.append((y, x, text, attr))
+
+
+@unittest.skipUnless(curses_render, 'curses not available')
+class CursesBeltTest(unittest.TestCase):
+    """The terminal panel's belt line, without a terminal: _draw_panel
+    against a recording stand-in window, color_pair patched (it needs
+    initscr). The pygame side is PanelParityTest's belt tests."""
+
+    def draw(self, belt):
+        state = GameState(WIDTH, HEIGHT)
+        state.belt[:] = belt
+        renderer = curses_render.CursesRenderer.__new__(curses_render.CursesRenderer)
+        screen = _FakeScreen()
+        renderer.stdscr = cast(Any, screen)
+        with mock.patch.object(curses_render.curses, 'color_pair', lambda n: n << 8):
+            renderer._draw_panel(state)
+        return state, screen.writes
+
+    def belt_writes(self, writes):
+        row = 6 + 3  # gear_start + 3, as in PanelParityTest's row test
+        return [(x, text, attr) for y, x, text, attr in writes if y == row]
+
+    def test_three_slots_first_bracketed_in_rarity_colour(self):
+        epic, common = Item(0, 0, 'potion', 'epic'), Item(0, 0, 'potion', 'common')
+        state, writes = self.draw([epic, common])
+        line = self.belt_writes(writes)
+        texts = [text for _, text, _ in line]
+        self.assertEqual(
+            texts, ['Belt: ', f'[+{POTION_HEAL["epic"]}]', f'+{POTION_HEAL["common"]}', '---']
+        )
+        attrs = [attr for _, _, attr in line]
+        self.assertEqual(attrs[1], epic.color << 8)
+        self.assertEqual(attrs[2], common.color << 8)
+        # Slots never overlap one another.
+        for (x1, t1, _), (x2, _, _) in zip(line, line[1:]):
+            self.assertGreater(x2, x1 + len(t1) - 1)
+
+    def test_empty_belt_shows_three_empty_slots(self):
+        _, writes = self.draw([])
+        texts = [text for _, text, _ in self.belt_writes(writes)]
+        self.assertEqual(texts, ['Belt: ', '[---]', '---', '---'])
+
+    def test_belt_row_is_its_own(self):
+        _, writes = self.draw([])
+        rows = [y for y, _, _, _ in writes]
+        # Only the belt's four writes land on its row; controls moved down.
+        self.assertEqual(rows.count(9), 4)
+        self.assertIn((11, 'wasd/arrows move'), [(y, t) for y, _, t, _ in writes])
+        self.assertIn((14, 'h  drink  q  quit'), [(y, t) for y, _, t, _ in writes])
+
+
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
+class GearLineSignTest(unittest.TestCase):
+    def test_bonus_is_signed_once(self):
+        _, rapier, _ = ui._gear_lines('Weapon', Item(0, 0, 'rapier', 'common'), 'atk')
+        self.assertIn('-1 atk', rapier)
+        self.assertNotIn('+-', rapier)
+        _, sword, _ = ui._gear_lines('Weapon', Item(0, 0, 'great_sword', 'common'), 'atk')
+        self.assertIn('+2 atk', sword)
 
 
 if __name__ == '__main__':

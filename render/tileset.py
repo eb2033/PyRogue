@@ -50,18 +50,20 @@ class Tileset:
         self.margin = 0
         self._entries = {}
         self._sheet_files = {}
-        self._sheets = None   # loaded lazily: convert_alpha() needs a display
+        self._sheets: dict[str, pygame.Surface] | None = (
+            None  # loaded lazily: convert_alpha() needs a display
+        )
         self._cache = {}
         self._broken = False
         if self.path is not None:
-            self._read_manifest()
+            self._read_manifest(self.path)
 
-    def _read_manifest(self):
+    def _read_manifest(self, path):
         try:
-            data = json.loads((self.path / TILES_FILE).read_text(encoding='utf-8'))
+            data = json.loads((path / TILES_FILE).read_text(encoding='utf-8'))
             self.cell = int(data.get('tile_size', self.cell))
             self.margin = int(data.get('margin', 0))
-            self._sheet_files = {name: self.path / rel for name, rel in data['sheets'].items()}
+            self._sheet_files = {name: path / rel for name, rel in data['sheets'].items()}
             self._entries = {char: entry for char, entry in data['tiles'].items()}
             missing = [str(p) for p in self._sheet_files.values() if not p.is_file()]
             if missing:
@@ -110,12 +112,17 @@ class Tileset:
         """The entry's layers stacked at source resolution."""
         if not self._load_sheets():
             return None
+        assert self._sheets is not None
         entry = self._entries[char]
         surface = pygame.Surface((self.cell, self.cell), pygame.SRCALPHA)
         if entry.get('backdrop'):
             rgb = palette.color(color, palette.TEXT)
-            pygame.draw.rect(surface, (*rgb, BACKDROP_ALPHA), surface.get_rect(),
-                             border_radius=max(1, self.cell // 4))
+            pygame.draw.rect(
+                surface,
+                (*rgb, BACKDROP_ALPHA),
+                surface.get_rect(),
+                border_radius=max(1, self.cell // 4),
+            )
         try:
             for sheet, col, row in entry['layers']:
                 step = self.cell + self.margin

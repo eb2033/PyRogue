@@ -11,8 +11,9 @@ import os
 from pathlib import Path
 
 from game.entity import Entity
-from game.item import Chest, Item
+from game.item import Chest, Item, gear_defense
 from game.monster import Monster
+from game.rect import Rect
 
 SAVE_VERSION = 1
 
@@ -20,11 +21,19 @@ SAVE_VERSION = 1
 def _entity_to_dict(e):
     d = {'x': e.x, 'y': e.y, 'char': e.char, 'color': e.color, 'name': e.name}
     if isinstance(e, Monster):
-        d.update(type='monster', kind=e.kind, hp=e.hp, max_hp=e.max_hp,
-                  power=e.power, alive=e.alive, is_boss=e.is_boss)
+        d.update(
+            type='monster',
+            kind=e.kind,
+            hp=e.hp,
+            max_hp=e.max_hp,
+            power=e.power,
+            alive=e.alive,
+            is_boss=e.is_boss,
+            chasing=e.chasing,
+            lost_sight=e.lost_sight,
+        )
     elif isinstance(e, Chest):
-        d.update(type='chest', guaranteed_min_rarity=e.guaranteed_min_rarity,
-                 kind=e.kind)
+        d.update(type='chest', guaranteed_min_rarity=e.guaranteed_min_rarity, kind=e.kind)
     elif isinstance(e, Item):
         # Only reachable from an old (pre-chest) save file -- current play
         # never leaves a bare Item sitting in state.entities anymore.
@@ -38,6 +47,10 @@ def _entity_from_dict(d):
     if d['type'] == 'monster':
         m = Monster(d['x'], d['y'], d['kind'], is_boss=d.get('is_boss', False))
         m.hp, m.max_hp, m.power, m.alive = d['hp'], d['max_hp'], d['power'], d['alive']
+        # Saves from before pursuit was tracked load as idle (not chasing):
+        # the monster picks the chase back up as soon as it sees the player.
+        m.chasing = bool(d.get('chasing', False))
+        m.lost_sight = int(d.get('lost_sight', 0))
         return m
     if d['type'] == 'chest':
         # A save from before chests had a kind gets one rolled now.
@@ -68,16 +81,40 @@ def state_to_dict(state):
         'seen': [[bool(c) for c in row] for row in state.seen],
         'messages': state.messages,
         'player': {
-            'x': state.player.x, 'y': state.player.y,
+            'x': state.player.x,
+            'y': state.player.y,
             'char_class': state.player.char_class,
-            'hp': state.player.hp, 'max_hp': state.player.max_hp,
-            'base_power': state.player.base_power, 'power': state.player.power,
+            'hp': state.player.hp,
+            'max_hp': state.player.max_hp,
+            'base_power': state.player.base_power,
+            'power': state.player.power,
             'defense': state.player.defense,
             'weapon': _gear_to_dict(state.player.weapon),
             'armor': _gear_to_dict(state.player.armor),
             'inventory': list(state.player.inventory),
         },
         'entities': [_entity_to_dict(e) for e in state.entities if e is not state.player],
+        # An opened chest's offers, stored like equipped gear (kind + rarity;
+        # junk has rarity None). None when no choice is pending.
+        # The potion belt, in slot order, like the gear dicts.
+        'belt': [_gear_to_dict(i) for i in state.belt],
+        'pending_choice': (
+            None
+            if state.pending_choice is None
+            else [_gear_to_dict(i) for i in state.pending_choice]
+        ),
+        # The boss room's bounds on a boss floor, else None. Stored so a
+        # loaded boss floor keeps its arena.
+        'boss_arena': (
+            None
+            if state.boss_arena is None
+            else [
+                state.boss_arena.x1,
+                state.boss_arena.y1,
+                state.boss_arena.x2,
+                state.boss_arena.y2,
+            ]
+        ),
     }
 
 
@@ -100,10 +137,33 @@ def apply_dict(state, data):
     state.player.hp, state.player.max_hp = p['hp'], p['max_hp']
     state.player.base_power = p.get('base_power', p['power'])
     state.player.power = p['power']
-    state.player.defense = p.get('defense', 0)
     state.player.weapon = _gear_from_dict(p.get('weapon'))
     state.player.armor = _gear_from_dict(p.get('armor'))
+    # Defense comes from the gear (armor, plus a Sword & Shield's), so derive
+    # it from the current tables: a save from before ARMOR_DEFENSE stored the
+    # old, smaller value. Weapon effects (crit, reach, ...) come from the
+    # weapon's kind and rarity; max_hp was saved with any War Axe bonus
+    # already in it, so it is restored as saved, not re-applied.
+    if state.player.armor is not None or state.player.weapon is not None:
+        state.player.defense = gear_defense(state.player)
+    else:
+        state.player.defense = p.get('defense', 0)
     state.player.inventory = list(p['inventory'])
+
+    # Saves from before the potion belt have no field: an empty belt.
+    state.belt = [_gear_from_dict(d) for d in data.get('belt') or []]
+
+    # Saves from before chest choices have no field: nothing pending.
+    pending = data.get('pending_choice')
+    state.pending_choice = None if pending is None else [_gear_from_dict(d) for d in pending]
+
+    # Saves from before boss arenas have no field: no arena.
+    arena = data.get('boss_arena')
+    state.boss_arena = (
+        None
+        if arena is None
+        else Rect(arena[0], arena[1], arena[2] - arena[0], arena[3] - arena[1])
+    )
 
     state.cancel_monster_phase()  # queued monsters belong to the discarded level
     state.entities = [state.player] + [_entity_from_dict(d) for d in data['entities']]

@@ -31,10 +31,12 @@ def format_entry(exc_type, exc_value, exc_tb):
         version = '?'
     stamp = datetime.datetime.now().astimezone().isoformat(timespec='seconds')
     body = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
-    return (f'===== {stamp} =====\n'
-            f'PyRogue {version} | Python {sys.version.split()[0]} | {sys.platform}'
-            f' | frozen={paths.is_frozen()}\n'
-            f'{body}\n')
+    return (
+        f'===== {stamp} =====\n'
+        f'PyRogue {version} | Python {sys.version.split()[0]} | {sys.platform}'
+        f' | frozen={paths.is_frozen()}\n'
+        f'{body}\n'
+    )
 
 
 def write(exc_type, exc_value, exc_tb, path=None):

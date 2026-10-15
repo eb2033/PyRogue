@@ -7,6 +7,7 @@ keeps the game loop identical across curses and SDL.
 
 class Action:
     """Valid return values from Renderer.get_action()."""
+
     MOVE_N = 'move_n'
     MOVE_S = 'move_s'
     MOVE_W = 'move_w'
@@ -24,6 +25,13 @@ class Action:
     SAVE = 'save'
     LOAD = 'load'
     QUIT = 'quit'
+    # Keys 1-3: take that card of an opened chest's choice (GameState.choose).
+    # Outside a choice they do nothing.
+    CHOOSE_1 = 'choose_1'
+    CHOOSE_2 = 'choose_2'
+    CHOOSE_3 = 'choose_3'
+    # 'h': drink the first potion on the belt (GameState.drink_from_belt).
+    DRINK = 'drink'
 
 
 class Renderer:

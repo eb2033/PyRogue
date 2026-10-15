@@ -13,15 +13,28 @@ the monsters still queued never act. end_turn() runs both halves back to back
 for callers that don't care about the split (tests, headless use).
 """
 
+import random
+from typing import Any
+
 from game import paths
 from game.combat import Hit
+from game.damage import mitigate, round_damage
 from game.dungeon import generate_dungeon, place_stairs
-from game.entity import Entity
+from game.entity import Player
 from game.fov import update_visibility
-from game.item import Chest, spawn_boss_chest, spawn_chests
-from game.monster import Monster, is_boss_level, spawn_boss, spawn_monsters
+from game.item import (
+    BELT_SLOTS,
+    STARTING_WEAPON_RARITY,
+    Chest,
+    Item,
+    gear_power,
+    spawn_boss_chest,
+    spawn_chests,
+)
+from game.monster import Monster, is_boss_level
 from game.save import apply_dict, load_game, save_game
-from game.tiles import STAIRS_DOWN, is_walkable
+from game.spawn import spawn_level
+from game.tiles import DOOR, STAIRS_DOWN, is_walkable
 
 # None means "use paths.save_path()" (the per-user data dir), resolved at
 # save/load time rather than import time. Tests -- or anything else that wants
@@ -37,6 +50,7 @@ def current_save_path():
     target = paths.save_path()
     paths.migrate_legacy_save(target)
     return target
+
 
 # Semantic action -> (dx, dy) in game coordinates. y grows downward.
 MOVE_DELTAS = {
@@ -57,13 +71,43 @@ SHOOT_DELTAS = {
     'shoot_e': (1, 0),
 }
 
+# Keys 1-3 on a chest's choice screen -> index into pending_choice.
+CHOOSE_INDEX = {
+    'choose_1': 0,
+    'choose_2': 1,
+    'choose_3': 2,
+}
+
 # class name -> (hp, power). Archers hit softer but get a free ranged option;
 # warriors are the straightforward melee bruiser the spec describes.
 CLASS_STATS = {
-    'warrior': (25, 4),
-    'archer': (18, 3),
+    'warrior': (60, 4),
+    'archer': (45, 3),
 }
 DEFAULT_CLASS = 'warrior'
+
+
+def _describe(item):
+    """Short label for an item offered in a chest choice."""
+    if item.rarity is None:
+        return item.name
+    return f'{item.name} ({item.rarity})'
+
+
+# Chance that a player hit is critical; an equipped weapon's crit_bonus
+# (the dagger's) adds to it.
+BASE_CRIT_CHANCE = 0.10
+# A crit multiplies raw damage by this BEFORE defense reduction.
+CRIT_MULTIPLIER = 1.5
+MAX_CRIT_CHANCE = 1.0
+
+
+def crit_chance(attacker):
+    """BASE_CRIT_CHANCE plus the attacker's weapon's crit_bonus, capped at
+    MAX_CRIT_CHANCE. Only ever rolled for the player (see attack)."""
+    weapon = getattr(attacker, 'weapon', None)
+    bonus = weapon.crit_bonus if weapon is not None else 0.0
+    return min(MAX_CRIT_CHANCE, BASE_CRIT_CHANCE + bonus)
 
 
 class GameState:
@@ -79,6 +123,23 @@ class GameState:
         # the player acts; the serial keeps counting across rounds and levels.
         self.combat_events = []
         self._hit_serial = 0
+        # Player actions taken so far (+1 per turn-consuming action in
+        # handle_action; never per frame or per monster). The combat zoom's
+        # hold (render/camera.py) counts turns with it.
+        self.turn = 0
+        # Items an opened gear chest is offering, or None. While set, the
+        # player must choose() one before anything else happens.
+        self.pending_choice: list[Item] | None = None
+        # The potion belt: up to BELT_SLOTS potion Items, in order. Potions
+        # found at full HP go here; 'drink' takes only belt[0] and the rest
+        # shift forward. Empty at the start of a run; kept across floors.
+        self.belt = []
+        # The boss's room (a game.rect.Rect: x1, y1 inclusive, x2, y2
+        # exclusive, as carved) on a boss floor, else None. The boss starts at
+        # boss_arena.center(); the 3x3 block centred there is the arena's
+        # centre area. An overlay for the renderer -- not a map char. Set by
+        # _spawn_level_monsters on every new floor.
+        self.boss_arena = None
 
         self.game_map, self.rooms = generate_dungeon(width, height)
         place_stairs(self.game_map, self.rooms)
@@ -89,29 +150,32 @@ class GameState:
         hp, power = CLASS_STATS[char_class]
 
         px, py = self.rooms[0].center()
-        self.player = Entity(px, py, '@', color=1, name='you')
+        self.player = Player(px, py, '@', color=1, name='you')
         self.player.char_class = char_class
         self.player.hp = hp
         self.player.max_hp = hp
         self.player.base_power = power
         self.player.power = power
         self.player.defense = 0
-        self.player.weapon = None
+        self.player.weapon = Item(0, 0, 'weapon', STARTING_WEAPON_RARITY)
         self.player.armor = None
+        self.player.power = gear_power(self.player)
         self.player.inventory = []
         self.player.alive = True
 
-        self.entities = [self.player] + self._spawn_level_monsters() + spawn_chests(self.rooms)
+        self.entities: list[Any] = (
+            [self.player] + self._spawn_level_monsters() + spawn_chests(self.rooms)
+        )
 
         # Monsters still owing a turn in the current round. See end_player_phase.
-        self._pending_monsters = []
+        self._pending_monsters: list[Monster] = []
 
         self.update_fov()
 
     def _spawn_level_monsters(self):
-        monsters = spawn_monsters(self.rooms, depth=self.depth)
-        if is_boss_level(self.depth):
-            monsters.append(spawn_boss(self.rooms, self.depth))
+        """This floor's enemies (game/spawn.py has the rules). Also sets
+        self.boss_arena."""
+        monsters, self.boss_arena = spawn_level(self.rooms, self.depth)
         return monsters
 
     # -- turn resolution ---------------------------------------------------
@@ -151,9 +215,25 @@ class GameState:
         if self.game_over:
             return False
 
+        if action in CHOOSE_INDEX:
+            # Only means something on a choice screen; never takes a turn.
+            index = CHOOSE_INDEX[action]
+            if self.pending_choice is not None and index < len(self.pending_choice):
+                self.choose(index)
+            return False
+
+        if self.is_choosing:
+            return False  # a chest's choice must be made first: see choose()
+
+        # A move refused by try_move_player (a potion chest while the belt is
+        # full at full HP) takes no turn: nothing happened, so monsters don't
+        # act and GameState.turn doesn't advance. Bumping a wall still does,
+        # as it always has.
         if action in MOVE_DELTAS:
             dx, dy = MOVE_DELTAS[action]
-            self.try_move_player(dx, dy)
+            if not self.try_move_player(dx, dy):
+                return False
+            self.turn += 1
             self.end_player_phase()
             return True
 
@@ -161,44 +241,207 @@ class GameState:
             dx, dy = SHOOT_DELTAS[action]
             if self.player.char_class == 'archer':
                 self.shoot_arrow(dx, dy)
-            else:
-                self.try_move_player(dx, dy)
+            elif not self.try_move_player(dx, dy):
+                return False
+            self.turn += 1
+            self.end_player_phase()
+            return True
+
+        if action == 'drink':
+            # Drink belt[0]. A turn, like any other action -- unless the
+            # belt is empty, which only logs.
+            if not self.drink_from_belt():
+                return False
+            self.turn += 1
             self.end_player_phase()
             return True
 
         if action == 'wait':
+            self.turn += 1
             self.end_player_phase()
             return True
 
         if action == 'descend':
-            return self.try_descend()
+            if self.try_descend():
+                self.turn += 1
+                return True
+            return False
 
         return False
 
     def try_move_player(self, dx, dy):
+        """Walk, bump-attack, or reach-attack in (dx, dy). Returns False
+        only if the move is refused and must take no turn: the target tile
+        holds a potion chest the player can neither drink (HP is full) nor
+        store (the belt is full). The player stays put, the chest stays
+        closed, and the log says why; drinking from the belt frees a slot,
+        and then the same move succeeds. Anything else -- including bumping
+        a wall -- returns True."""
         nx, ny = self.player.x + dx, self.player.y + dy
         if not is_walkable(self.game_map, nx, ny):
-            return
+            return True
 
         monster = self.monster_at(nx, ny)
         if monster is not None:
-            self.attack(self.player, monster)
-            return
+            self.melee(monster)
+            return True
+
+        reach_target = self._reach_target(dx, dy)
+        if reach_target is not None:
+            self.melee(reach_target)
+            return True
+
+        chest = self.chest_at(nx, ny)
+        if chest is not None and self._belt_refuses(chest):
+            self.log('Your potion belt is full.')
+            return False
 
         self.player.move(dx, dy, self.game_map)
 
-        chest = self.chest_at(self.player.x, self.player.y)
         if chest is not None:
             self.open_chest(chest)
+        return True
+
+    def _belt_refuses(self, chest):
+        """True if a potion chest can't be taken now: full HP (so it
+        wouldn't be drunk) and no free belt slot to store it in."""
+        return (
+            not chest.offers_choice
+            and self.player.hp >= self.player.max_hp
+            and len(self.belt) >= BELT_SLOTS
+        )
+
+    def drink_from_belt(self):
+        """Drink the first belt slot's potion (heals POTION_HEAL[rarity],
+        capped at max HP); the others shift forward. Returns False, logging
+        'No potions', if the belt is empty."""
+        if not self.belt:
+            self.log('No potions')
+            return False
+        potion = self.belt.pop(0)
+        potion.apply(self.player, self.log)
+        return True
+
+    def _reach_target(self, dx, dy):
+        """The monster a reach weapon (the spear, reach 2) hits when the
+        player presses (dx, dy) and the adjacent tile holds no monster, or
+        None to move as usual.
+
+        Only exactly `reach` tiles away, straight along the pressed
+        direction (so never diagonally -- movement is 4-way). Every tile in
+        between must be walkable and unoccupied: no wall, no monster (the
+        player is behind, never in between; a chest is not an obstacle), and
+        no door -- a reach attack can't pass through one. The target must
+        also be in the player's view, so a spear can't strike an unseen
+        monster through a closed door (doors are walkable but opaque).
+        """
+        weapon = self.player.weapon
+        reach = weapon.reach if weapon is not None else 1
+        if reach < 2:
+            return None
+        px, py = self.player.x, self.player.y
+        for step in range(1, reach):
+            x, y = px + dx * step, py + dy * step
+            if (
+                not is_walkable(self.game_map, x, y)
+                or self.game_map[y][x] == DOOR
+                or self.monster_at(x, y) is not None
+            ):
+                return None
+        tx, ty = px + dx * reach, py + dy * reach
+        if not (0 <= ty < self.height and 0 <= tx < self.width) or not self.visible[ty][tx]:
+            return None
+        return self.monster_at(tx, ty)
+
+    def melee(self, target):
+        """The player's melee attack on `target` (a bump, or a spear's
+        reach), with the equipped weapon's effects. Arrows don't come
+        through here: a bow shot is one plain attack().
+
+        - strikes (the rapier's 2): that many separate attack() calls --
+          each its own crit roll, damage reduction, log line and Hit --
+          stopping early if the target dies.
+        - cleave (the Great Sword): one more living monster is hit by the
+          same blow, with its own attack(). "Nearby" means ORTHOGONALLY
+          ADJACENT TO THE PLAYER (Entity.is_adjacent) -- not to the target,
+          and never diagonal or two tiles off -- i.e. a monster the player
+          could have bumped instead. If several qualify, only the first in
+          entity order is hit ("a 2nd adjacent foe"). It still swings
+          through if the main target died.
+        """
+        weapon = self.player.weapon
+        strikes = weapon.strikes if weapon is not None else 1
+        for _ in range(strikes):
+            if not target.alive:
+                break
+            self.attack(self.player, target)
+        if weapon is not None and weapon.cleave:
+            other = next(
+                (
+                    e
+                    for e in self.entities
+                    if isinstance(e, Monster)
+                    and e.alive
+                    and e is not target
+                    and e.is_adjacent(self.player)
+                ),
+                None,
+            )
+            if other is not None:
+                self.log(f'Your swing carries on into {other.name}.')
+                self.attack(self.player, other)
 
     def open_chest(self, chest):
-        """Roll the item table (depth-scaled -- see game/item.py) and apply
-        whatever comes out immediately, same as walking onto a bare item
-        used to work."""
+        """Open a chest and remove it from the map. Its contents are rolled
+        now, against the current depth (see game/item.py). A potion chest's
+        potion is drunk at once if the player is hurt, or put in the next
+        free belt slot at full HP; a gear or boss chest's drops become
+        `pending_choice`, and the player must choose() one of them.
+
+        Returns False, leaving the chest closed and in place, for a potion
+        chest at full HP with a full belt (try_move_player refuses that move
+        before getting here); True otherwise."""
+        if self._belt_refuses(chest):
+            self.log('Your potion belt is full.')
+            return False
         self.log('You open the chest.')
-        item = chest.open(self.depth)
-        item.apply(self.player, self.log)
+        items = chest.open(self.depth)
         self.entities.remove(chest)
+        if not chest.offers_choice:
+            for item in items:
+                if self.player.hp < self.player.max_hp:
+                    item.apply(self.player, self.log)
+                else:
+                    self.belt.append(item)
+                    self.log(f'You put the {item.name} on your belt (slot {len(self.belt)}).')
+            return True
+        self.pending_choice = items
+        self.log('Choose one: ' + ', '.join(_describe(i) for i in items) + '.')
+        return True
+
+    @property
+    def is_choosing(self):
+        """True while an opened chest is waiting for the player to pick an
+        item. Movement and every other turn action are blocked meanwhile."""
+        return self.pending_choice is not None
+
+    def choose(self, index):
+        """Take item `index` (0-based) of the pending chest choice.
+
+        Gear always equips into its slot, replacing (and discarding) what was
+        there -- the player chose it, so there is no "only if better" check.
+        Junk only logs a line. The other offers are lost. There is no cancel:
+        a choice stays pending until one is taken. Takes no turn.
+        Raises ValueError if nothing is pending or `index` is out of range.
+        """
+        if self.pending_choice is None:
+            raise ValueError('no chest choice is pending')
+        if not 0 <= index < len(self.pending_choice):
+            raise ValueError(f'choice index out of range: {index!r}')
+        item = self.pending_choice[index]
+        self.pending_choice = None
+        item.x, item.y = self.player.x, self.player.y
+        item.apply(self.player, self.log)
 
     def shoot_arrow(self, dx, dy):
         """Archer-only ranged attack: travels in a straight line until it
@@ -234,6 +477,7 @@ class GameState:
         self.seen = [[False] * self.width for _ in range(self.height)]
 
         self.cancel_monster_phase()
+        self.pending_choice = None
         self.entities = [self.player] + self._spawn_level_monsters() + spawn_chests(self.rooms)
         if is_boss_level(self.depth):
             self.log(f'You descend to level {self.depth}. Something powerful lurks here...')
@@ -243,15 +487,32 @@ class GameState:
 
     def attack(self, attacker, defender):
         defense = getattr(defender, 'defense', 0)
-        damage = max(1, attacker.power - defense)
+        raw = attacker.power
+        # Only the player crits (monsters never do); arrows are player hits too.
+        crit = attacker is self.player and random.random() < crit_chance(attacker)
+        if crit:
+            raw = raw * CRIT_MULTIPLIER
+        damage = round_damage(mitigate(raw, defense))
         defender.hp -= damage
         subject = 'You' if attacker is self.player else attacker.name.capitalize()
         verb = 'hit' if attacker is self.player else 'hits'
         target = 'you' if defender is self.player else defender.name
         self.log(f'{subject} {verb} {target} for {damage}.')
+        if crit:
+            self.log('Critical hit!')
         self._hit_serial += 1
-        self.combat_events.append(Hit(self._hit_serial, attacker, defender, damage,
-                                      defender.hp <= 0, defender.x, defender.y))
+        self.combat_events.append(
+            Hit(
+                self._hit_serial,
+                attacker,
+                defender,
+                damage,
+                defender.hp <= 0,
+                defender.x,
+                defender.y,
+                crit,
+            )
+        )
         if defender.hp <= 0:
             defender.alive = False
             if defender is not self.player:
@@ -272,10 +533,13 @@ class GameState:
         own action before any monster answers it.
         """
         self.update_fov()
-        self._pending_monsters = [e for e in self.entities
-                                  if e is not self.player
-                                  and getattr(e, 'alive', True)
-                                  and getattr(e, 'take_turn', None) is not None]
+        self._pending_monsters = [
+            e
+            for e in self.entities
+            if e is not self.player
+            and getattr(e, 'alive', True)
+            and getattr(e, 'take_turn', None) is not None
+        ]
 
     def monster_phase_pending(self):
         return bool(self._pending_monsters)
@@ -301,7 +565,12 @@ class GameState:
 
             was_seen = self.is_visible(monster.x, monster.y)
             before = (monster.x, monster.y)
-            result = monster.take_turn(self.player, self.game_map)
+            result = monster.take_turn(
+                self.player,
+                self.game_map,
+                occupied=self._occupied_except(monster),
+                sees_player=was_seen,
+            )
             if result == 'attack':
                 self.attack(monster, self.player)
             self.update_fov()
@@ -313,8 +582,9 @@ class GameState:
                 self._finish_round()
                 return True
 
-            moved_in_view = ((monster.x, monster.y) != before
-                             and (was_seen or self.is_visible(monster.x, monster.y)))
+            moved_in_view = (monster.x, monster.y) != before and (
+                was_seen or self.is_visible(monster.x, monster.y)
+            )
             if result == 'attack' or moved_in_view:
                 return True
 
@@ -333,6 +603,16 @@ class GameState:
         while self.step_monster_phase():
             pass
 
+    def _occupied_except(self, monster):
+        """Tiles `monster` may not step onto: the player's and every other
+        living monster's. Built fresh for each monster, so it reflects the
+        moves already made earlier in the same round."""
+        occupied = {(self.player.x, self.player.y)}
+        for e in self.entities:
+            if e is not monster and e is not self.player and isinstance(e, Monster) and e.alive:
+                occupied.add((e.x, e.y))
+        return occupied
+
     def _player_just_died(self):
         """True only on the single step that kills the player, so the death
         is logged once and the round stops there."""
@@ -343,13 +623,13 @@ class GameState:
         return True
 
     def _finish_round(self):
-        self.entities = [e for e in self.entities
-                         if e is self.player or getattr(e, 'alive', True)]
+        self.entities = [e for e in self.entities if e is self.player or getattr(e, 'alive', True)]
         self.update_fov()
 
     def update_fov(self):
-        update_visibility(self.game_map, self.visible, self.seen,
-                          self.player.x, self.player.y, self.fov_radius)
+        update_visibility(
+            self.game_map, self.visible, self.seen, self.player.x, self.player.y, self.fov_radius
+        )
 
     # -- queries the renderer uses ----------------------------------------
 
@@ -362,9 +642,39 @@ class GameState:
     def melee_opponents(self):
         """Living monsters in view that are orthogonally adjacent to the
         player, i.e. close enough that one of the two can hit the other."""
-        return [e for e in self.entities
-                if isinstance(e, Monster) and e.alive and e.is_adjacent(self.player)
-                and self.visible[e.y][e.x]]
+        return [
+            e
+            for e in self.entities
+            if isinstance(e, Monster)
+            and e.alive
+            and e.is_adjacent(self.player)
+            and self.visible[e.y][e.x]
+        ]
+
+    def zoom_opponents(self):
+        """Who the combat zoom frames: melee_opponents(), plus -- for a
+        reach weapon (the spear) -- every monster _reach_target would hit
+        in one of the four directions. Adjacent ones come first."""
+        found = self.melee_opponents()
+        for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
+            target = self._reach_target(dx, dy)
+            if target is not None and target not in found:
+                found.append(target)
+        return found
+
+    def visible_monsters(self):
+        """Living monsters in the player's view."""
+        return [
+            e
+            for e in self.entities
+            if isinstance(e, Monster) and e.alive and self.visible[e.y][e.x]
+        ]
+
+    def monsters_within(self, radius):
+        """Living monsters in view within `radius` of the player, by
+        Chebyshev distance (a loose "nearby" check, like chase range -- not
+        an adjacency test). The combat zoom holds while any is this close."""
+        return [m for m in self.visible_monsters() if m.distance_to(self.player) <= radius]
 
     def chest_at(self, x, y):
         for e in self.entities:
@@ -379,8 +689,7 @@ class GameState:
         """Living entities in view. The `alive` filter matters now that the
         renderer draws mid-round: a monster killed during the player's half
         must not still be on screen while the monster half plays out."""
-        return [e for e in self.entities
-                if getattr(e, 'alive', True) and self.visible[e.y][e.x]]
+        return [e for e in self.entities if getattr(e, 'alive', True) and self.visible[e.y][e.x]]
 
     def log(self, text):
         self.messages.append(text)

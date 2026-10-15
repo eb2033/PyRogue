@@ -26,12 +26,15 @@ Pure geometry, no pygame: views are in map cells (floats while animating).
 
 from collections import namedtuple
 
-MARGIN = 2                       # squares of map shown around the fight
+MARGIN = 2  # squares of map shown around the fight
 ZOOM_CLASSES = frozenset({'warrior'})
+HOLD_RANGE = 3  # once zoomed, a monster this close keeps it
+HOLD_TURNS = 2  # player turns the zoom outlasts the fight
 
 
 class View(namedtuple('View', 'left top width height')):
     """A rectangle of the map, in cells."""
+
     __slots__ = ()
 
     @property
@@ -54,6 +57,13 @@ def combat_view(a, b, margin=MARGIN):
     off-centre."""
     left, top = min(a.x, b.x) - margin, min(a.y, b.y) - margin
     return View(left, top, abs(a.x - b.x) + 1 + 2 * margin, abs(a.y - b.y) + 1 + 2 * margin)
+
+
+def centred_on(entity, view):
+    """A view the size of `view` with `entity`'s cell at its centre."""
+    return View(
+        entity.x + 0.5 - view.width / 2, entity.y + 0.5 - view.height / 2, view.width, view.height
+    )
 
 
 def lerp_view(a, b, t):
@@ -89,6 +99,20 @@ class Director:
     Keeps the view (None = the whole map, whatever its size), the monster the
     camera is following, and the serial of the last hit it staged. Reads the
     GameState; never mutates it.
+
+    Two rules keep the zoom from jolting (both count *player turns* --
+    `state.turn` -- never frames, so the monster phase and redrawn frames
+    change nothing):
+
+    - Direction gate: it never zooms IN on an opponent the player just
+      stepped away from (their last move increased the distance to the
+      nearest opponent). Running away stays zoomed out.
+    - Hold: once zoomed, it stays zoomed while any monster in view is within
+      `HOLD_RANGE` (Chebyshev) of the player, and for `HOLD_TURNS` more turns
+      after none is -- so a second monster closing in after the first dies
+      doesn't cause a zoom-out for one turn. With no monster in view at all
+      (the last one died or left sight) the fight is over and it zooms out at
+      once.
     """
 
     def __init__(self, zoom=True):
@@ -96,6 +120,10 @@ class Director:
         self.view = None
         self.focus = None
         self._last_hit = 0
+        self._turn = None  # state.turn at the last frame
+        self._pos_seen = None  # the player's position at the last frame
+        self._pos_before = None  # ... before their latest turn
+        self._calm_since = None  # turn the hold's countdown started, or None
 
     def current(self, state):
         return self.view or full_view(state.width, state.height)
@@ -111,21 +139,72 @@ class Director:
                 if state.visible[hit.y][hit.x]:
                     beats.append(Impact(hit))
 
+        self._track_turn(state)
         start = self.current(state)
-        self.focus = self._pick_focus(state)
-        target = (combat_view(state.player, self.focus) if self.focus is not None
-                  else full_view(state.width, state.height))
+        self.focus, view = self._frame(state)
+        if view is None:
+            self._calm_since = None
+        target = view or full_view(state.width, state.height)
         if target != start:
             beats.append(Pan(start, target))
-        self.view = None if self.focus is None else target
+        self.view = view
         return beats
 
-    def _pick_focus(self, state):
+    def _track_turn(self, state):
+        """Remember where the player stood before their latest turn. The
+        player never moves during the monster phase, so the position at the
+        last frame of the previous turn is where this turn's move began."""
+        pos = (state.player.x, state.player.y)
+        if self._turn is None:
+            self._pos_before = pos
+        elif state.turn != self._turn:
+            self._pos_before = self._pos_seen
+        self._turn = state.turn
+        self._pos_seen = pos
+
+    def _frame(self, state):
+        """(focus, view) for this frame; view None = the whole map."""
         if not self.zoom or state.game_over or state.player.char_class not in ZOOM_CLASSES:
-            return None
-        opponents = state.melee_opponents()
-        if not opponents:
-            return None
+            return None, None
+        zoomed = self.view is not None
+        player = state.player
+        opponents = state.zoom_opponents()
+        if opponents:
+            if not zoomed and self._moving_away(player, opponents):
+                return None, None
+            self._calm_since = None
+            focus = self._pick_focus(state, opponents)
+            return focus, combat_view(player, focus)
+        if not zoomed:
+            return None, None
+
+        nearby = state.monsters_within(HOLD_RANGE)
+        if nearby:
+            self._calm_since = None
+            focus = (
+                self.focus
+                if self.focus in nearby
+                else min(nearby, key=lambda m: m.distance_to(player))
+            )
+            return focus, combat_view(player, focus)
+        if not state.visible_monsters():
+            return None, None  # nobody left to wait for
+        if self._calm_since is None:
+            self._calm_since = state.turn
+        if state.turn - self._calm_since >= HOLD_TURNS:
+            return None, None
+        focus = self.focus if self.focus is not None and self.focus.alive else None
+        return focus, centred_on(player, self.view)
+
+    def _moving_away(self, player, opponents):
+        before = self._pos_before
+        if before is None or before == (player.x, player.y):
+            return False
+        nearest = min(opponents, key=lambda m: m.distance_to(player))
+        was = max(abs(nearest.x - before[0]), abs(nearest.y - before[1]))
+        return nearest.distance_to(player) > was
+
+    def _pick_focus(self, state, opponents):
         if self.focus in opponents:
             return self.focus  # stay on the fight already framed
         for hit in reversed(state.combat_events):

@@ -6,6 +6,8 @@ the game is (x, y); the flip happens here, at the boundary.
 
 import curses
 
+from game.item import BELT_SLOTS, belt_slot_label
+from render import choice
 from render.banner import render_banner
 from render.base import Action, Renderer
 from render.menu import Menu
@@ -29,6 +31,12 @@ KEY_ACTIONS = {
     ord('S'): Action.SAVE,
     ord('L'): Action.LOAD,
     ord('q'): Action.QUIT,
+    ord('h'): Action.DRINK,
+    # A chest's choice cards (render/choice.py). Numpad digits send the same
+    # characters with num lock on.
+    ord('1'): Action.CHOOSE_1,
+    ord('2'): Action.CHOOSE_2,
+    ord('3'): Action.CHOOSE_3,
 }
 
 CONFIRM_KEYS = (curses.KEY_ENTER, ord('\n'), ord('\r'), ord(' '))
@@ -41,10 +49,10 @@ COLOR_PAIRS = {
     1: (curses.COLOR_YELLOW, curses.COLOR_BLACK),
     2: (curses.COLOR_RED, curses.COLOR_BLACK),
     3: (curses.COLOR_CYAN, curses.COLOR_BLACK),
-    4: (curses.COLOR_GREEN, curses.COLOR_BLACK),    # uncommon
-    5: (curses.COLOR_BLUE, curses.COLOR_BLACK),     # rare
+    4: (curses.COLOR_GREEN, curses.COLOR_BLACK),  # uncommon
+    5: (curses.COLOR_BLUE, curses.COLOR_BLACK),  # rare
     6: (curses.COLOR_MAGENTA, curses.COLOR_BLACK),  # epic
-    7: (curses.COLOR_WHITE, curses.COLOR_BLACK),    # common
+    7: (curses.COLOR_WHITE, curses.COLOR_BLACK),  # common
     8: (curses.COLOR_MAGENTA, curses.COLOR_BLACK),  # potion chest (pink -- see __init__)
 }
 PINK_256 = 213  # xterm-256 hot pink; 8-colour terminals fall back to magenta
@@ -88,7 +96,7 @@ class CursesRenderer(Renderer):
         if not (0 <= y < max_y and 0 <= x < max_x):
             return
         try:
-            self.stdscr.addstr(y, x, text[:max_x - x - 1], attr)
+            self.stdscr.addstr(y, x, text[: max_x - x - 1], attr)
         except curses.error:
             pass
 
@@ -117,10 +125,13 @@ class CursesRenderer(Renderer):
                 label = f'> {option} <' if i == menu.index else f'  {option}  '
                 self._put_str_centered(options_top + i * 2, label, attr)
                 if descriptions and i == menu.index and descriptions.get(option.lower()):
-                    self._put_str_centered(options_top + len(options) * 2 + 1,
-                                           descriptions[option.lower()])
+                    self._put_str_centered(
+                        options_top + len(options) * 2 + 1, descriptions[option.lower()]
+                    )
 
-            self._put_str_centered(max_y - 2, 'up/down or w/s to choose, enter to select, q to quit')
+            self._put_str_centered(
+                max_y - 2, 'up/down or w/s to choose, enter to select, q to quit'
+            )
             self.stdscr.refresh()
 
             key = self.stdscr.getch()
@@ -150,6 +161,8 @@ class CursesRenderer(Renderer):
         self._draw_map(state)
         self._draw_entities(state)
         self._draw_panel(state)
+        if state.is_choosing:
+            self._draw_choice(state)
         if state.game_over:
             self._draw_game_over(state)
         self.stdscr.refresh()
@@ -185,15 +198,16 @@ class CursesRenderer(Renderer):
         self._put_str(gear_start, x, '-- gear --')
         self._draw_gear_line(gear_start + 1, x, 'Wpn', state.player.weapon, 'atk')
         self._draw_gear_line(gear_start + 2, x, 'Arm', state.player.armor, 'def')
+        self._draw_belt_line(gear_start + 3, x, state.belt)
 
-        controls_start = gear_start + 4
+        controls_start = gear_start + 5
         if state.player.char_class == 'archer':
             self._put_str(controls_start, x, 'wasd move, arrows shoot')
         else:
             self._put_str(controls_start, x, 'wasd/arrows move')
         self._put_str(controls_start + 1, x, '.  wait   e  descend')
         self._put_str(controls_start + 2, x, 'S  save   L  load')
-        self._put_str(controls_start + 3, x, 'q  quit')
+        self._put_str(controls_start + 3, x, 'h  drink  q  quit')
 
         log_start = controls_start + 5
         self._put_str(log_start, x, '-- log --')
@@ -205,8 +219,24 @@ class CursesRenderer(Renderer):
         if item is None:
             self._put_str(y, x, f'{label}: (none)')
             return
-        text = f'{label}: {item.name} (+{item.bonus} {stat_label}) [{item.rarity}]'
+        # :+d, not a literal '+': a rapier's common bonus is -1.
+        text = f'{label}: {item.name} ({item.bonus:+d} {stat_label}) [{item.rarity}]'
         self._put_str(y, x, text, curses.color_pair(item.color))
+
+    def _draw_belt_line(self, y, x, belt):
+        """'Belt: [+20] +35 ---': three slots, the bracketed first one the
+        only one 'h' drinks; each potion in its rarity's colour."""
+        label = 'Belt: '
+        self._put_str(y, x, label)
+        col = x + len(label)
+        for i in range(BELT_SLOTS):
+            item = belt[i] if i < len(belt) else None
+            text = belt_slot_label(item)
+            if i == 0:
+                text = f'[{text}]'
+            attr = curses.color_pair(item.color) if item is not None else curses.A_DIM
+            self._put_str(y, col, text, attr)
+            col += len(text) + 1
 
     def _draw_game_over(self, state):
         max_y, max_x = self.stdscr.getmaxyx()
@@ -214,6 +244,53 @@ class CursesRenderer(Renderer):
         y = max_y // 2
         x = max(0, (state.width - len(text)) // 2)
         self._put_str(y, x, text, curses.color_pair(2) | curses.A_BOLD)
+
+    def _draw_choice(self, state):
+        """An opened chest's three offers, as cards in a framed box across the
+        map (render/choice.py has the text and the cell geometry). Clipped to
+        the terminal; every write goes through _put / _put_str."""
+        max_y, max_x = self.stdscr.getmaxyx()
+        items = state.pending_choice
+        (bx, by, bw, bh), rects, mode = choice.grid_layout(
+            items, min(state.width, max_x), min(state.height, max_y)
+        )
+        self._draw_frame(bx, by, bw, bh, fill=True)
+        inner = bw - 4
+        hint_y = by + bh - 2
+
+        def text(y, x, s, width, attr=0):
+            if width > 0:
+                self._put_str(y, x, s[:width], attr)
+
+        def centred(y, s, attr=0):
+            text(y, bx + 2 + max(0, (inner - len(s)) // 2), s, inner, attr)
+
+        centred(by + 1, choice.TITLE, curses.A_BOLD)
+        for (number, item), (cx, cy, cw, ch) in zip(choice.cards(items), rects):
+            attr = curses.color_pair(item.color)
+            lines = choice.LINES[mode](number, item)
+            if mode == choice.ACROSS:
+                self._draw_frame(cx, cy, cw, ch)
+                cx, cy, cw = cx + 2, cy + 1, cw - 4
+            for i, line in enumerate(lines):
+                if cy + i < hint_y:  # the hint always gets its row
+                    text(cy + i, cx, line, cw, attr | (curses.A_BOLD if i == 0 else 0))
+        if hint_y > by + 1:
+            centred(hint_y, choice.HINT)
+
+    def _draw_frame(self, x, y, w, h, fill=False):
+        """An ASCII box with its top-left cell at (x, y), (x, y) in, (y, x) out."""
+        if w < 2 or h < 2:
+            return
+        if fill:
+            for row in range(y + 1, y + h - 1):
+                self._put_str(row, x + 1, ' ' * (w - 2))
+        horizontal = '+' + '-' * (w - 2) + '+'
+        self._put_str(y, x, horizontal)
+        self._put_str(y + h - 1, x, horizontal)
+        for row in range(y + 1, y + h - 1):
+            self._put(row, x, '|')
+            self._put(row, x + w - 1, '|')
 
     # -- input -------------------------------------------------------------
 

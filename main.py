@@ -49,20 +49,26 @@ def default_renderer():
 def make_renderer(name, width, height):
     if name == 'curses':
         from render.curses_render import CursesRenderer
+
         return CursesRenderer()
     if name == 'pygame':
         from game.paths import resource_path
         from render.pygame_render import PygameRenderer
         from render.tileset import Tileset
+
         # TILES=0 keeps the window drawing characters, like the terminal.
         tileset = Tileset(resource_path('assets')) if env_int('TILES', 1) else None
         # The bundled font, so Windows and Linux draw the same glyphs; a missing
         # file falls back to a system monospace font.
         font = resource_path('assets', 'fonts', BUNDLED_FONT)
         # COMBAT_ZOOM=0 keeps the whole map in view during melee fights.
-        return PygameRenderer(width, height, tileset=tileset,
-                              font_path=str(font) if font.is_file() else None,
-                              combat_zoom=bool(env_int('COMBAT_ZOOM', 1)))
+        return PygameRenderer(
+            width,
+            height,
+            tileset=tileset,
+            font_path=str(font) if font.is_file() else None,
+            combat_zoom=bool(env_int('COMBAT_ZOOM', 1)),
+        )
     raise SystemExit(f'unknown renderer: {name}')
 
 
@@ -107,9 +113,12 @@ def main():
         if not renderer.show_title_screen():
             return  # player chose Quit
         char_class = renderer.choose_class()
-        state = GameState(width, height,
-                          fov_radius=env_int('FOV_RADIUS', DEFAULT_FOV_RADIUS),
-                          char_class=char_class)
+        state = GameState(
+            width,
+            height,
+            fov_radius=env_int('FOV_RADIUS', DEFAULT_FOV_RADIUS),
+            char_class=char_class,
+        )
         run(renderer, state, env_int('TURN_DELAY_MS', DEFAULT_TURN_DELAY_MS))
     finally:
         renderer.close()

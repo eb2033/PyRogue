@@ -11,7 +11,7 @@ import textwrap
 
 import pygame
 
-from render import palette
+from render import choice, palette
 
 TITLE_OPTIONS = ['Start', 'Quit']
 CLASS_OPTIONS = ['Warrior', 'Archer']
@@ -20,8 +20,9 @@ CLASS_DESCRIPTIONS = {
     'archer': 'Ranged. WASD moves, arrow keys fire.',
 }
 MENU_HINT = 'up/down or w/s to choose, enter to select, q to quit'
-GAME_OVER_TEXT = 'YOU DIED -- press q to quit'
-GAME_OVER_SHORT = ['YOU DIED', 'press q to quit']  # for maps narrower than that
+GAME_OVER_TITLE = 'YOU DIED'
+GAME_OVER_HINT = 'press q to quit'
+GAME_OVER_SCALE = 4  # the title is this many times the map's font
 
 
 def _menu_geometry(layout, options, banner_lines):
@@ -46,8 +47,9 @@ def paint_menu(canvas, menu, banner_lines, descriptions=None):
 
     for i, option in enumerate(options):
         if i == menu.index:
-            canvas.put_str_centered(options_top + i * 2, _option_text(option, True),
-                                    palette.BACKGROUND, palette.TEXT)
+            canvas.put_str_centered(
+                options_top + i * 2, _option_text(option, True), palette.BACKGROUND, palette.TEXT
+            )
             description = (descriptions or {}).get(option.lower())
             if description:
                 canvas.put_str_centered(options_top + len(options) * 2 + 1, description)
@@ -91,42 +93,134 @@ def option_at(layout, menu, banner_lines, pixel):
     return index if x0 <= px < x1 else None
 
 
-def _game_over_lines(layout):
-    """GAME_OVER_TEXT on one line, or split in two if the map is narrower."""
-    if layout.font.size(GAME_OVER_TEXT)[0] + 2 * layout.cell_w <= layout.map_rect().width:
-        return [GAME_OVER_TEXT]
-    return GAME_OVER_SHORT
+def game_over_fonts(layout):
+    """(title font, hint font). The title is GAME_OVER_SCALE times the map's
+    font, shrunk back toward it if it wouldn't fit across the map."""
+    room = layout.map_rect().width - 2 * layout.cell_w
+    size = layout.font_size * GAME_OVER_SCALE
+    while size > layout.font_size and layout._font(size).size(GAME_OVER_TITLE)[0] > room:
+        size -= 1
+    return layout._font(size), layout.font
 
 
-def game_over_rect(layout, state):
-    """Pixel rect of the game-over banner: a box across the map, at the end
-    of the map (top or bottom) farther from the player, so it doesn't hide
-    the player or what killed them."""
-    lines = _game_over_lines(layout)
-    text_w = max(layout.font.size(line)[0] for line in lines)
-    box = pygame.Rect(0, 0, text_w + 2 * layout.cell_w,
-                      len(lines) * layout.font.get_linesize() + layout.cell_h // 2)
+def game_over_rect(layout):
+    """Pixel rect of the game-over banner: a box centred across the top of
+    the map, holding the big title and the hint under it."""
+    title_font, hint_font = game_over_fonts(layout)
+    text_w = max(title_font.size(GAME_OVER_TITLE)[0], hint_font.size(GAME_OVER_HINT)[0])
+    text_h = title_font.get_linesize() + hint_font.get_linesize()
+    box = pygame.Rect(0, 0, text_w + 2 * layout.cell_w, text_h + layout.cell_h)
     area = layout.map_rect()
-    cell_h = layout.map_cell_size()[1]
-    player_y = layout.map_cell_to_pixel(state.player.x, state.player.y)[1] + cell_h // 2
     box.centerx = area.centerx
-    if player_y < area.centery:
-        box.bottom = area.bottom - cell_h
-    else:
-        box.top = area.top + cell_h
+    box.top = area.top + layout.cell_h // 2
     return box
 
 
-def paint_game_over(canvas, state):
-    """Overlay drawn on top of the final game frame: GAME_OVER_TEXT in a
+def paint_game_over(canvas):
+    """Overlay drawn on top of the final game frame: the title and hint in a
     framed box placed by game_over_rect."""
     layout = canvas.layout
-    box = game_over_rect(layout, state)
+    box = game_over_rect(layout)
     canvas.surface.fill(palette.BACKGROUND, box)
     pygame.draw.rect(canvas.surface, palette.DANGER, box, max(1, layout.cell_h // 12))
-    lines = _game_over_lines(layout)
+    title_font, hint_font = game_over_fonts(layout)
+    title = title_font.render(GAME_OVER_TITLE, True, palette.DANGER)
+    hint = hint_font.render(GAME_OVER_HINT, True, palette.DANGER)
+    top = box.top + layout.cell_h // 2
+    canvas.surface.blit(title, title.get_rect(centerx=box.centerx, top=top))
+    top += title_font.get_linesize()
+    canvas.surface.blit(hint, hint.get_rect(centerx=box.centerx, top=top))
+
+
+def _choice_text_w(layout, lines):
+    return max((layout.font.size(line)[0] for line in lines), default=0)
+
+
+def choice_rects(layout, state):
+    """(box, card rects, compact) for state.pending_choice: a box centred on
+    the map with a title row, the cards, and a hint row (half a line of
+    margin round each). Cards go side by side
+    when three fit across the map, else they stack in two-line compact form.
+    paint_choice and choice_card_at both use this."""
+    items = state.pending_choice or []
+    numbered = choice.cards(items)
     line_h = layout.font.get_linesize()
-    top = box.centery - len(lines) * line_h // 2
-    for i, line in enumerate(lines):
-        text = canvas.text_surface(line, palette.DANGER)
-        canvas.surface.blit(text, text.get_rect(centerx=box.centerx, top=top + i * line_h))
+    pad = layout.cell_w
+    area = layout.map_rect()
+    frame_w = max(layout.font.size(choice.TITLE)[0], layout.font.size(choice.HINT)[0])
+
+    full = [line for n, item in numbered for line in choice.card_lines(n, item)]
+    card_w = _choice_text_w(layout, full) + 2 * pad
+    card_h = (len(full) // max(1, len(items))) * line_h + line_h
+    gap = pad
+    box_w = max(len(items) * card_w + (len(items) - 1) * gap, frame_w) + 2 * pad
+    box_h = card_h + 4 * line_h
+    compact = box_w > area.width or box_h > area.height
+    if compact:
+        lines = [line for n, item in numbered for line in choice.compact_lines(n, item)]
+        card_w = _choice_text_w(layout, lines) + 2 * pad
+        card_h = 2 * line_h + line_h // 2
+        gap = max(1, line_h // 4)
+        box_w = max(card_w, frame_w) + 2 * pad
+        box_h = len(items) * card_h + (len(items) - 1) * gap + 4 * line_h
+
+    box = pygame.Rect(0, 0, box_w, box_h)
+    box.center = area.center
+    top = box.top + 2 * line_h
+    cards = []
+    if compact:
+        for i in range(len(items)):
+            rect = pygame.Rect(0, top + i * (card_h + gap), card_w, card_h)
+            rect.centerx = box.centerx
+            cards.append(rect)
+    else:
+        row_w = len(items) * card_w + (len(items) - 1) * gap
+        left = box.centerx - row_w // 2
+        cards = [
+            pygame.Rect(left + i * (card_w + gap), top, card_w, card_h) for i in range(len(items))
+        ]
+    return box, cards, compact
+
+
+def choice_card_at(layout, state, pixel):
+    """Index into state.pending_choice of the card under window pixel
+    `pixel`, or None (not choosing, or not on a card)."""
+    if state is None or not state.is_choosing:
+        return None
+    _, cards, _ = choice_rects(layout, state)
+    for i, rect in enumerate(cards):
+        if rect.collidepoint(pixel):
+            return i
+    return None
+
+
+def paint_choice(canvas, state):
+    """Overlay for a pending chest choice: a dark framed box over the map,
+    TEXT for the title and hint, and each card a parchment page (the panel's
+    paper) inked in its item's rarity colour."""
+    layout = canvas.layout
+    surface = canvas.surface
+    box, cards, compact = choice_rects(layout, state)
+    border = max(1, layout.cell_h // 12)
+    line_h = layout.font.get_linesize()
+    surface.fill(palette.BACKGROUND, box)
+    pygame.draw.rect(surface, palette.PAGE_EDGE, box, border)
+
+    title = canvas.text_surface(choice.TITLE, palette.TEXT, bold=True)
+    surface.blit(title, title.get_rect(centerx=box.centerx, top=box.top + line_h // 2))
+    hint = canvas.text_surface(choice.HINT, palette.TEXT)
+    surface.blit(hint, hint.get_rect(centerx=box.centerx, bottom=box.bottom - line_h // 2))
+
+    for (number, item), rect in zip(choice.cards(state.pending_choice), cards):
+        surface.fill(palette.PAGE, rect)
+        pygame.draw.rect(surface, palette.PAGE_EDGE, rect, border)
+        ink = palette.ink(item.color)
+        lines = (choice.compact_lines if compact else choice.card_lines)(number, item)
+        top = rect.top + (rect.height - len(lines) * line_h) // 2
+        for i, line in enumerate(lines):
+            text = canvas.text_surface(line, ink, bold=(i == 0))
+            if compact:
+                at = text.get_rect(left=rect.left + layout.cell_w, top=top + i * line_h)
+            else:
+                at = text.get_rect(centerx=rect.centerx, top=top + i * line_h)
+            surface.blit(text, at)

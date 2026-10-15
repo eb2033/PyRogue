@@ -6,6 +6,16 @@ GitHub Release notes.
 
 ## [Unreleased]
 
+### Fixed
+- A corridor could turn through the corner of one room's wall into the room next to it, leaving
+  two doors side by side where one should have been flanked by wall.
+
+### Development
+- CI lints and checks formatting with ruff, type-checks with pyright and looks for unused code
+  with vulture; Hypothesis property tests hunt for edge cases in dungeon generation, FOV, loot,
+  settings and whole random playthroughs. Dependabot opens weekly update PRs for the pinned
+  Python packages and GitHub Actions.
+
 ## [0.1.0] - 2026-10-13
 
 The first desktop release: PyRogue in its own window, as a download that needs no Python.

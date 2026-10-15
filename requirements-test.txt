@@ -1,0 +1,3 @@
+# Test-only dependencies. tests/test_properties.py skips without them, so the
+# stdlib-only CI job still passes with nothing installed.
+hypothesis==6.169.2    # property-based tests

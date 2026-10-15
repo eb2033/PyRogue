@@ -42,6 +42,11 @@ class ParityTest(unittest.TestCase):
     def test_every_action_reachable_in_pygame(self):
         self.assertEqual(pygame_actions(), ALL_ACTIONS)
 
+    @unittest.skipUnless(input_map and CURSES_ACTIONS, 'needs both pygame and curses')
+    def test_h_drinks_in_both_renderers(self):
+        self.assertEqual(CURSES_ACTIONS[ord('h')], Action.DRINK)
+        self.assertEqual(input_map.CHAR_ACTIONS['h'], Action.DRINK)
+
     @unittest.skipUnless(input_map, 'pygame-ce not installed')
     def test_window_keys_never_shadow_game_keys(self):
         # F11 is the renderer's own (fullscreen); it must not also be an Action.
