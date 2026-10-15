@@ -13,6 +13,7 @@ from pathlib import Path
 from game.entity import Entity
 from game.item import Chest, Item, gear_defense
 from game.monster import Monster
+from game.rect import Rect
 
 SAVE_VERSION = 1
 
@@ -87,6 +88,11 @@ def state_to_dict(state):
         # junk has rarity None). None when no choice is pending.
         'pending_choice': (None if state.pending_choice is None
                            else [_gear_to_dict(i) for i in state.pending_choice]),
+        # The boss room's bounds on a boss floor, else None. Stored so a
+        # loaded boss floor keeps its arena.
+        'boss_arena': (None if state.boss_arena is None else
+                       [state.boss_arena.x1, state.boss_arena.y1,
+                        state.boss_arena.x2, state.boss_arena.y2]),
     }
 
 
@@ -125,6 +131,11 @@ def apply_dict(state, data):
     # Saves from before chest choices have no field: nothing pending.
     pending = data.get('pending_choice')
     state.pending_choice = None if pending is None else [_gear_from_dict(d) for d in pending]
+
+    # Saves from before boss arenas have no field: no arena.
+    arena = data.get('boss_arena')
+    state.boss_arena = None if arena is None else Rect(
+        arena[0], arena[1], arena[2] - arena[0], arena[3] - arena[1])
 
     state.cancel_monster_phase()  # queued monsters belong to the discarded level
     state.entities = [state.player] + [_entity_from_dict(d) for d in data['entities']]

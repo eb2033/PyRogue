@@ -39,7 +39,7 @@ MAX_SCALING_DEPTH = 20
 # render/curses_render.py's COLOR_PAIRS table.
 RARITY_COLOR = {'common': 7, 'uncommon': 4, 'rare': 5, 'epic': 6}
 
-POTION_HEAL = {'common': 8, 'uncommon': 14, 'rare': 22, 'epic': 35}
+POTION_HEAL = {'common': 20, 'uncommon': 35, 'rare': 55, 'epic': 88}
 # Weapon power bonus by rarity.
 GEAR_BONUS = {'common': 1, 'uncommon': 2, 'rare': 4, 'epic': 7}
 # Armor defense by rarity. This is the value the damage-reduction system

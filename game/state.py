@@ -72,8 +72,8 @@ CHOOSE_INDEX = {
 # class name -> (hp, power). Archers hit softer but get a free ranged option;
 # warriors are the straightforward melee bruiser the spec describes.
 CLASS_STATS = {
-    'warrior': (25, 4),
-    'archer': (18, 3),
+    'warrior': (60, 4),
+    'archer': (45, 3),
 }
 DEFAULT_CLASS = 'warrior'
 

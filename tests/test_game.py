@@ -1527,6 +1527,23 @@ class SaveLoadTests(unittest.TestCase):
         fresh.choose(2)
         self.assertEqual(fresh.player.defense, ARMOR_DEFENSE['epic'])
 
+    def test_boss_arena_round_trips_and_old_saves_have_none(self):
+        from game.rect import Rect
+        random.seed(70)
+        state = GameState(50, 20)
+        state.boss_arena = Rect(10, 5, 8, 7)
+        data = state_to_dict(state)
+        fresh = GameState(50, 20)
+        apply_dict(fresh, data)
+        self.assertEqual((fresh.boss_arena.x1, fresh.boss_arena.y1,
+                          fresh.boss_arena.x2, fresh.boss_arena.y2), (10, 5, 18, 12))
+        self.assertEqual(fresh.boss_arena.center(), Rect(10, 5, 8, 7).center())
+        # A save from before boss arenas has no field: no arena.
+        del data['boss_arena']
+        fresh.boss_arena = Rect(0, 0, 4, 4)  # must be cleared by the load
+        apply_dict(fresh, data)
+        self.assertIsNone(fresh.boss_arena)
+
     def test_no_pending_choice_saves_as_none(self):
         random.seed(66)
         state = GameState(50, 20)
