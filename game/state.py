@@ -19,13 +19,20 @@ from game import paths
 from game.combat import Hit
 from game.damage import mitigate, round_damage
 from game.dungeon import generate_dungeon, place_stairs
-from game.entity import Entity
+from game.entity import Player
 from game.fov import update_visibility
-from game.item import (BELT_SLOTS, STARTING_WEAPON_RARITY, Chest, Item, gear_power,
-                       spawn_boss_chest, spawn_chests)
+from game.item import (
+    BELT_SLOTS,
+    STARTING_WEAPON_RARITY,
+    Chest,
+    Item,
+    gear_power,
+    spawn_boss_chest,
+    spawn_chests,
+)
 from game.monster import Monster, is_boss_level
-from game.spawn import spawn_level
 from game.save import apply_dict, load_game, save_game
+from game.spawn import spawn_level
 from game.tiles import DOOR, STAIRS_DOWN, is_walkable
 
 # None means "use paths.save_path()" (the per-user data dir), resolved at
@@ -42,6 +49,7 @@ def current_save_path():
     target = paths.save_path()
     paths.migrate_legacy_save(target)
     return target
+
 
 # Semantic action -> (dx, dy) in game coordinates. y grows downward.
 MOVE_DELTAS = {
@@ -141,7 +149,7 @@ class GameState:
         hp, power = CLASS_STATS[char_class]
 
         px, py = self.rooms[0].center()
-        self.player = Entity(px, py, '@', color=1, name='you')
+        self.player = Player(px, py, '@', color=1, name='you')
         self.player.char_class = char_class
         self.player.hp = hp
         self.player.max_hp = hp
@@ -294,9 +302,11 @@ class GameState:
     def _belt_refuses(self, chest):
         """True if a potion chest can't be taken now: full HP (so it
         wouldn't be drunk) and no free belt slot to store it in."""
-        return (not chest.offers_choice
-                and self.player.hp >= self.player.max_hp
-                and len(self.belt) >= BELT_SLOTS)
+        return (
+            not chest.offers_choice
+            and self.player.hp >= self.player.max_hp
+            and len(self.belt) >= BELT_SLOTS
+        )
 
     def drink_from_belt(self):
         """Drink the first belt slot's potion (heals POTION_HEAL[rarity],
@@ -329,8 +339,11 @@ class GameState:
         px, py = self.player.x, self.player.y
         for step in range(1, reach):
             x, y = px + dx * step, py + dy * step
-            if (not is_walkable(self.game_map, x, y) or self.game_map[y][x] == DOOR
-                    or self.monster_at(x, y) is not None):
+            if (
+                not is_walkable(self.game_map, x, y)
+                or self.game_map[y][x] == DOOR
+                or self.monster_at(x, y) is not None
+            ):
                 return None
         tx, ty = px + dx * reach, py + dy * reach
         if not (0 <= ty < self.height and 0 <= tx < self.width) or not self.visible[ty][tx]:
@@ -360,9 +373,17 @@ class GameState:
                 break
             self.attack(self.player, target)
         if weapon is not None and weapon.cleave:
-            other = next((e for e in self.entities
-                          if isinstance(e, Monster) and e.alive and e is not target
-                          and e.is_adjacent(self.player)), None)
+            other = next(
+                (
+                    e
+                    for e in self.entities
+                    if isinstance(e, Monster)
+                    and e.alive
+                    and e is not target
+                    and e.is_adjacent(self.player)
+                ),
+                None,
+            )
             if other is not None:
                 self.log(f'Your swing carries on into {other.name}.')
                 self.attack(self.player, other)
@@ -389,8 +410,7 @@ class GameState:
                     item.apply(self.player, self.log)
                 else:
                     self.belt.append(item)
-                    self.log(f'You put the {item.name} on your belt '
-                             f'(slot {len(self.belt)}).')
+                    self.log(f'You put the {item.name} on your belt (slot {len(self.belt)}).')
             return True
         self.pending_choice = items
         self.log('Choose one: ' + ', '.join(_describe(i) for i in items) + '.')
@@ -478,8 +498,18 @@ class GameState:
         if crit:
             self.log('Critical hit!')
         self._hit_serial += 1
-        self.combat_events.append(Hit(self._hit_serial, attacker, defender, damage,
-                                      defender.hp <= 0, defender.x, defender.y, crit))
+        self.combat_events.append(
+            Hit(
+                self._hit_serial,
+                attacker,
+                defender,
+                damage,
+                defender.hp <= 0,
+                defender.x,
+                defender.y,
+                crit,
+            )
+        )
         if defender.hp <= 0:
             defender.alive = False
             if defender is not self.player:
@@ -500,10 +530,13 @@ class GameState:
         own action before any monster answers it.
         """
         self.update_fov()
-        self._pending_monsters = [e for e in self.entities
-                                  if e is not self.player
-                                  and getattr(e, 'alive', True)
-                                  and getattr(e, 'take_turn', None) is not None]
+        self._pending_monsters = [
+            e
+            for e in self.entities
+            if e is not self.player
+            and getattr(e, 'alive', True)
+            and getattr(e, 'take_turn', None) is not None
+        ]
 
     def monster_phase_pending(self):
         return bool(self._pending_monsters)
@@ -529,9 +562,12 @@ class GameState:
 
             was_seen = self.is_visible(monster.x, monster.y)
             before = (monster.x, monster.y)
-            result = monster.take_turn(self.player, self.game_map,
-                                       occupied=self._occupied_except(monster),
-                                       sees_player=was_seen)
+            result = monster.take_turn(
+                self.player,
+                self.game_map,
+                occupied=self._occupied_except(monster),
+                sees_player=was_seen,
+            )
             if result == 'attack':
                 self.attack(monster, self.player)
             self.update_fov()
@@ -543,8 +579,9 @@ class GameState:
                 self._finish_round()
                 return True
 
-            moved_in_view = ((monster.x, monster.y) != before
-                             and (was_seen or self.is_visible(monster.x, monster.y)))
+            moved_in_view = (monster.x, monster.y) != before and (
+                was_seen or self.is_visible(monster.x, monster.y)
+            )
             if result == 'attack' or moved_in_view:
                 return True
 
@@ -569,8 +606,7 @@ class GameState:
         moves already made earlier in the same round."""
         occupied = {(self.player.x, self.player.y)}
         for e in self.entities:
-            if (e is not monster and e is not self.player
-                    and isinstance(e, Monster) and e.alive):
+            if e is not monster and e is not self.player and isinstance(e, Monster) and e.alive:
                 occupied.add((e.x, e.y))
         return occupied
 
@@ -584,13 +620,13 @@ class GameState:
         return True
 
     def _finish_round(self):
-        self.entities = [e for e in self.entities
-                         if e is self.player or getattr(e, 'alive', True)]
+        self.entities = [e for e in self.entities if e is self.player or getattr(e, 'alive', True)]
         self.update_fov()
 
     def update_fov(self):
-        update_visibility(self.game_map, self.visible, self.seen,
-                          self.player.x, self.player.y, self.fov_radius)
+        update_visibility(
+            self.game_map, self.visible, self.seen, self.player.x, self.player.y, self.fov_radius
+        )
 
     # -- queries the renderer uses ----------------------------------------
 
@@ -603,9 +639,14 @@ class GameState:
     def melee_opponents(self):
         """Living monsters in view that are orthogonally adjacent to the
         player, i.e. close enough that one of the two can hit the other."""
-        return [e for e in self.entities
-                if isinstance(e, Monster) and e.alive and e.is_adjacent(self.player)
-                and self.visible[e.y][e.x]]
+        return [
+            e
+            for e in self.entities
+            if isinstance(e, Monster)
+            and e.alive
+            and e.is_adjacent(self.player)
+            and self.visible[e.y][e.x]
+        ]
 
     def zoom_opponents(self):
         """Who the combat zoom frames: melee_opponents(), plus -- for a
@@ -620,15 +661,17 @@ class GameState:
 
     def visible_monsters(self):
         """Living monsters in the player's view."""
-        return [e for e in self.entities
-                if isinstance(e, Monster) and e.alive and self.visible[e.y][e.x]]
+        return [
+            e
+            for e in self.entities
+            if isinstance(e, Monster) and e.alive and self.visible[e.y][e.x]
+        ]
 
     def monsters_within(self, radius):
         """Living monsters in view within `radius` of the player, by
         Chebyshev distance (a loose "nearby" check, like chase range -- not
         an adjacency test). The combat zoom holds while any is this close."""
-        return [m for m in self.visible_monsters()
-                if m.distance_to(self.player) <= radius]
+        return [m for m in self.visible_monsters() if m.distance_to(self.player) <= radius]
 
     def chest_at(self, x, y):
         for e in self.entities:
@@ -643,8 +686,7 @@ class GameState:
         """Living entities in view. The `alive` filter matters now that the
         renderer draws mid-round: a monster killed during the player's half
         must not still be on screen while the monster half plays out."""
-        return [e for e in self.entities
-                if getattr(e, 'alive', True) and self.visible[e.y][e.x]]
+        return [e for e in self.entities if getattr(e, 'alive', True) and self.visible[e.y][e.x]]
 
     def log(self, text):
         self.messages.append(text)

@@ -45,7 +45,7 @@ def parse_line(line):
     if not line or line.startswith('#'):
         return None
     if line.startswith('export '):
-        line = line[len('export '):].lstrip()
+        line = line[len('export ') :].lstrip()
     key, sep, value = line.partition('=')
     key = key.strip()
     if not sep or not key or any(c.isspace() for c in key):

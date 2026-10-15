@@ -55,8 +55,14 @@ ARMOR_DEFENSE = {'common': 3, 'uncommon': 6, 'rare': 12, 'epic': 21}
 # WEAPON_EFFECTS below. The plain 'weapon' kind is the original sword line
 # with no effect (old saves hold it, and it still drops).
 WEAPON_TYPES = ['war_axe', 'rapier', 'great_sword', 'sword_shield', 'dagger', 'spear']
-WEAPON_DAMAGE_OFFSET = {'war_axe': -1, 'rapier': -2, 'great_sword': 1,
-                        'sword_shield': 0, 'dagger': -1, 'spear': 0}
+WEAPON_DAMAGE_OFFSET = {
+    'war_axe': -1,
+    'rapier': -2,
+    'great_sword': 1,
+    'sword_shield': 0,
+    'dagger': -1,
+    'spear': 0,
+}
 AXE_MAX_HP = {'common': 3, 'uncommon': 6, 'rare': 9, 'epic': 15}
 # The requested 1/2/3 shield defense, x3 for the ARMOR_DEFENSE rescale, with
 # epic continuing the step as the 4th value.
@@ -73,8 +79,14 @@ MIN_POWER = 1
 # player.weapon.reach and friends directly. A value is either a constant or a
 # rarity table. Effects come from (kind, rarity) when the Item is built, so
 # a save only needs the kind and rarity.
-EFFECT_DEFAULTS = {'max_hp_bonus': 0, 'strikes': 1, 'cleave': False,
-                   'defense_bonus': 0, 'crit_bonus': 0.0, 'reach': 1}
+EFFECT_DEFAULTS = {
+    'max_hp_bonus': 0,
+    'strikes': 1,
+    'cleave': False,
+    'defense_bonus': 0,
+    'crit_bonus': 0.0,
+    'reach': 1,
+}
 WEAPON_EFFECTS = {
     'war_axe': {'max_hp_bonus': AXE_MAX_HP},
     'rapier': {'strikes': RAPIER_STRIKES},
@@ -92,8 +104,12 @@ GEAR_KINDS = ['weapon', 'armor'] + WEAPON_TYPES
 GEAR_SLOTS = {'weapon': 'weapon', 'armor': 'armor'}
 GEAR_SLOTS.update({kind: 'weapon' for kind in WEAPON_TYPES})
 GEAR_STATS = {'weapon': GEAR_BONUS, 'armor': ARMOR_DEFENSE}
-GEAR_STATS.update({kind: {r: GEAR_BONUS[r] + WEAPON_DAMAGE_OFFSET[kind] for r in RARITIES}
-                   for kind in WEAPON_TYPES})
+GEAR_STATS.update(
+    {
+        kind: {r: GEAR_BONUS[r] + WEAPON_DAMAGE_OFFSET[kind] for r in RARITIES}
+        for kind in WEAPON_TYPES
+    }
+)
 
 # The kinds a gear-chest (or boss-chest) drop can be. The plain 'weapon' is
 # not among them: it is the starting weapon every run begins with (see
@@ -163,7 +179,7 @@ JUNK_CHANCE = 0.15
 ARMOR_DROP_CHANCE = 0.20
 
 CHEST_CHAR = '='
-CHEST_COLOR = 3         # gear chests: reuses the cyan pair the old flat "item" color used
+CHEST_COLOR = 3  # gear chests: reuses the cyan pair the old flat "item" color used
 POTION_CHEST_COLOR = 8  # potion chests: pink (pair 8 in render/curses_render.py)
 CHEST_KINDS = ['potion', 'gear']
 # How many items a gear chest (and a boss chest) offers to choose from.
@@ -183,8 +199,10 @@ GEAR_CHEST_CHANCE_PER_FLOOR = 0.4
 
 def rarity_weights_for_depth(depth):
     t = min(1.0, max(0.0, (depth - 1) / (MAX_SCALING_DEPTH - 1)))
-    return [shallow + (deep - shallow) * t
-            for shallow, deep in zip(RARITY_WEIGHTS_SHALLOW, RARITY_WEIGHTS_DEEP)]
+    return [
+        shallow + (deep - shallow) * t
+        for shallow, deep in zip(RARITY_WEIGHTS_SHALLOW, RARITY_WEIGHTS_DEEP)
+    ]
 
 
 def roll_rarity(depth=1, rng=random):

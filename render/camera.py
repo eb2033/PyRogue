@@ -26,14 +26,15 @@ Pure geometry, no pygame: views are in map cells (floats while animating).
 
 from collections import namedtuple
 
-MARGIN = 2                       # squares of map shown around the fight
+MARGIN = 2  # squares of map shown around the fight
 ZOOM_CLASSES = frozenset({'warrior'})
-HOLD_RANGE = 3                   # once zoomed, a monster this close keeps it
-HOLD_TURNS = 2                   # player turns the zoom outlasts the fight
+HOLD_RANGE = 3  # once zoomed, a monster this close keeps it
+HOLD_TURNS = 2  # player turns the zoom outlasts the fight
 
 
 class View(namedtuple('View', 'left top width height')):
     """A rectangle of the map, in cells."""
+
     __slots__ = ()
 
     @property
@@ -60,8 +61,9 @@ def combat_view(a, b, margin=MARGIN):
 
 def centred_on(entity, view):
     """A view the size of `view` with `entity`'s cell at its centre."""
-    return View(entity.x + 0.5 - view.width / 2, entity.y + 0.5 - view.height / 2,
-                view.width, view.height)
+    return View(
+        entity.x + 0.5 - view.width / 2, entity.y + 0.5 - view.height / 2, view.width, view.height
+    )
 
 
 def lerp_view(a, b, t):
@@ -118,10 +120,10 @@ class Director:
         self.view = None
         self.focus = None
         self._last_hit = 0
-        self._turn = None          # state.turn at the last frame
-        self._pos_seen = None      # the player's position at the last frame
-        self._pos_before = None    # ... before their latest turn
-        self._calm_since = None    # turn the hold's countdown started, or None
+        self._turn = None  # state.turn at the last frame
+        self._pos_seen = None  # the player's position at the last frame
+        self._pos_before = None  # ... before their latest turn
+        self._calm_since = None  # turn the hold's countdown started, or None
 
     def current(self, state):
         return self.view or full_view(state.width, state.height)
@@ -179,8 +181,11 @@ class Director:
         nearby = state.monsters_within(HOLD_RANGE)
         if nearby:
             self._calm_since = None
-            focus = (self.focus if self.focus in nearby
-                     else min(nearby, key=lambda m: m.distance_to(player)))
+            focus = (
+                self.focus
+                if self.focus in nearby
+                else min(nearby, key=lambda m: m.distance_to(player))
+            )
             return focus, combat_view(player, focus)
         if not state.visible_monsters():
             return None, None  # nobody left to wait for

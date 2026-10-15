@@ -27,7 +27,7 @@ class MitigateTests(unittest.TestCase):
         self.assertAlmostEqual(mitigate(8, 6), 5.0)
 
     def test_floor_of_one(self):
-        self.assertEqual(mitigate(1.2, 10 ** 6), 1.0)
+        self.assertEqual(mitigate(1.2, 10**6), 1.0)
 
     def test_negative_defense_no_reduction(self):
         self.assertEqual(mitigate(8, -5), 8)
@@ -67,5 +67,5 @@ class RoundingTests(unittest.TestCase):
         self.assertIsInstance(plain_round(6.7), int)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

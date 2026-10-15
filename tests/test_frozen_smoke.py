@@ -45,9 +45,9 @@ def visible_windows_of(pid):
     import ctypes
     from ctypes import wintypes
 
-    user32 = ctypes.WinDLL('user32', use_last_error=True)
+    user32 = ctypes.WinDLL('user32', use_last_error=True)  # pyright: ignore[reportAttributeAccessIssue]
     titles = []
-    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)  # pyright: ignore[reportAttributeAccessIssue]
 
     def callback(hwnd, _lparam):
         owner = wintypes.DWORD()
@@ -68,20 +68,28 @@ def clean_env(scratch):
     checkout's Python, with per-user dirs pointed into `scratch` so a save or
     crash.log can't land in the real profile."""
     env = dict(os.environ)
-    for name in ('PYTHONHOME', 'PYTHONPATH', 'PYTHONSTARTUP', 'VIRTUAL_ENV',
-                 'PYTHONSAFEPATH', 'PYTHONNOUSERSITE'):
+    for name in (
+        'PYTHONHOME',
+        'PYTHONPATH',
+        'PYTHONSTARTUP',
+        'VIRTUAL_ENV',
+        'PYTHONSAFEPATH',
+        'PYTHONNOUSERSITE',
+    ):
         env.pop(name, None)
     venv_markers = (str(ROOT / '.venv'), os.environ.get('VIRTUAL_ENV') or '\0')
     env['PATH'] = os.pathsep.join(
-        p for p in env.get('PATH', '').split(os.pathsep)
-        if p and not p.startswith(venv_markers))
-    env.update({
-        'RENDERER': 'pygame',          # until WS-A makes it the frozen default
-        'SDL_VIDEODRIVER': 'dummy',
-        'SDL_AUDIODRIVER': 'dummy',
-        'APPDATA': str(scratch),       # Windows user_data_dir
-        'XDG_DATA_HOME': str(scratch), # Linux user_data_dir
-    })
+        p for p in env.get('PATH', '').split(os.pathsep) if p and not p.startswith(venv_markers)
+    )
+    env.update(
+        {
+            'RENDERER': 'pygame',  # until WS-A makes it the frozen default
+            'SDL_VIDEODRIVER': 'dummy',
+            'SDL_AUDIODRIVER': 'dummy',
+            'APPDATA': str(scratch),  # Windows user_data_dir
+            'XDG_DATA_HOME': str(scratch),  # Linux user_data_dir
+        }
+    )
     return env
 
 
@@ -90,9 +98,13 @@ class FrozenSmokeTest(unittest.TestCase):
     def test_launches_and_reaches_the_title_screen(self):
         with tempfile.TemporaryDirectory() as scratch:
             proc = subprocess.Popen(
-                [str(EXE)], cwd=scratch, env=clean_env(scratch),
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT)
+                [str(EXE)],
+                cwd=scratch,
+                env=clean_env(scratch),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
             try:
                 deadline = time.monotonic() + ALIVE_SECONDS
                 while time.monotonic() < deadline and proc.poll() is None:
@@ -107,10 +119,9 @@ class FrozenSmokeTest(unittest.TestCase):
                 output, _ = proc.communicate(timeout=10)
             self.assertIsNone(
                 exit_code,
-                f'frozen build exited early with {exit_code}:\n'
-                + output.decode(errors='replace'))
-            self.assertEqual(dialogs, [],
-                             'frozen build is alive but showing a dialog (a crash)')
+                f'frozen build exited early with {exit_code}:\n' + output.decode(errors='replace'),
+            )
+            self.assertEqual(dialogs, [], 'frozen build is alive but showing a dialog (a crash)')
             crash_logs = list(Path(scratch).rglob('crash.log'))
             self.assertEqual(crash_logs, [], 'frozen build wrote a crash.log')
 
@@ -144,18 +155,35 @@ class PackagingTest(unittest.TestCase):
             version_info.version_tuple('v1.0')
 
 
-
 # Which notices entry covers a bundled native library: a substring of the
 # library's lowercased file name -> the component named in the notices.
 # Checked longest key first, so 'sdl2_image' wins over 'sdl2'.
 LIBRARY_COMPONENTS = {
-    'sdl2_image': 'SDL2_image', 'sdl2_mixer': 'SDL2_mixer', 'sdl2_ttf': 'SDL2_ttf',
-    'sdl2': 'SDL2', 'freetype': 'FreeType', 'harfbuzz': 'HarfBuzz', 'png': 'libpng',
-    'jpeg': 'libjpeg-turbo', 'tiff': 'libtiff', 'webp': 'libwebp', 'sharpyuv': 'libwebp',
-    'opusfile': 'opusfile', 'opus': 'Opus', 'ogg': 'libogg', 'vorbis': 'libvorbis',
-    'flac': 'FLAC', 'mpg123': 'mpg123', 'fluidsynth': 'FluidSynth', 'sndfile': 'libsndfile',
-    'wavpack': 'WavPack', 'xmp': 'libxmp', 'portmidi': 'PortMidi', 'brotli': 'Brotli',
-    'asound': 'alsa-lib', 'zlib': 'zlib',
+    'sdl2_image': 'SDL2_image',
+    'sdl2_mixer': 'SDL2_mixer',
+    'sdl2_ttf': 'SDL2_ttf',
+    'sdl2': 'SDL2',
+    'freetype': 'FreeType',
+    'harfbuzz': 'HarfBuzz',
+    'png': 'libpng',
+    'jpeg': 'libjpeg-turbo',
+    'tiff': 'libtiff',
+    'webp': 'libwebp',
+    'sharpyuv': 'libwebp',
+    'opusfile': 'opusfile',
+    'opus': 'Opus',
+    'ogg': 'libogg',
+    'vorbis': 'libvorbis',
+    'flac': 'FLAC',
+    'mpg123': 'mpg123',
+    'fluidsynth': 'FluidSynth',
+    'sndfile': 'libsndfile',
+    'wavpack': 'WavPack',
+    'xmp': 'libxmp',
+    'portmidi': 'PortMidi',
+    'brotli': 'Brotli',
+    'asound': 'alsa-lib',
+    'zlib': 'zlib',
 }
 
 
@@ -172,6 +200,7 @@ class NoticesTest(unittest.TestCase):
         for name in files:
             self.assertIn(name, notices)
         import re
+
         listed = set(re.findall(r'\b([\w.-]+\.txt)\b', notices))
         listed -= {'THIRD_PARTY_NOTICES.txt', 'License.txt', 'OFL.txt', 'Python-LICENSE.txt'}
         self.assertEqual(listed - files, set(), 'named in the notices but missing')
@@ -189,9 +218,12 @@ class NoticesTest(unittest.TestCase):
             self.skipTest('this pygame-ce build bundles no native libraries')
         notices = self.NOTICES.read_text(encoding='utf-8')
         for lib in libs:
-            key = next((k for k in sorted(LIBRARY_COMPONENTS, key=len, reverse=True)
-                        if k in lib.lower()), None)
+            key = next(
+                (k for k in sorted(LIBRARY_COMPONENTS, key=len, reverse=True) if k in lib.lower()),
+                None,
+            )
             self.assertIsNotNone(key, f'{lib}: unknown library, add it to the notices')
+            assert key is not None
             self.assertIn(LIBRARY_COMPONENTS[key], notices, lib)
 
     def test_build_scripts_ship_the_notices(self):
@@ -204,6 +236,7 @@ class NoticesTest(unittest.TestCase):
         self.assertTrue((BUNDLE / 'THIRD_PARTY_NOTICES.txt').is_file())
         for name in ('pygame-ce.txt', 'SDL2.txt', 'Python-LICENSE.txt'):
             self.assertTrue((BUNDLE / 'licenses' / name).is_file(), name)
+
 
 if __name__ == '__main__':
     unittest.main()

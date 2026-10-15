@@ -85,7 +85,7 @@ class DirectorTest(unittest.TestCase):
         director = Director()
         director.plan(state)
         goblin.hp = 1
-        state.attack(state.player, goblin)       # the killing blow
+        state.attack(state.player, goblin)  # the killing blow
         beats = director.plan(state)
         self.assertEqual([type(b) for b in beats], [Impact, Pan])
         self.assertTrue(beats[0].hit.killed)
@@ -139,12 +139,12 @@ class DirectorTest(unittest.TestCase):
         self.assertEqual(beats[-1].end, camera.combat_view(state.player, second))
 
 
-
 class SpearZoomTest(unittest.TestCase):
     """A spear's reach (2) starts the combat zoom one square early."""
 
     def arena(self, spear=True):
         from game.item import Item
+
         state = GameState(WIDTH, HEIGHT, char_class='warrior')
         for y in range(1, HEIGHT - 1):
             for x in range(1, WIDTH - 1):
@@ -170,8 +170,9 @@ class SpearZoomTest(unittest.TestCase):
         self.assertNotIn(m, state.melee_opponents())
         director = Director()
         beats = director.plan(state)
-        self.assertEqual(beats, [Pan(camera.full_view(WIDTH, HEIGHT),
-                                     camera.combat_view(state.player, m))])
+        self.assertEqual(
+            beats, [Pan(camera.full_view(WIDTH, HEIGHT), camera.combat_view(state.player, m))]
+        )
         self.assertIs(director.focus, m)
         # fight over (monster dies): zoom back out
         m.alive = False
@@ -248,7 +249,7 @@ class SmoothZoomTest(unittest.TestCase):
         goblin = self.add(state, 12, 10)
         director = Director()
         self.assertEqual(director.plan(state), [])
-        state.handle_action('move_w')                # the player flees west
+        state.handle_action('move_w')  # the player flees west
         self.assertEqual(state.player.x, 9)
         # The goblin closes in right behind (it had been out of sight, say):
         # in range, but the player's last move took them away from it.
@@ -257,11 +258,10 @@ class SmoothZoomTest(unittest.TestCase):
         self.assertEqual(state.zoom_opponents(), [goblin])
         self.assertEqual(director.plan(state), [])
         self.assertIsNone(director.view)
-        self.assertEqual(director.plan(state), [])   # redrawn: still out
+        self.assertEqual(director.plan(state), [])  # redrawn: still out
         # The player stands and fights: now it zooms in.
         state.handle_action('wait')
-        self.assertEqual(director.plan(state)[-1].end,
-                         camera.combat_view(state.player, goblin))
+        self.assertEqual(director.plan(state)[-1].end, camera.combat_view(state.player, goblin))
 
     def test_walking_toward_a_monster_zooms_in(self):
         state = self.arena()
@@ -269,9 +269,10 @@ class SmoothZoomTest(unittest.TestCase):
         director = Director()
         self.assertEqual(director.plan(state), [])
         state.handle_action('move_e')
-        self.assertEqual(director.plan(state),
-                         [Pan(camera.full_view(WIDTH, HEIGHT),
-                              camera.combat_view(state.player, goblin))])
+        self.assertEqual(
+            director.plan(state),
+            [Pan(camera.full_view(WIDTH, HEIGHT), camera.combat_view(state.player, goblin))],
+        )
         self.assertIs(director.focus, goblin)
 
     def test_stepping_away_once_zoomed_stays_zoomed(self):
@@ -284,7 +285,7 @@ class SmoothZoomTest(unittest.TestCase):
         director.plan(state)
         self.assertIsNotNone(director.view)
         self.assertIs(director.focus, goblin)
-        while state.step_monster_phase():             # the goblin follows
+        while state.step_monster_phase():  # the goblin follows
             director.plan(state)
             self.assertIsNotNone(director.view)
         director.plan(state)
@@ -294,14 +295,14 @@ class SmoothZoomTest(unittest.TestCase):
         state = self.arena()
         goblin = self.add(state, 11, 10)
         director = self.zoomed_on(state, goblin)
-        goblin.x = 15                                # out of HOLD_RANGE, in view
+        goblin.x = 15  # out of HOLD_RANGE, in view
         state.update_fov()
         for _ in range(camera.HOLD_TURNS):
-            for _ in range(4):                       # redrawn frames don't count
+            for _ in range(4):  # redrawn frames don't count
                 director.plan(state)
                 self.assertIsNotNone(director.view)
             state.handle_action('wait')
-            state.cancel_monster_phase()             # keep the goblin where it is
+            state.cancel_monster_phase()  # keep the goblin where it is
         beats = director.plan(state)
         self.assertIsNone(director.view)
         self.assertEqual(beats[-1].end, camera.full_view(WIDTH, HEIGHT))
@@ -314,14 +315,14 @@ class SmoothZoomTest(unittest.TestCase):
         state.update_fov()
         director.plan(state)
         state.handle_action('wait')
-        goblin.x = 13                                # within 3 again
+        goblin.x = 13  # within 3 again
         director.plan(state)
         self.assertEqual(director.view, camera.combat_view(state.player, goblin))
         goblin.x = 15
         for _ in range(camera.HOLD_TURNS):
             state.handle_action('wait')
             director.plan(state)
-            self.assertIsNotNone(director.view)      # a fresh countdown
+            self.assertIsNotNone(director.view)  # a fresh countdown
         state.handle_action('wait')
         director.plan(state)
         self.assertIsNone(director.view)
@@ -350,11 +351,11 @@ class SmoothZoomTest(unittest.TestCase):
         far = [self.add(state, 17, 10), self.add(state, 10, 17)]  # 7 away, chasing
         director = self.zoomed_on(state, goblin)
         goblin.alive = False
-        director.plan(state)                         # the countdown starts
-        state.handle_action('wait')                  # turn 1 of 2
+        director.plan(state)  # the countdown starts
+        state.handle_action('wait')  # turn 1 of 2
         director.plan(state)
         frames = 0
-        while state.step_monster_phase():            # both far ones step closer
+        while state.step_monster_phase():  # both far ones step closer
             frames += 1
             director.plan(state)
             self.assertIsNotNone(director.view)
@@ -362,7 +363,7 @@ class SmoothZoomTest(unittest.TestCase):
         director.plan(state)
         self.assertIsNotNone(director.view)
         self.assertTrue(all(m.distance_to(state.player) > camera.HOLD_RANGE for m in far))
-        state.handle_action('wait')                  # turn 2: the hold is over
+        state.handle_action('wait')  # turn 2: the hold is over
         director.plan(state)
         self.assertIsNone(director.view)
 

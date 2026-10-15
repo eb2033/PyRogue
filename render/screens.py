@@ -47,8 +47,9 @@ def paint_menu(canvas, menu, banner_lines, descriptions=None):
 
     for i, option in enumerate(options):
         if i == menu.index:
-            canvas.put_str_centered(options_top + i * 2, _option_text(option, True),
-                                    palette.BACKGROUND, palette.TEXT)
+            canvas.put_str_centered(
+                options_top + i * 2, _option_text(option, True), palette.BACKGROUND, palette.TEXT
+            )
             description = (descriptions or {}).get(option.lower())
             if description:
                 canvas.put_str_centered(options_top + len(options) * 2 + 1, description)
@@ -175,8 +176,9 @@ def choice_rects(layout, state):
     else:
         row_w = len(items) * card_w + (len(items) - 1) * gap
         left = box.centerx - row_w // 2
-        cards = [pygame.Rect(left + i * (card_w + gap), top, card_w, card_h)
-                 for i in range(len(items))]
+        cards = [
+            pygame.Rect(left + i * (card_w + gap), top, card_w, card_h) for i in range(len(items))
+        ]
     return box, cards, compact
 
 

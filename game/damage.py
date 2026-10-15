@@ -1,4 +1,5 @@
 """Pure damage-reduction helpers (standard library only)."""
+
 import random
 
 # Defense value that gives 50% reduction. The single tuning knob.

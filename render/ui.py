@@ -33,24 +33,24 @@ from render import noticeboard, palette
 # 40px tiles. Text rows below are relative to the text's top (`text_y`).
 PANEL_GAP = 1
 PANEL_COLS = 34
-PANEL_PAD_X = 3                   # frame + board + page margin, each side
-PANEL_PAD_TOP = 3                 # frame, the nail and string, the page margin
-PANEL_PAD_BOTTOM = 2              # page margin, frame
+PANEL_PAD_X = 3  # frame + board + page margin, each side
+PANEL_PAD_TOP = 3  # frame, the nail and string, the page margin
+PANEL_PAD_BOTTOM = 2  # page margin, frame
 PANEL_TEXT_COLS = PANEL_COLS - 2 * PANEL_PAD_X
 HP_ROW = 2
-GEAR_TOP = 6                      # header; weapon name + stats, armor name + stats
-BELT_ROW = GEAR_TOP + 5           # the potion belt, under the armor
+GEAR_TOP = 6  # header; weapon name + stats, armor name + stats
+BELT_ROW = GEAR_TOP + 5  # the potion belt, under the armor
 CONTROLS_TOP = GEAR_TOP + 7
-LOG_TOP = CONTROLS_TOP + 5        # the '-- log --' header; messages start below it
-MIN_LOG_LINES = 4                 # the terminal's count: always room for this many
-LOG_LINES = 12                    # shown when the window has the rows for them
+LOG_TOP = CONTROLS_TOP + 5  # the '-- log --' header; messages start below it
+MIN_LOG_LINES = 4  # the terminal's count: always room for this many
+LOG_LINES = 12  # shown when the window has the rows for them
 PANEL_ROWS = PANEL_PAD_TOP + LOG_TOP + 1 + MIN_LOG_LINES + PANEL_PAD_BOTTOM  # the minimum
 PANEL_MAX_ROWS = PANEL_PAD_TOP + LOG_TOP + 1 + LOG_LINES + PANEL_PAD_BOTTOM  # a full log
 # Stacked (panel under the map): blank text rows between map and panel.
 STACK_GAP = 1
 
 # The HP bar sits right of the 'HP: x/max' text, in panel columns.
-HP_BAR_COL = 12                   # 'HP: 999/999' is 11 wide
+HP_BAR_COL = 12  # 'HP: 999/999' is 11 wide
 HP_BAR_COLS = PANEL_TEXT_COLS - HP_BAR_COL
 HP_BAR_COLOR = palette.HP_BAR_FILL  # palette.INK_DANGER at or below 1/3 max
 HP_BAR_TRACK = palette.HP_BAR_TRACK
@@ -134,11 +134,20 @@ class Layout:
         Canvas.put, i.e. in grid cells."""
         if stacked:
             panel_y = self.map_height + STACK_GAP
-            return (max(self.map_width, PANEL_COLS), panel_y + PANEL_ROWS,
-                    panel_y + PANEL_MAX_ROWS, 0, panel_y)
-        return (self.map_width + PANEL_GAP + PANEL_COLS,
-                max(self.map_height, PANEL_ROWS), max(self.map_height, PANEL_MAX_ROWS),
-                self.map_width + PANEL_GAP, 0)
+            return (
+                max(self.map_width, PANEL_COLS),
+                panel_y + PANEL_ROWS,
+                panel_y + PANEL_MAX_ROWS,
+                0,
+                panel_y,
+            )
+        return (
+            self.map_width + PANEL_GAP + PANEL_COLS,
+            max(self.map_height, PANEL_ROWS),
+            max(self.map_height, PANEL_MAX_ROWS),
+            self.map_width + PANEL_GAP,
+            0,
+        )
 
     def _largest_glyph_font(self, cols, rows, win_w, win_h):
         """Largest font size whose `cols x rows` grid fits; MIN_FONT_SIZE if none."""
@@ -178,10 +187,8 @@ class Layout:
         cell_w, cell_h = cell
         map_w, map_h = self.map_width * tile, self.map_height * tile
         if stacked:
-            return (max(map_w, PANEL_COLS * cell_w),
-                    map_h + (STACK_GAP + panel_rows) * cell_h)
-        return (map_w + (PANEL_GAP + PANEL_COLS) * cell_w,
-                max(map_h, panel_rows * cell_h))
+            return (max(map_w, PANEL_COLS * cell_w), map_h + (STACK_GAP + panel_rows) * cell_h)
+        return (map_w + (PANEL_GAP + PANEL_COLS) * cell_w, max(map_h, panel_rows * cell_h))
 
     def _pick_tile_and_font(self, win_w, win_h, stacked=False):
         """(tile, font size, shortfall). The largest tile whose map + panel
@@ -189,9 +196,9 @@ class Layout:
         such font; if even the smallest tile needs a smaller font, the
         smallest tile and whatever font fits. `shortfall` is 1.0 when that
         fits the window, else the share of it that does (the worse axis)."""
+
         def coverage(tile, size):
-            block_w, block_h = self._block_size(tile, self._cell_size(self._font(size)),
-                                                stacked)
+            block_w, block_h = self._block_size(tile, self._cell_size(self._font(size)), stacked)
             return min(1.0, win_w / block_w, win_h / block_h)
 
         def height_fits(tile, size):
@@ -210,8 +217,10 @@ class Layout:
         # the text doesn't help when the map is what overflows.
         # A font whose panel still fits the window's height wins a tie, so
         # an over-wide map doesn't drag the panel off the bottom too.
-        best = max(range(MAX_TILE_FONT_SIZE, MIN_FONT_SIZE - 1, -1),
-                   key=lambda size: (coverage(tile, size), height_fits(tile, size), size))
+        best = max(
+            range(MAX_TILE_FONT_SIZE, MIN_FONT_SIZE - 1, -1),
+            key=lambda size: (coverage(tile, size), height_fits(tile, size), size),
+        )
         return tile, best, coverage(tile, best)
 
     def _choose_tiles(self, win_w, win_h):
@@ -232,8 +241,11 @@ class Layout:
         unreadably small. Never shrinks the log below what `size` gives."""
         for bigger in range(MAX_FONT_SIZE, size, -1):
             block_w, block_h = self._block_size(
-                self.tile, self._cell_size(self._font(bigger)), self.stacked,
-                panel_rows=PANEL_MAX_ROWS)
+                self.tile,
+                self._cell_size(self._font(bigger)),
+                self.stacked,
+                panel_rows=PANEL_MAX_ROWS,
+            )
             if block_w <= win_w and block_h <= win_h:
                 return bigger
         return size
@@ -254,8 +266,9 @@ class Layout:
         # grid and place the map against it.
         # Centre on the board with a full log when that fits, so the log
         # isn't cut short by a panel that starts too low.
-        block_w, block_h = self._block_size(self.tile, (cell_w, cell_h), self.stacked,
-                                            panel_rows=PANEL_MAX_ROWS)
+        block_w, block_h = self._block_size(
+            self.tile, (cell_w, cell_h), self.stacked, panel_rows=PANEL_MAX_ROWS
+        )
         if block_w > win_w or block_h > win_h:
             block_w, block_h = self._block_size(self.tile, (cell_w, cell_h), self.stacked)
         map_w, map_h = self.map_width * self.tile, self.map_height * self.tile
@@ -265,10 +278,12 @@ class Layout:
             self._place_stacked_tiles(block_left, block_top, win_w, map_w, map_h)
             return
         panel_left = block_left + map_w + PANEL_GAP * cell_w
-        self.panel_x = min(max(0, self.cols - PANEL_COLS),
-                           max(0, round((panel_left - self.origin_x) / cell_w)))
-        self.panel_y = min(max(0, self.rows - PANEL_ROWS),
-                           max(0, (block_top - self.origin_y) // cell_h))
+        self.panel_x = min(
+            max(0, self.cols - PANEL_COLS), max(0, round((panel_left - self.origin_x) / cell_w))
+        )
+        self.panel_y = min(
+            max(0, self.rows - PANEL_ROWS), max(0, (block_top - self.origin_y) // cell_h)
+        )
         self.map_origin = (
             max(0, self.origin_x + (self.panel_x - PANEL_GAP) * cell_w - map_w),
             self.origin_y + self.panel_y * cell_h,
@@ -277,9 +292,11 @@ class Layout:
     def _place_stacked_tiles(self, block_left, block_top, win_w, map_w, map_h):
         """Map on top, panel under it, both left-aligned on the panel's column."""
         cell_w, cell_h = self.cell_w, self.cell_h
-        self.panel_x = min(max(0, self.cols - PANEL_COLS),
-                           max(0, round((block_left - self.origin_x) / cell_w)))
+        self.panel_x = min(
+            max(0, self.cols - PANEL_COLS), max(0, round((block_left - self.origin_x) / cell_w))
+        )
         map_left = max(0, min(self.origin_x + self.panel_x * cell_w, win_w - map_w))
+
         # First whole text row below the map, plus the gap.
         def row_below(map_top):
             return -(-(map_top + map_h - self.origin_y) // cell_h) + STACK_GAP
@@ -347,8 +364,11 @@ class Layout:
 
     def panel_rect(self):
         """Pixel rect of the noticeboard."""
-        return pygame.Rect(*self.cell_to_pixel(self.panel_x, self.panel_y),
-                           self.cell_w * self.panel_width(), self.cell_h * self.panel_rows())
+        return pygame.Rect(
+            *self.cell_to_pixel(self.panel_x, self.panel_y),
+            self.cell_w * self.panel_width(),
+            self.cell_h * self.panel_rows(),
+        )
 
     def panel_width(self):
         """Columns of panel that fit: PANEL_COLS unless the grid is narrower."""
@@ -370,9 +390,11 @@ class Layout:
 
     def text_rect(self):
         """Pixel rect of the page's text area (flat paper under the ink)."""
-        return pygame.Rect(*self.cell_to_pixel(self.text_x, self.text_y),
-                           self.cell_w * self.text_width(),
-                           self.cell_h * (LOG_TOP + 1 + self.log_lines()))
+        return pygame.Rect(
+            *self.cell_to_pixel(self.text_x, self.text_y),
+            self.cell_w * self.text_width(),
+            self.cell_h * (LOG_TOP + 1 + self.log_lines()),
+        )
 
     def page_rect(self):
         """Pixel rect of the parchment page: the text area plus a margin of
@@ -403,8 +425,7 @@ class Canvas:
     def clear(self):
         self.surface.fill(palette.BACKGROUND)
 
-    def text_surface(self, text, color=palette.TEXT, background=None,
-                     bold=False, underline=False):
+    def text_surface(self, text, color=palette.TEXT, background=None, bold=False, underline=False):
         """`text` rendered in the current font, for callers placing it by pixel."""
         return self._render(text, color, background, underline=underline, bold=bold)
 
@@ -430,16 +451,18 @@ class Canvas:
         layout = self.layout
         if not (0 <= y < layout.rows and 0 <= x < layout.cols):
             return
-        text = text[:layout.cols - x]
+        text = text[: layout.cols - x]
         if text:
-            self.surface.blit(self._render(text, color, background, bold=bold),
-                              layout.cell_to_pixel(x, y))
+            self.surface.blit(
+                self._render(text, color, background, bold=bold), layout.cell_to_pixel(x, y)
+            )
 
     def put_str_centered(self, y, text, color=palette.TEXT, background=None):
         self.put_str(max(0, (self.layout.cols - len(text)) // 2), y, text, color, background)
 
 
 # -- the panel ----------------------------------------------------------------
+
 
 def paint_panel(canvas, state):
     """The noticeboard, then every item of curses_render._draw_panel inked on
@@ -465,8 +488,9 @@ def paint_panel(canvas, state):
     put(4, f'Items: {len(player.inventory)}')
 
     put(GEAR_TOP, '-- gear --', bold=True)
-    for row, (label, item, stat) in enumerate([('Wpn', player.weapon, 'atk'),
-                                               ('Arm', player.armor, 'def')]):
+    for row, (label, item, stat) in enumerate(
+        [('Wpn', player.weapon, 'atk'), ('Arm', player.armor, 'def')]
+    ):
         name, stats, color = _gear_lines(label, item, stat)
         put(GEAR_TOP + 1 + 2 * row, name, color)
         if stats:
@@ -517,7 +541,7 @@ def _paint_belt(canvas, x, y, width, belt):
             text = f'[{text}]'
         if col < width:
             color = palette.ink(item.color) if item is not None else palette.INK
-            canvas.put_str(x + col, y, text[:width - col], color)
+            canvas.put_str(x + col, y, text[: width - col], color)
         col += len(text) + 1
 
 
@@ -530,16 +554,19 @@ def _paint_hp_bar(canvas, x, y, width, hp, max_hp, danger):
     layout = canvas.layout
     left, row_top = layout.cell_to_pixel(x + HP_BAR_COL, y)
     inset = layout.cell_h // 4
-    track = pygame.Rect(left, row_top + inset, cols * layout.cell_w,
-                        max(2, layout.cell_h - 2 * inset))
+    track = pygame.Rect(
+        left, row_top + inset, cols * layout.cell_w, max(2, layout.cell_h - 2 * inset)
+    )
     canvas.surface.fill(HP_BAR_TRACK, track)
     share = max(0.0, min(1.0, hp / max_hp)) if max_hp > 0 else 0.0
     filled = round(track.width * share)
     if hp > 0:
         filled = max(1, filled)
     if filled:
-        canvas.surface.fill(palette.INK_DANGER if danger else HP_BAR_COLOR,
-                            (track.left, track.top, filled, track.height))
+        canvas.surface.fill(
+            palette.INK_DANGER if danger else HP_BAR_COLOR,
+            (track.left, track.top, filled, track.height),
+        )
 
 
 def _gear_lines(label, item, stat_label):
@@ -548,8 +575,11 @@ def _gear_lines(label, item, stat_label):
     '(none)' and no stats line."""
     if item is None:
         return f'{label}: (none)', '', palette.INK
-    return (f'{label}: {item.name}', f'     {item.bonus:+d} {stat_label}  [{item.rarity}]',
-            palette.ink(item.color))
+    return (
+        f'{label}: {item.name}',
+        f'     {item.bonus:+d} {stat_label}  [{item.rarity}]',
+        palette.ink(item.color),
+    )
 
 
 def _desktop_size():

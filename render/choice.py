@@ -98,20 +98,19 @@ def grid_layout(items, cols, rows):
     numbered = cards(items)
 
     def widest(mode):
-        return max((len(line) for n, item in numbered for line in LINES[mode](n, item)),
-                   default=0)
+        return max((len(line) for n, item in numbered for line in LINES[mode](n, item)), default=0)
 
-    card_w = widest(ACROSS) + 4                     # border + a space each side
+    card_w = widest(ACROSS) + 4  # border + a space each side
     card_h = len(card_lines(1, items[0])) + 2 if items else 2
     frame_w = max(len(TITLE), len(HINT))
     sizes = {
-        ACROSS: (max(len(items) * card_w + (len(items) - 1) * CARD_GAP, frame_w) + 4,
-                 card_h + 6),
+        ACROSS: (max(len(items) * card_w + (len(items) - 1) * CARD_GAP, frame_w) + 4, card_h + 6),
         COMPACT: (max(widest(COMPACT), frame_w) + 4, 2 * len(items) + 6),
         TIGHT: (max(widest(TIGHT), frame_w) + 4, len(items) + 4),
     }
-    mode = next((m for m in (ACROSS, COMPACT) if sizes[m][0] <= cols and sizes[m][1] <= rows),
-                TIGHT)
+    mode = next(
+        (m for m in (ACROSS, COMPACT) if sizes[m][0] <= cols and sizes[m][1] <= rows), TIGHT
+    )
     box_w, box_h = sizes[mode]
     box_w, box_h = max(1, min(box_w, cols)), max(1, min(box_h, rows))
     box_x = max(0, (cols - box_w) // 2)

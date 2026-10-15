@@ -24,8 +24,8 @@ from game.monster import BOSS_LEVEL_INTERVAL, ORTHOGONAL_STEPS, Monster, is_boss
 
 FIRST_BOSS_DEPTH = BOSS_LEVEL_INTERVAL
 
-GOBLIN_PACK_START = 1     # goblins per pack on floors 1-5
-GOBLIN_PACK_EVERY = 5     # floors per +1 goblin
+GOBLIN_PACK_START = 1  # goblins per pack on floors 1-5
+GOBLIN_PACK_EVERY = 5  # floors per +1 goblin
 GOBLIN_PACK_MAX = 3
 
 
@@ -57,8 +57,9 @@ BOSS_ESCORTS = {
 
 
 def rules_for_depth(depth, rules=SPAWN_RULES):
-    return [r for r in rules
-            if r.min_depth <= depth and (r.max_depth is None or depth <= r.max_depth)]
+    return [
+        r for r in rules if r.min_depth <= depth and (r.max_depth is None or depth <= r.max_depth)
+    ]
 
 
 def choose_rule(depth, rng=random, rules=SPAWN_RULES):
@@ -107,9 +108,12 @@ def spawn_boss_room(room, depth, rng=random, occupied=None):
     adjacent to it. Adds the tiles used to `occupied`."""
     occupied = set() if occupied is None else occupied
     cx, cy = room.center()
-    if (cx, cy) in occupied:   # only on a one-room map, where it is the player's tile
-        free = [t for t in room_tiles(room)
-                if t not in occupied and min(_chebyshev(t, o) for o in occupied) >= 2]
+    if (cx, cy) in occupied:  # only on a one-room map, where it is the player's tile
+        free = [
+            t
+            for t in room_tiles(room)
+            if t not in occupied and min(_chebyshev(t, o) for o in occupied) >= 2
+        ]
         free = free or [t for t in room_tiles(room) if t not in occupied]
         cx, cy = rng.choice(free) if free else (cx, cy)
     boss = spawn_boss(room, depth, at=(cx, cy))
@@ -119,8 +123,11 @@ def spawn_boss_room(room, depth, rng=random, occupied=None):
     kind, count = BOSS_ESCORTS.get(depth, (None, 0))
     if count:
         spots = [(cx + dx, cy + dy) for dx, dy in ORTHOGONAL_STEPS]
-        spots = [s for s in spots if room.x1 <= s[0] < room.x2
-                 and room.y1 <= s[1] < room.y2 and s not in occupied]
+        spots = [
+            s
+            for s in spots
+            if room.x1 <= s[0] < room.x2 and room.y1 <= s[1] < room.y2 and s not in occupied
+        ]
         rng.shuffle(spots)
         for x, y in spots[:count]:
             occupied.add((x, y))
@@ -131,7 +138,7 @@ def spawn_boss_room(room, depth, rng=random, occupied=None):
 def spawn_level(rooms, depth, rng=random, rules=SPAWN_RULES):
     """Every enemy on a floor. Returns (monsters, boss_room), boss_room being
     None off boss floors."""
-    occupied = {rooms[0].center()}   # the player's start tile
+    occupied = {rooms[0].center()}  # the player's start tile
     boss_room = None
     if is_boss_level(depth):
         boss_room = rng.choice(rooms[1:]) if len(rooms) > 1 else rooms[-1]

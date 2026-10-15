@@ -14,27 +14,62 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from game.damage import mitigate, round_damage
 from game.dungeon import generate_dungeon, make_empty_map, place_doors, place_stairs, wall_sides
 from game.entity import Entity
 from game.fov import compute_fov, update_visibility
-from game.item import (ARMOR_DEFENSE, CHEST_COLOR, Chest, GEAR_BONUS, GEAR_CHEST_DROPS,
-                       GEAR_DROP_KINDS, GEAR_KINDS, GEAR_SLOTS, ITEM_CHARS, Item, JUNK,
-                       JUNK_CHANCE, JUNK_NAME, MAX_SCALING_DEPTH, POTION_CHEST_COLOR, POTION_HEAL,
-                       RARITIES,
-                       WEAPON_TYPES, rarity_weights_for_depth, roll_rarity, spawn_boss_chest,
-                       spawn_chests)
-from game.monster import (BOSS_REFERENCE_KIND, CHASE_RANGE, GIVE_UP_AFTER, MONSTER_TYPES,
-                          ORTHOGONAL_STEPS, Monster,
-                          is_boss_level, scale_stats, spawn_boss, spawn_monsters,
-                          tier_for_depth)
+from game.item import (
+    ARMOR_DEFENSE,
+    ARMOR_DROP_CHANCE,
+    CHEST_COLOR,
+    GEAR_BONUS,
+    GEAR_CHEST_DROPS,
+    GEAR_DROP_KINDS,
+    GEAR_KINDS,
+    GEAR_SLOTS,
+    ITEM_CHARS,
+    JUNK,
+    JUNK_CHANCE,
+    JUNK_NAME,
+    MAX_SCALING_DEPTH,
+    POTION_CHEST_COLOR,
+    POTION_HEAL,
+    RARITIES,
+    WEAPON_TYPES,
+    Chest,
+    Item,
+    rarity_weights_for_depth,
+    roll_boss_drop,
+    roll_gear_drop,
+    roll_rarity,
+    spawn_boss_chest,
+    spawn_chests,
+)
+from game.monster import (
+    BOSS_REFERENCE_KIND,
+    CHASE_RANGE,
+    GIVE_UP_AFTER,
+    MONSTER_TYPES,
+    ORTHOGONAL_STEPS,
+    Monster,
+    is_boss_level,
+    scale_stats,
+    spawn_boss,
+    spawn_monsters,
+    tier_for_depth,
+)
 from game.rect import Rect
-from game.spawn import (BOSS_ESCORTS, FIRST_BOSS_DEPTH, SPAWN_RULES, SpawnRule, goblin_pack_size,
-                        pick_tiles, spawn_level)
 from game.save import apply_dict, load_game, save_game, state_to_dict
-from game.damage import mitigate, round_damage
+from game.spawn import (
+    BOSS_ESCORTS,
+    FIRST_BOSS_DEPTH,
+    SpawnRule,
+    goblin_pack_size,
+    pick_tiles,
+    spawn_level,
+)
 from game.state import BASE_CRIT_CHANCE, CRIT_MULTIPLIER, GameState, crit_chance
 from game.tiles import DOOR, FLOOR, STAIRS_DOWN, WALL, is_walkable
-from game.item import ARMOR_DROP_CHANCE, roll_boss_drop, roll_gear_drop
 
 
 class DungeonGenerationTests(unittest.TestCase):
@@ -54,7 +89,7 @@ class DungeonGenerationTests(unittest.TestCase):
         random.seed(2)
         _, rooms = generate_dungeon(50, 20)
         for i, r1 in enumerate(rooms):
-            for r2 in rooms[i + 1:]:
+            for r2 in rooms[i + 1 :]:
                 self.assertFalse(r1.intersects(r2), 'rooms should not overlap')
 
     def test_rooms_are_carved_floor(self):
@@ -126,8 +161,12 @@ class DoorPlacementTests(unittest.TestCase):
                             continue  # two rooms sharing a wall
                         visible = [[False] * w for _ in range(h)]
                         compute_fov(game_map, visible, *outside, 8)
-                        seen_inside = [(rx, ry) for ry in range(room.y1, room.y2)
-                                       for rx in range(room.x1, room.x2) if visible[ry][rx]]
+                        seen_inside = [
+                            (rx, ry)
+                            for ry in range(room.y1, room.y2)
+                            for rx in range(room.x1, room.x2)
+                            if visible[ry][rx]
+                        ]
                         self.assertEqual(seen_inside, [], (room.x1, room.y1, (x, y)))
                         checked += 1
         self.assertGreater(checked, 100)
@@ -163,7 +202,7 @@ class DoorPlacementTests(unittest.TestCase):
             for xx in range(room.x1, room.x2):
                 game_map[yy][xx] = FLOOR
         game_map[2][4] = game_map[2][5] = FLOOR  # two-wide gap in the north wall
-        game_map[6][4] = FLOOR                   # one-wide gap in the south wall
+        game_map[6][4] = FLOOR  # one-wide gap in the south wall
         place_doors(game_map, [room])
         self.assertEqual((game_map[2][4], game_map[2][5]), (FLOOR, FLOOR))
         self.assertEqual(game_map[6][4], DOOR)
@@ -209,32 +248,38 @@ class FovShadowcastingTests(unittest.TestCase):
         return [[False] * w for _ in range(h)]
 
     def test_open_room_lights_up_to_radius(self):
-        game_map = [list(row) for row in [
-            '###########',
-            '#.........#',
-            '#.........#',
-            '#....@....#',
-            '#.........#',
-            '#.........#',
-            '###########',
-        ]]
+        game_map = [
+            list(row)
+            for row in [
+                '###########',
+                '#.........#',
+                '#.........#',
+                '#....@....#',
+                '#.........#',
+                '#.........#',
+                '###########',
+            ]
+        ]
         visible = self._grid(11, 7)
         compute_fov(game_map, visible, 5, 3, radius=4)
-        self.assertTrue(visible[3][5])   # origin
-        self.assertTrue(visible[3][1])   # 4 tiles west, in open room
-        self.assertTrue(visible[1][5])   # 2 tiles north, open
+        self.assertTrue(visible[3][5])  # origin
+        self.assertTrue(visible[3][1])  # 4 tiles west, in open room
+        self.assertTrue(visible[1][5])  # 2 tiles north, open
 
     def test_wall_blocks_sight_behind_it(self):
         # A single wall segment directly east of the player should shadow
         # the tile directly behind it, while the open tile to its side
         # (not directly hidden by the wall) stays visible.
-        game_map = [list(row) for row in [
-            '###########',
-            '#.........#',
-            '#....@#...#',
-            '#.........#',
-            '###########',
-        ]]
+        game_map = [
+            list(row)
+            for row in [
+                '###########',
+                '#.........#',
+                '#....@#...#',
+                '#.........#',
+                '###########',
+            ]
+        ]
         visible = self._grid(11, 5)
         compute_fov(game_map, visible, 5, 2, radius=5)
         self.assertTrue(visible[2][6], 'the wall tile itself should be lit')
@@ -283,8 +328,9 @@ class MonsterTests(unittest.TestCase):
         player = Entity(3, 3, '@')
         for dx, dy in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
             m = Monster(3 + dx, 3 + dy, 'goblin')
-            self.assertNotEqual(m.take_turn(player, game_map), 'attack',
-                                f'diagonal offset {(dx, dy)} attacked')
+            self.assertNotEqual(
+                m.take_turn(player, game_map), 'attack', f'diagonal offset {(dx, dy)} attacked'
+            )
 
     def test_diagonal_neighbour_closes_in_instead_of_stalling(self):
         """Making the attack orthogonal is only half the fix: the monster
@@ -294,8 +340,9 @@ class MonsterTests(unittest.TestCase):
             player = Entity(3, 3, '@')
             m = Monster(3 + dx, 3 + dy, 'goblin')
             m.take_turn(player, game_map)
-            self.assertTrue(m.is_adjacent(player),
-                            f'diagonal offset {(dx, dy)} failed to close in')
+            self.assertTrue(
+                m.is_adjacent(player), f'diagonal offset {(dx, dy)} failed to close in'
+            )
             self.assertEqual(m.take_turn(player, game_map), 'attack')
 
     def test_orthogonal_neighbour_still_attacks(self):
@@ -356,7 +403,7 @@ def seeded_floors(depth, n=200, sizes=((40, 20), (50, 20))):
     for seed in range(n):
         w, h = sizes[seed % len(sizes)]
         key = (seed, w, h)
-        if key not in _ROOMS_CACHE:   # generation dominates; spawning is cheap
+        if key not in _ROOMS_CACHE:  # generation dominates; spawning is cheap
             random.seed(seed)
             _ROOMS_CACHE[key] = generate_dungeon(w, h)[1]
         rooms = _ROOMS_CACHE[key]
@@ -396,8 +443,8 @@ class SpawnRuleTests(unittest.TestCase):
 
     def test_goblin_packs_follow_the_depth_size(self):
         for depth in (1, 5, 6, 10, 11, 15, 20):
-            for rooms, monsters, boss_room in seeded_floors(depth, n=100):
-                for room in rooms[1:]:
+            for _rooms, monsters, _boss_room in seeded_floors(depth, n=100):
+                for room in _rooms[1:]:
                     gob = [m for m in monsters if in_room(room, m) and m.kind == 'goblin']
                     if gob:
                         self.assertEqual(len(gob), goblin_pack_size(depth))
@@ -455,7 +502,7 @@ class SpawnRuleTests(unittest.TestCase):
     def test_later_boss_floors_have_no_escort(self):
         self.assertNotIn(16, BOSS_ESCORTS)
         for depth in (16, 24):
-            for rooms, monsters, boss_room in seeded_floors(depth, n=100):
+            for _rooms, monsters, boss_room in seeded_floors(depth, n=100):
                 here = [m for m in monsters if in_room(boss_room, m)]
                 self.assertEqual(len(here), 1)
                 self.assertTrue(here[0].is_boss)
@@ -487,8 +534,10 @@ class SpawnRuleTests(unittest.TestCase):
                 self.assertIsNone(state.boss_arena)
 
     def test_a_new_rule_adds_a_kind(self):
-        rules = (SpawnRule('goblin', 1, None, lambda d: 1, 1, False),
-                 SpawnRule('orc', 1, None, lambda d: 3, 1, True))
+        rules = (
+            SpawnRule('goblin', 1, None, lambda d: 1, 1, False),
+            SpawnRule('orc', 1, None, lambda d: 3, 1, True),
+        )
         rooms = [Rect(1, 1, 4, 4), Rect(10, 1, 6, 6), Rect(20, 1, 6, 6)]
         for seed in range(50):
             monsters, _ = spawn_level(rooms, 2, rng=random.Random(seed), rules=rules)
@@ -498,7 +547,7 @@ class SpawnRuleTests(unittest.TestCase):
                 if here[0].kind == 'orc':
                     self.assertEqual(len(here), 3)
                     for i, a in enumerate(here):
-                        for b in here[i + 1:]:
+                        for b in here[i + 1 :]:
                             self.assertGreaterEqual(a.distance_to(b), 2)
 
     def test_spread_tiles_fit_in_the_smallest_room(self):
@@ -513,9 +562,13 @@ def open_floor_state(seed, fov_radius=6):
     dungeon getting in the way."""
     random.seed(seed)
     state = GameState(50, 20, fov_radius=fov_radius)
-    state.game_map = [[WALL if x in (0, state.width - 1) or y in (0, state.height - 1)
-                       else FLOOR for x in range(state.width)]
-                      for y in range(state.height)]
+    state.game_map = [
+        [
+            WALL if x in (0, state.width - 1) or y in (0, state.height - 1) else FLOOR
+            for x in range(state.width)
+        ]
+        for y in range(state.height)
+    ]
     state.player.x, state.player.y = 10, 10
     state.entities = [state.player]
     state.update_fov()
@@ -529,7 +582,7 @@ class MonsterCollisionTests(unittest.TestCase):
 
     def test_crowded_room_never_shares_a_tile(self):
         state = open_floor_state(60)
-        state.player.hp = state.player.max_hp = 10 ** 6
+        state.player.hp = state.player.max_hp = 10**6
         # A tight 5x4 block of goblins right next to the player, so they all
         # want the same handful of tiles at once.
         for x in range(12, 17):
@@ -542,8 +595,9 @@ class MonsterCollisionTests(unittest.TestCase):
         def check(when):
             spots = [(m.x, m.y) for m in monsters]
             self.assertEqual(len(spots), len(set(spots)), f'monsters stacked {when}')
-            self.assertNotIn((state.player.x, state.player.y), spots,
-                             f'a monster stood on the player {when}')
+            self.assertNotIn(
+                (state.player.x, state.player.y), spots, f'a monster stood on the player {when}'
+            )
 
         for turn in range(80):
             state.handle_action('wait')
@@ -592,13 +646,12 @@ class MonsterCollisionTests(unittest.TestCase):
         occupied = {(2 + dx, 2 + dy) for dx, dy in ORTHOGONAL_STEPS} | {(5, 5)}
         random.seed(62)
         for _ in range(30):
-            self.assertIsNone(m.take_turn(player, game_map, occupied=occupied,
-                                          sees_player=False))
+            self.assertIsNone(m.take_turn(player, game_map, occupied=occupied, sees_player=False))
             self.assertEqual((m.x, m.y), (2, 2))
 
     def test_adjacent_monsters_both_reach_the_player_without_overlapping(self):
         state = open_floor_state(63)
-        state.player.hp = state.player.max_hp = 10 ** 6
+        state.player.hp = state.player.max_hp = 10**6
         # `behind` is lined up on a's row; `offset` is a row below it.
         a = Monster(13, 10, 'goblin')
         behind = Monster(14, 10, 'goblin')
@@ -749,8 +802,9 @@ class GameStateIntegrationTests(unittest.TestCase):
         state.entities.append(m)
         state.try_move_player(1, 0)
         self.assertFalse(m.alive)
-        self.assertEqual((state.player.x, state.player.y),
-                         (m.x - 1, m.y))  # player did not step onto corpse tile
+        self.assertEqual(
+            (state.player.x, state.player.y), (m.x - 1, m.y)
+        )  # player did not step onto corpse tile
         self.assertIn('dies', state.messages[-1])
 
     def test_monster_attack_reduces_player_hp_and_can_kill(self):
@@ -889,7 +943,7 @@ class TurnPhaseTests(unittest.TestCase):
     def test_step_reports_attacks_as_visible(self):
         state = self.swarmed_state(player_hp=50, offsets=((1, 0),))
         state.end_player_phase()
-        self.assertTrue(state.step_monster_phase())   # the attack
+        self.assertTrue(state.step_monster_phase())  # the attack
         self.assertFalse(state.step_monster_phase())  # queue drained
 
     def test_unseen_monsters_resolve_without_reporting_a_frame(self):
@@ -899,11 +953,14 @@ class TurnPhaseTests(unittest.TestCase):
         state = GameState(50, 20)
         # Pick a floor tile the player genuinely cannot see, so the assertion
         # below can't pass just because the monster happened to sit still.
-        hidden = [(x, y)
-                  for y in range(1, state.height - 1)
-                  for x in range(1, state.width - 1)
-                  if is_walkable(state.game_map, x, y) and not state.is_visible(x, y)
-                  and state.player.distance_to(Entity(x, y, '.')) > state.fov_radius + 1]
+        hidden = [
+            (x, y)
+            for y in range(1, state.height - 1)
+            for x in range(1, state.width - 1)
+            if is_walkable(state.game_map, x, y)
+            and not state.is_visible(x, y)
+            and state.player.distance_to(Entity(x, y, '.')) > state.fov_radius + 1
+        ]
         self.assertTrue(hidden, 'no out-of-sight floor tile to test with')
         state.entities = [state.player, Monster(hidden[0][0], hidden[0][1], 'goblin')]
 
@@ -1131,7 +1188,10 @@ class DifficultyScalingTests(unittest.TestCase):
 
     def test_boss_stats_scale_off_reference_monster(self):
         depth = 8
-        base_hp, base_power = MONSTER_TYPES[BOSS_REFERENCE_KIND][2], MONSTER_TYPES[BOSS_REFERENCE_KIND][3]
+        base_hp, base_power = (
+            MONSTER_TYPES[BOSS_REFERENCE_KIND][2],
+            MONSTER_TYPES[BOSS_REFERENCE_KIND][3],
+        )
         reg_hp, reg_power = scale_stats(base_hp, base_power, depth)
         boss = spawn_boss(Rect(1, 1, 10, 10), depth)
         self.assertTrue(boss.is_boss)
@@ -1287,7 +1347,9 @@ class ChestTests(unittest.TestCase):
         # Statistical, not exact: a large sample at max depth should skew
         # toward rare/epic far more than the same sample at depth 1.
         shallow_epics = sum(1 for _ in range(500) if roll_rarity(1, random.Random()) == 'epic')
-        deep_epics = sum(1 for _ in range(500) if roll_rarity(MAX_SCALING_DEPTH, random.Random()) == 'epic')
+        deep_epics = sum(
+            1 for _ in range(500) if roll_rarity(MAX_SCALING_DEPTH, random.Random()) == 'epic'
+        )
         self.assertGreater(deep_epics, shallow_epics)
 
     def test_open_potion_chest_removes_it_and_applies_the_potion(self):
@@ -1481,10 +1543,14 @@ class PotionBeltTests(unittest.TestCase):
     def test_full_belt_round_trips_in_order(self):
         self.full_belt()
         fresh = self.round_trip(self.state)
-        self.assertEqual([(i.kind, i.rarity) for i in fresh.belt],
-                         [('potion', 'common'), ('potion', 'rare'), ('potion', 'uncommon')])
-        self.assertEqual(state_to_dict(self.state)['belt'],
-                         [{'kind': 'potion', 'rarity': r} for r in ('common', 'rare', 'uncommon')])
+        self.assertEqual(
+            [(i.kind, i.rarity) for i in fresh.belt],
+            [('potion', 'common'), ('potion', 'rare'), ('potion', 'uncommon')],
+        )
+        self.assertEqual(
+            state_to_dict(self.state)['belt'],
+            [{'kind': 'potion', 'rarity': r} for r in ('common', 'rare', 'uncommon')],
+        )
 
     def test_empty_belt_round_trips(self):
         self.assertEqual(self.round_trip(self.state).belt, [])
@@ -1524,9 +1590,9 @@ class ChestChoiceTests(unittest.TestCase):
 
     def test_choose_equips_the_chosen_item_and_discards_the_old_one(self):
         old = Item(0, 0, 'weapon', 'epic')
-        state = self.state_with_choice([Item(0, 0, 'armor', 'rare'),
-                                        Item(0, 0, 'weapon', 'common'),
-                                        Item(0, 0, JUNK)])
+        state = self.state_with_choice(
+            [Item(0, 0, 'armor', 'rare'), Item(0, 0, 'weapon', 'common'), Item(0, 0, JUNK)]
+        )
         old.apply(state.player, state.log)
         new = state.pending_choice[1]
         state.choose(1)
@@ -1538,20 +1604,34 @@ class ChestChoiceTests(unittest.TestCase):
         self.assertIsNone(state.player.armor)  # the unchosen armor is lost
 
     def test_choose_armor_sets_defense_from_the_table(self):
-        state = self.state_with_choice([Item(0, 0, 'armor', 'uncommon'),
-                                        Item(0, 0, JUNK), Item(0, 0, JUNK)])
+        state = self.state_with_choice(
+            [Item(0, 0, 'armor', 'uncommon'), Item(0, 0, JUNK), Item(0, 0, JUNK)]
+        )
         state.choose(0)
         self.assertEqual(state.player.defense, ARMOR_DEFENSE['uncommon'])
 
     def test_choosing_junk_only_logs(self):
-        state = self.state_with_choice([Item(0, 0, JUNK), Item(0, 0, 'weapon', 'epic'),
-                                        Item(0, 0, 'armor', 'epic')])
-        before = (state.player.power, state.player.defense, state.player.weapon,
-                  state.player.armor, list(state.player.inventory), state.player.hp)
+        state = self.state_with_choice(
+            [Item(0, 0, JUNK), Item(0, 0, 'weapon', 'epic'), Item(0, 0, 'armor', 'epic')]
+        )
+        before = (
+            state.player.power,
+            state.player.defense,
+            state.player.weapon,
+            state.player.armor,
+            list(state.player.inventory),
+            state.player.hp,
+        )
         n_messages = len(state.messages)
         state.choose(0)
-        after = (state.player.power, state.player.defense, state.player.weapon,
-                 state.player.armor, list(state.player.inventory), state.player.hp)
+        after = (
+            state.player.power,
+            state.player.defense,
+            state.player.weapon,
+            state.player.armor,
+            list(state.player.inventory),
+            state.player.hp,
+        )
         self.assertEqual(before, after)
         self.assertFalse(state.is_choosing)
         self.assertEqual(len(state.messages), n_messages + 1)
@@ -1602,8 +1682,9 @@ class ChestChoiceTests(unittest.TestCase):
         start = (state.player.x, state.player.y, state.player.weapon, len(state.messages))
         for action in ('choose_1', 'choose_2', 'choose_3'):
             self.assertFalse(state.handle_action(action))
-        self.assertEqual((state.player.x, state.player.y, state.player.weapon,
-                          len(state.messages)), start)
+        self.assertEqual(
+            (state.player.x, state.player.y, state.player.weapon, len(state.messages)), start
+        )
         self.assertFalse(state.monster_phase_pending())
 
     def test_bad_index_from_input_is_harmless(self):
@@ -1616,7 +1697,9 @@ class ChestChoiceTests(unittest.TestCase):
 
     def test_save_and_load_still_work_while_choosing(self):
         import tempfile
+
         from game import state as state_module
+
         with tempfile.TemporaryDirectory() as tmp:
             old = state_module.SAVE_PATH
             state_module.SAVE_PATH = os.path.join(tmp, 'save.json')
@@ -1690,8 +1773,9 @@ class SaveLoadTests(unittest.TestCase):
     def test_chest_on_the_map_round_trips(self):
         random.seed(49)
         state = GameState(50, 20)
-        chest = Chest(state.player.x + 1, state.player.y, guaranteed_min_rarity='rare',
-                      kind='potion')
+        chest = Chest(
+            state.player.x + 1, state.player.y, guaranteed_min_rarity='rare', kind='potion'
+        )
         state.entities = [state.player, chest]
 
         with tempfile.TemporaryDirectory() as d:
@@ -1710,8 +1794,11 @@ class SaveLoadTests(unittest.TestCase):
     def test_pending_choice_round_trips(self):
         random.seed(65)
         state = GameState(50, 20)
-        state.pending_choice = [Item(0, 0, 'weapon', 'rare'), Item(0, 0, JUNK),
-                                Item(0, 0, 'armor', 'epic')]
+        state.pending_choice = [
+            Item(0, 0, 'weapon', 'rare'),
+            Item(0, 0, JUNK),
+            Item(0, 0, 'armor', 'epic'),
+        ]
 
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, 'save.json')
@@ -1720,21 +1807,26 @@ class SaveLoadTests(unittest.TestCase):
             apply_dict(fresh, load_game(path))
 
         self.assertTrue(fresh.is_choosing)
-        self.assertEqual([(i.kind, i.rarity) for i in fresh.pending_choice],
-                         [('weapon', 'rare'), (JUNK, None), ('armor', 'epic')])
+        self.assertEqual(
+            [(i.kind, i.rarity) for i in fresh.pending_choice],
+            [('weapon', 'rare'), (JUNK, None), ('armor', 'epic')],
+        )
         fresh.choose(2)
         self.assertEqual(fresh.player.defense, ARMOR_DEFENSE['epic'])
 
     def test_boss_arena_round_trips_and_old_saves_have_none(self):
         from game.rect import Rect
+
         random.seed(70)
         state = GameState(50, 20)
         state.boss_arena = Rect(10, 5, 8, 7)
         data = state_to_dict(state)
         fresh = GameState(50, 20)
         apply_dict(fresh, data)
-        self.assertEqual((fresh.boss_arena.x1, fresh.boss_arena.y1,
-                          fresh.boss_arena.x2, fresh.boss_arena.y2), (10, 5, 18, 12))
+        self.assertEqual(
+            (fresh.boss_arena.x1, fresh.boss_arena.y1, fresh.boss_arena.x2, fresh.boss_arena.y2),
+            (10, 5, 18, 12),
+        )
         self.assertEqual(fresh.boss_arena.center(), Rect(10, 5, 8, 7).center())
         # A save from before boss arenas has no field: no arena.
         del data['boss_arena']
@@ -1756,9 +1848,18 @@ class SaveLoadTests(unittest.TestCase):
         # table, and gear chests as 'weapon'/'armor'.
         data['player']['armor'] = {'kind': 'armor', 'rarity': 'rare'}
         data['player']['defense'] = 4
-        data['entities'] = [{'type': 'chest', 'x': state.player.x + 1, 'y': state.player.y,
-                             'char': '=', 'color': CHEST_COLOR, 'name': 'chest',
-                             'guaranteed_min_rarity': None, 'kind': 'weapon'}]
+        data['entities'] = [
+            {
+                'type': 'chest',
+                'x': state.player.x + 1,
+                'y': state.player.y,
+                'char': '=',
+                'color': CHEST_COLOR,
+                'name': 'chest',
+                'guaranteed_min_rarity': None,
+                'kind': 'weapon',
+            }
+        ]
         fresh = GameState(50, 20)
         fresh.pending_choice = [Item(0, 0, JUNK)] * 3  # must be cleared by the load
         apply_dict(fresh, data)
@@ -1767,6 +1868,7 @@ class SaveLoadTests(unittest.TestCase):
         self.assertEqual(fresh.player.defense, ARMOR_DEFENSE['rare'])
         chests = [e for e in fresh.entities if isinstance(e, Chest)]
         self.assertEqual(chests[0].kind, 'gear')
+
     def test_monster_chase_state_round_trips(self):
         state = open_floor_state(68)
         m = Monster(20, 10, 'orc')
@@ -1792,9 +1894,21 @@ class SaveLoadTests(unittest.TestCase):
         for e in data['entities']:
             e.pop('chasing', None)
             e.pop('lost_sight', None)
-        data['entities'].append({'type': 'monster', 'x': 20, 'y': 10, 'char': 'g',
-                                 'color': 2, 'name': 'goblin', 'kind': 'goblin',
-                                 'hp': 5, 'max_hp': 5, 'power': 2, 'alive': True})
+        data['entities'].append(
+            {
+                'type': 'monster',
+                'x': 20,
+                'y': 10,
+                'char': 'g',
+                'color': 2,
+                'name': 'goblin',
+                'kind': 'goblin',
+                'hp': 5,
+                'max_hp': 5,
+                'power': 2,
+                'alive': True,
+            }
+        )
         apply_dict(state, data)
         monsters = [e for e in state.entities if isinstance(e, Monster)]
         self.assertTrue(monsters)
@@ -1836,7 +1950,7 @@ class CombatEventTests(unittest.TestCase):
 
     def test_melee_opponents_are_orthogonal_neighbours_only(self):
         self.assertEqual(self.state.melee_opponents(), [self.goblin])
-        self.goblin.y += 1   # now diagonal
+        self.goblin.y += 1  # now diagonal
         self.assertEqual(self.state.melee_opponents(), [])
         self.goblin.y -= 1
         self.goblin.alive = False
@@ -1848,8 +1962,8 @@ class CritAndReductionTests(unittest.TestCase):
         self.state = GameState(50, 20)
         p = self.state.player
         self.goblin = Monster(p.x + 1, p.y, 'goblin')
-        self.goblin.hp = self.goblin.max_hp = 10 ** 6
-        p.hp = p.max_hp = 10 ** 6
+        self.goblin.hp = self.goblin.max_hp = 10**6
+        p.hp = p.max_hp = 10**6
         self.state.entities = [p, self.goblin]
 
     def hit(self, attacker, defender, crit):
@@ -2000,7 +2114,9 @@ class WeaponTypeTests(unittest.TestCase):
         self.assertTrue(abs(junk - 0.15) < 0.01, junk)
         self.assertTrue(abs(armor - ARMOR_DROP_CHANCE) < 0.01, armor)
         boss = [roll_boss_drop(rng) for _ in range(n)]
-        self.assertTrue(abs(sum(1 for d in boss if d.kind == 'armor') / n - ARMOR_DROP_CHANCE) < 0.01)
+        self.assertTrue(
+            abs(sum(1 for d in boss if d.kind == 'armor') / n - ARMOR_DROP_CHANCE) < 0.01
+        )
         self.assertNotIn('weapon', {d.kind for d in gear + boss})
 
     def test_damage_bonus_by_rarity(self):
@@ -2012,8 +2128,9 @@ class WeaponTypeTests(unittest.TestCase):
             self.assertEqual(Item(0, 0, 'spear', rarity).bonus, GEAR_BONUS[rarity])
 
     def test_effect_values_by_rarity(self):
-        for rarity, hp, shield, crit in zip(RARITIES, (3, 6, 9, 15), (3, 6, 9, 12),
-                                            (0.05, 0.10, 0.15, 0.20)):
+        for rarity, hp, shield, crit in zip(
+            RARITIES, (3, 6, 9, 15), (3, 6, 9, 12), (0.05, 0.10, 0.15, 0.20)
+        ):
             self.assertEqual(Item(0, 0, 'war_axe', rarity).max_hp_bonus, hp)
             self.assertEqual(Item(0, 0, 'sword_shield', rarity).defense_bonus, shield)
             self.assertAlmostEqual(Item(0, 0, 'dagger', rarity).crit_bonus, crit)
@@ -2021,9 +2138,17 @@ class WeaponTypeTests(unittest.TestCase):
             self.assertTrue(Item(0, 0, 'great_sword', rarity).cleave)
             self.assertEqual(Item(0, 0, 'spear', rarity).reach, 2)
         plain = Item(0, 0, 'weapon', 'epic')
-        self.assertEqual((plain.max_hp_bonus, plain.strikes, plain.cleave,
-                          plain.defense_bonus, plain.crit_bonus, plain.reach),
-                         (0, 1, False, 0, 0.0, 1))
+        self.assertEqual(
+            (
+                plain.max_hp_bonus,
+                plain.strikes,
+                plain.cleave,
+                plain.defense_bonus,
+                plain.crit_bonus,
+                plain.reach,
+            ),
+            (0, 1, False, 0, 0.0, 1),
+        )
 
     def test_power_uses_the_bonus_at_each_rarity(self):
         p = self.state.player
@@ -2035,10 +2160,10 @@ class WeaponTypeTests(unittest.TestCase):
     def test_power_never_drops_below_one(self):
         p = self.state.player
         p.base_power = 1
-        self.equip('rapier', 'common')          # 1 - 1 = 0
+        self.equip('rapier', 'common')  # 1 - 1 = 0
         self.assertEqual(p.power, 1)
         p.base_power = 0
-        self.equip('dagger', 'common')          # 0 + 0 = 0
+        self.equip('dagger', 'common')  # 0 + 0 = 0
         self.assertEqual(p.power, 1)
         p.base_power = 4
         self.equip('rapier', 'common')
@@ -2049,11 +2174,11 @@ class WeaponTypeTests(unittest.TestCase):
     def test_war_axe_adds_hp_and_replacing_it_removes_it(self):
         p = self.state.player
         p.hp, p.max_hp = 20, 25
-        self.equip('war_axe', 'rare')                      # +9
+        self.equip('war_axe', 'rare')  # +9
         self.assertEqual((p.hp, p.max_hp), (29, 34))
-        self.equip('war_axe', 'epic')                      # -9 +15
+        self.equip('war_axe', 'epic')  # -9 +15
         self.assertEqual((p.hp, p.max_hp), (35, 40))
-        self.equip('spear', 'common')                      # -15
+        self.equip('spear', 'common')  # -15
         self.assertEqual((p.hp, p.max_hp), (20, 25))
         self.assertEqual(p.power, p.base_power + 1)
 
@@ -2064,7 +2189,7 @@ class WeaponTypeTests(unittest.TestCase):
         self.assertEqual((p.hp, p.max_hp), (40, 40))
         p.hp = 5
         self.equip('weapon', 'common')
-        self.assertEqual((p.hp, p.max_hp), (1, 25))        # 5 - 15 floors at 1
+        self.assertEqual((p.hp, p.max_hp), (1, 25))  # 5 - 15 floors at 1
         for rarity, hp in zip(RARITIES, (3, 6, 9, 15)):
             p.hp, p.max_hp = 25, 25
             p.weapon = None
@@ -2079,13 +2204,13 @@ class WeaponTypeTests(unittest.TestCase):
         p = self.state.player
         p.power = 7
         goblin = self.monster(11, 10)
-        goblin.defense = 10                                # 50%: 7 -> 3.5
+        goblin.defense = 10  # 50%: 7 -> 3.5
         random.seed(5)
         probe = random.Random()
         probe.setstate(random.getstate())
         expected = []
         for _ in range(2):
-            probe.random()                                 # the crit roll
+            probe.random()  # the crit roll
             expected.append(round_damage(mitigate(7, 10), probe))
         before = len(self.state.messages)
         with self.no_crit():
@@ -2103,7 +2228,7 @@ class WeaponTypeTests(unittest.TestCase):
         self.equip('rapier', 'epic')
         self.state.player.power = 4
         goblin = self.monster(11, 10)
-        goblin.defense = 0                                 # whole damage: no rounding roll
+        goblin.defense = 0  # whole damage: no rounding roll
         for rolls, crits in (([0.0, 0.99], [True, False]), ([0.99, 0.0], [False, True])):
             with mock.patch('game.state.random.random', side_effect=rolls):
                 self.state.handle_action('move_e')
@@ -2124,11 +2249,12 @@ class WeaponTypeTests(unittest.TestCase):
     def test_great_sword_hits_a_second_monster_next_to_the_player(self):
         self.equip('great_sword', 'rare')
         target = self.monster(11, 10)
-        other = self.monster(10, 9)                        # north of the player
+        other = self.monster(10, 9)  # north of the player
         with self.no_crit():
             self.state.handle_action('move_e')
-        defenders = [h.defender for h in self.state.combat_events
-                     if h.attacker is self.state.player]
+        defenders = [
+            h.defender for h in self.state.combat_events if h.attacker is self.state.player
+        ]
         self.assertEqual(defenders, [target, other])
         self.assertLess(other.hp, 1000)
         self.assertTrue(any('carries on into goblin' in m for m in self.state.messages))
@@ -2138,7 +2264,7 @@ class WeaponTypeTests(unittest.TestCase):
         target = self.monster(11, 10)
         diagonal = self.monster(11, 9)
         two_away = self.monster(8, 10)
-        beside_target = self.monster(12, 10)               # next to the target only
+        beside_target = self.monster(12, 10)  # next to the target only
         with self.no_crit():
             self.state.handle_action('move_e')
         player_hits = [h for h in self.state.combat_events if h.attacker is self.state.player]
@@ -2166,15 +2292,15 @@ class WeaponTypeTests(unittest.TestCase):
 
     def test_sword_and_shield_defense_stacks_with_armor(self):
         p = self.state.player
-        armor = self.equip('armor', 'rare')                # 12
-        shield = self.equip('sword_shield', 'rare')        # +9 defence, +4 damage
+        armor = self.equip('armor', 'rare')  # 12
+        shield = self.equip('sword_shield', 'rare')  # +9 defence, +4 damage
         self.assertIs(p.weapon, shield)
         self.assertIs(p.armor, armor)
         self.assertEqual(p.defense, ARMOR_DEFENSE['rare'] + 9)
         self.assertEqual(p.power, p.base_power + GEAR_BONUS['rare'])
         self.equip('armor', 'epic')
         self.assertEqual(p.defense, 21 + 9)
-        self.equip('spear', 'common')                      # the shield goes with it
+        self.equip('spear', 'common')  # the shield goes with it
         self.assertEqual(p.defense, 21)
 
     def test_sword_and_shield_alone_gives_defense(self):
@@ -2203,8 +2329,8 @@ class WeaponTypeTests(unittest.TestCase):
             self.assertEqual(crit_chance(self.state.player), 1.0)
 
     def test_dagger_crit_shows_up_in_attacks(self):
-        self.equip('dagger', 'epic')                       # 30%
-        goblin = self.monster(11, 10, hp=10 ** 9)
+        self.equip('dagger', 'epic')  # 30%
+        goblin = self.monster(11, 10, hp=10**9)
         random.seed(321)
         n = 3000
         crits = 0
@@ -2230,8 +2356,12 @@ class WeaponTypeTests(unittest.TestCase):
 
     def test_spear_reaches_in_every_direction(self):
         self.equip('spear', 'rare')
-        for action, (x, y) in (('move_n', (10, 8)), ('move_s', (10, 12)),
-                               ('move_w', (8, 10)), ('shoot_e', (12, 10))):
+        for action, (x, y) in (
+            ('move_n', (10, 8)),
+            ('move_s', (10, 12)),
+            ('move_w', (8, 10)),
+            ('shoot_e', (12, 10)),
+        ):
             m = self.monster(x, y)
             self.state.handle_action(action)
             self.assertLess(m.hp, 1000, action)
@@ -2319,22 +2449,36 @@ class WeaponTypeTests(unittest.TestCase):
                 fresh = self.round_trip()
                 fp = fresh.player
                 self.assertEqual((fp.weapon.kind, fp.weapon.rarity), (kind, rarity))
-                self.assertEqual((fp.power, fp.defense, fp.hp, fp.max_hp),
-                                 (p.power, p.defense, p.hp, p.max_hp), kind)
+                self.assertEqual(
+                    (fp.power, fp.defense, fp.hp, fp.max_hp),
+                    (p.power, p.defense, p.hp, p.max_hp),
+                    kind,
+                )
                 self.assertEqual(crit_chance(fp), crit_chance(p))
-                for attr in ('max_hp_bonus', 'strikes', 'cleave', 'defense_bonus',
-                             'crit_bonus', 'reach'):
+                for attr in (
+                    'max_hp_bonus',
+                    'strikes',
+                    'cleave',
+                    'defense_bonus',
+                    'crit_bonus',
+                    'reach',
+                ):
                     self.assertEqual(getattr(fp.weapon, attr), getattr(weapon, attr))
                 # Replacing the loaded axe takes off exactly what it gave.
                 Item(0, 0, 'weapon', 'common').apply(fp, fresh.log)
                 self.assertEqual(fp.max_hp, 30)
 
     def test_new_kinds_round_trip_in_a_pending_choice(self):
-        self.state.pending_choice = [Item(0, 0, 'rapier', 'rare'), Item(0, 0, 'spear', 'epic'),
-                                     Item(0, 0, 'sword_shield', 'common')]
+        self.state.pending_choice = [
+            Item(0, 0, 'rapier', 'rare'),
+            Item(0, 0, 'spear', 'epic'),
+            Item(0, 0, 'sword_shield', 'common'),
+        ]
         fresh = self.round_trip()
-        self.assertEqual([(i.kind, i.rarity) for i in fresh.pending_choice],
-                         [('rapier', 'rare'), ('spear', 'epic'), ('sword_shield', 'common')])
+        self.assertEqual(
+            [(i.kind, i.rarity) for i in fresh.pending_choice],
+            [('rapier', 'rare'), ('spear', 'epic'), ('sword_shield', 'common')],
+        )
         fresh.choose(2)
         self.assertEqual(fresh.player.defense, 3)
 

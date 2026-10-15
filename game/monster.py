@@ -43,8 +43,8 @@ ORTHOGONAL_STEPS = ((0, -1), (0, 1), (-1, 0), (1, 0))
 WANDER_STEPS = ORTHOGONAL_STEPS + ((0, 0),)
 
 CHASE_RANGE = 8
-GIVE_UP_AFTER = 3     # blind chasing turns before a monster gives up
-TIER_SIZE = 3           # floors per difficulty tier
+GIVE_UP_AFTER = 3  # blind chasing turns before a monster gives up
+TIER_SIZE = 3  # floors per difficulty tier
 TIER_HP_MULT = 1.2
 TIER_POWER_BONUS = 1
 
@@ -61,7 +61,7 @@ def tier_for_depth(depth):
 def scale_stats(base_hp, base_power, depth):
     """Apply this depth's difficulty tier to a base (hp, power) pair."""
     tier = tier_for_depth(depth)
-    hp = max(1, round(base_hp * (TIER_HP_MULT ** tier)))
+    hp = max(1, round(base_hp * (TIER_HP_MULT**tier)))
     power = base_power + TIER_POWER_BONUS * tier
     return hp, power
 
@@ -87,8 +87,8 @@ class Monster(Entity):
         self.power = power
         self.alive = True
         self.is_boss = is_boss
-        self.chasing = False   # pursuing the player (see take_turn)
-        self.lost_sight = 0    # consecutive chasing turns without sight of the player
+        self.chasing = False  # pursuing the player (see take_turn)
+        self.lost_sight = 0  # consecutive chasing turns without sight of the player
 
     def take_turn(self, player, game_map, occupied=(), sees_player=True):
         """Chase or wander. Returns 'attack' when standing orthogonally
@@ -175,7 +175,8 @@ def spawn_monsters(rooms, depth=1, rng=random):
     """Every enemy on a floor -- one kind per non-start room, plus the boss
     (and its escort) on a boss floor. The rules live in game/spawn.py; this
     is the old entry point, kept for callers that only want the list."""
-    from game.spawn import spawn_level   # spawn imports this module
+    from game.spawn import spawn_level  # spawn imports this module
+
     return spawn_level(rooms, depth, rng)[0]
 
 
