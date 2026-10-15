@@ -35,6 +35,18 @@ def _effect_text(item):
         return f'+{round(item.crit_bonus * 100)}% crit'
     if item.reach > 1:
         return f'reach {item.reach}'
+    if item.pierce > 1:
+        return f'pierces {item.pierce}'
+    if item.reload:
+        return f'reload {item.reload}'
+    if item.spread:
+        return f'+{item.spread} arrows at {round(item.spread_factor * 100)}%'
+    if item.knockback:
+        return f'knockback {item.knockback}'
+    if item.mark_bonus:
+        return f'mark +{round(item.mark_bonus * 100)}%'
+    if item.tempo:
+        return f'every {item.tempo} shots free'
     return None
 
 

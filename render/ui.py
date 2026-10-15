@@ -23,6 +23,7 @@ import pygame
 
 from game.item import belt_capacity, belt_slot_label, dodge_chance
 from game.paths import resource_path
+from game.quiver import QUIVER_CAPACITY
 from game.shrine import BOON_COLOR, boons_text
 from render import noticeboard, palette
 
@@ -485,7 +486,7 @@ def paint_panel(canvas, state):
     put(HP_ROW, f'HP: {player.hp}/{player.max_hp}', palette.INK_DANGER if danger else palette.INK)
     _paint_hp_bar(canvas, x, top + HP_ROW, width, player.hp, player.max_hp, danger)
     put(3, stats_text(player))
-    put(4, f'Items: {len(player.inventory)}')
+    put(4, items_text(player))
 
     put(GEAR_TOP, '-- gear --', bold=True)
     for row, (label, item, stat) in enumerate(
@@ -518,6 +519,15 @@ def stats_text(player):
     text = f'ATK {player.power}   DEF {player.defense}'
     dodge = dodge_chance(player)
     return f'{text}   DODGE {dodge}%' if dodge else text
+
+
+def items_text(player):
+    """The panel's item row: 'Items: n', plus '   Arrows n/12' for a player
+    with a quiver (the archer; game/quiver.py)."""
+    text = f'Items: {len(player.inventory)}'
+    if player.quiver is None:
+        return text
+    return f'{text}   Arrows {player.quiver}/{QUIVER_CAPACITY}'
 
 
 def log_rows(messages, width, rows):

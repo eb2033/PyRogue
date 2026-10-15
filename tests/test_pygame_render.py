@@ -1243,6 +1243,42 @@ class ChoiceCardTextTest(unittest.TestCase):
                 '+4 damage, reach 2',
                 '+7 damage, reach 2',
             ],
+            'longbow': [
+                '+0 damage, pierces 2',
+                '+1 damage, pierces 2',
+                '+3 damage, pierces 3',
+                '+6 damage, pierces 4',
+            ],
+            'heavy_crossbow': [
+                '+3 damage, reload 2',
+                '+4 damage, reload 2',
+                '+6 damage, reload 1',
+                '+9 damage, reload 1',
+            ],
+            'volley_bow': [
+                '-1 damage, +2 arrows at 50%',
+                '+0 damage, +2 arrows at 50%',
+                '+2 damage, +3 arrows at 60%',
+                '+5 damage, +3 arrows at 70%',
+            ],
+            'sling': [
+                '+0 damage, knockback 1',
+                '+1 damage, knockback 1',
+                '+3 damage, knockback 2',
+                '+6 damage, knockback 2',
+            ],
+            'hunters_bow': [
+                '+0 damage, mark +25%',
+                '+1 damage, mark +50%',
+                '+3 damage, mark +75%',
+                '+6 damage, mark +100%',
+            ],
+            'quickdraw': [
+                '+1 damage, every 4 shots free',
+                '+2 damage, every 4 shots free',
+                '+4 damage, every 3 shots free',
+                '+7 damage, every 2 shots free',
+            ],
         }
         from game.item import GEAR_KINDS, RARITIES
 

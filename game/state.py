@@ -23,6 +23,7 @@ resolve_player_phase() does that in one go for headless callers.
 import random
 from typing import Any
 
+from game import archery
 from game.combat import Hit
 from game.damage import mitigate, round_damage
 from game.dungeon import generate_dungeon, place_stairs
@@ -41,6 +42,7 @@ from game.item import (
     spawn_chests,
 )
 from game.monster import Monster, is_boss_level, tier_for_depth
+from game.quiver import QUIVER_CAPACITY, RESTOCK_TURNS, ArrowPile
 from game.shrine import Boon, Shrine, boon_total, place_shrine, roll_boons
 from game.spawn import spawn_level
 from game.tiles import DOOR, FLOOR, STAIRS_DOWN, is_walkable
@@ -167,7 +169,21 @@ class GameState:
         self.player.power = gear_power(self.player)
         self.player.defense = gear_defense(self.player)
         self.player.inventory = []
+        self.player.quiver = QUIVER_CAPACITY if char_class == 'archer' else None
         self.player.alive = True
+
+        # The archer's bookkeeping (see shoot_arrow and _spend_turn).
+        # restock_progress: player turns towards the next free arrow, 0..
+        # RESTOCK_TURNS (it reads RESTOCK_TURNS on the turn one is added,
+        # and stays 0 while the quiver is full). reload_turns: turns until a
+        # heavy crossbow can shoot again. marked: the hunter's bow's quarry.
+        # tempo_shots: quickdraw shots since its last free one.
+        self.restock_progress = 0
+        self.reload_turns = 0
+        self.marked: Monster | None = None
+        self.tempo_shots = 0
+        # True after a free (quickdraw) shot: that action queues no monsters.
+        self._free_turn = False
 
         self.entities: list[Any] = self._populate_level()
 
@@ -210,6 +226,7 @@ class GameState:
         # always finished before anything else happens.
         self.resolve_player_phase()
         self.combat_events = []
+        self._free_turn = False
 
         if action == 'quit':
             self.running = False
@@ -236,18 +253,26 @@ class GameState:
             dx, dy = MOVE_DELTAS[action]
             if not self.try_move_player(dx, dy):
                 return False
-            self.turn += 1
+            self._spend_turn()
             self._close_player_action()
             return True
 
         if action in SHOOT_DELTAS:
             dx, dy = SHOOT_DELTAS[action]
-            if self.player.char_class == 'archer':
-                self.shoot_arrow(dx, dy)
-            elif not self.try_move_player(dx, dy):
+            if self.player.char_class != 'archer':
+                if not self.try_move_player(dx, dy):
+                    return False
+                self._spend_turn()
+                self._close_player_action()
+                return True
+            # A refused shot (no arrows, still reloading) takes no turn.
+            if not self.shoot_arrow(dx, dy):
                 return False
-            self.turn += 1
-            self._close_player_action()
+            self._spend_turn(shot=True)
+            if self._free_turn:
+                self.update_fov()  # a quickdraw's free shot: no monster half
+            else:
+                self.end_player_phase()
             return True
 
         if action == 'drink':
@@ -255,22 +280,48 @@ class GameState:
             # belt is empty, which only logs.
             if not self.drink_from_belt():
                 return False
-            self.turn += 1
+            self._spend_turn()
             self.end_player_phase()
             return True
 
         if action == 'wait':
-            self.turn += 1
+            self._spend_turn()
             self.end_player_phase()
             return True
 
         if action == 'descend':
             if self.try_descend():
-                self.turn += 1
+                self._spend_turn()
                 return True
             return False
 
         return False
+
+    def _spend_turn(self, shot=False):
+        """A turn-taking player action happened: count it (GameState.turn),
+        tick a heavy crossbow's reload down -- except on the shot that just
+        started it -- and advance the quiver's restock."""
+        self.turn += 1
+        if not shot and self.reload_turns > 0:
+            self.reload_turns -= 1
+        self._restock()
+
+    def _restock(self):
+        """One more turn towards a free arrow: every RESTOCK_TURNS turns the
+        quiver gains one, up to QUIVER_CAPACITY. restock_progress shows how
+        far along it is: 1, 2, 3 (the arrow is added), then 1 again; it sits
+        at 0 while the quiver is full. No quiver (a warrior): nothing."""
+        player = self.player
+        if player.quiver is None:
+            return
+        if player.quiver >= QUIVER_CAPACITY:
+            self.restock_progress = 0
+            return
+        if self.restock_progress >= RESTOCK_TURNS:
+            self.restock_progress = 0
+        self.restock_progress += 1
+        if self.restock_progress >= RESTOCK_TURNS:
+            player.quiver += 1
 
     def try_move_player(self, dx, dy):
         """Walk, bump-attack, or reach-attack in (dx, dy). Returns False
@@ -306,7 +357,28 @@ class GameState:
         shrine = self.shrine_at(nx, ny)
         if shrine is not None:
             self.visit_shrine(shrine)
+        pile = self.arrows_at(nx, ny)
+        if pile is not None:
+            self.pick_up_arrows(pile)
         return True
+
+    def pick_up_arrows(self, pile):
+        """Put as many of `pile`'s arrows in the quiver as it has room for;
+        whatever doesn't fit stays on the floor. A full quiver takes none
+        (logged); without a quiver (a warrior) the pile is left alone."""
+        player = self.player
+        if player.quiver is None:
+            return
+        room = QUIVER_CAPACITY - player.quiver
+        if room <= 0:
+            self.log('Your quiver is full.')
+            return
+        taken = min(room, pile.count)
+        player.quiver += taken
+        pile.count -= taken
+        if pile.count <= 0:
+            self.entities.remove(pile)
+        self.log(f'You pick up {taken} arrow{"s" if taken != 1 else ""}.')
 
     def _belt_refuses(self, chest):
         """True if a potion chest can't be taken now: full HP (so it
@@ -464,7 +536,7 @@ class GameState:
             self.log('Your potion belt is full.')
             return False
         self.log('You open the chest.')
-        items = chest.open(self.depth)
+        items = chest.open(self.depth, char_class=self.player.char_class)
         self.entities.remove(chest)
         if not chest.offers_choice:
             for item in items:
@@ -541,18 +613,11 @@ class GameState:
 
     def shoot_arrow(self, dx, dy):
         """Archer-only ranged attack: travels in a straight line until it
-        hits a wall or the first monster in its path."""
-        self.log('You loose an arrow.')
-        x, y = self.player.x, self.player.y
-        while True:
-            x, y = x + dx, y + dy
-            if not is_walkable(self.game_map, x, y):
-                self.log('The arrow thuds into a wall.')
-                return
-            monster = self.monster_at(x, y)
-            if monster is not None:
-                self.attack(self.player, monster)
-                return
+        hits a wall or the first monster in its path (more with a longbow),
+        with the equipped bow's effects -- see game/archery.py. Returns
+        False, taking nothing, if the shot is refused (no arrows, or a
+        crossbow still reloading)."""
+        return archery.shoot(self, dx, dy)
 
     def try_descend(self):
         if self.game_map[self.player.y][self.player.x] != STAIRS_DOWN:
@@ -574,6 +639,7 @@ class GameState:
 
         self.cancel_monster_phase()
         self._clear_strikes()
+        self.marked = None
         self.pending_choice = None
         self.entities = self._populate_level()
         if is_boss_level(self.depth):
@@ -582,11 +648,13 @@ class GameState:
             self.log(f'You descend to level {self.depth}.')
         self.update_fov()
 
-    def attack(self, attacker, defender):
+    def attack(self, attacker, defender, factor=1.0):
+        """One blow. `factor` scales the attacker's raw power before crits
+        and defence (a volley's extra arrows, the hunter's mark)."""
         if defender is self.player and self._dodged(attacker):
             return
         defense = getattr(defender, 'defense', 0)
-        raw = attacker.power
+        raw = attacker.power * factor
         # Only the player crits (monsters never do); arrows are player hits too.
         crit = attacker is self.player and random.random() < crit_chance(attacker)
         if crit:
@@ -614,6 +682,8 @@ class GameState:
         )
         if defender.hp <= 0:
             defender.alive = False
+            if defender is self.marked:
+                self.marked = None
             if defender is not self.player:
                 # The player's own death message is logged once by end_turn,
                 # which also flips game_over -- avoid a duplicate line here.
@@ -740,7 +810,9 @@ class GameState:
         the monsters' starts.
         """
         self.resolve_player_phase()
-        if not self.monster_phase_pending():
+        # A free (quickdraw) shot has no monster half to run.
+        free, self._free_turn = self._free_turn, False
+        if not self.monster_phase_pending() and not free:
             self.end_player_phase()
         while self.step_monster_phase():
             pass
@@ -821,6 +893,12 @@ class GameState:
     def chest_at(self, x, y):
         for e in self.entities:
             if isinstance(e, Chest) and e.x == x and e.y == y:
+                return e
+        return None
+
+    def arrows_at(self, x, y):
+        for e in self.entities:
+            if isinstance(e, ArrowPile) and e.x == x and e.y == y:
                 return e
         return None
 

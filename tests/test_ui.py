@@ -695,6 +695,24 @@ class PanelTest(unittest.TestCase):
             self.assertNotIn('DODGE', text)
             self.assertEqual(self.pixels(self.row_rect(3, len(text))), 0)
 
+    def test_archer_shows_the_quiver_on_the_items_row(self):
+        for tiles, size in self.LAYOUTS:
+            with self.subTest(tiles=tiles, size=size):
+                state = self.state('archer')
+                state.player.quiver = 9
+                self.paint(state, tiles, size)
+                text = ui.items_text(state.player)
+                self.assertEqual(text, 'Items: 0   Arrows 9/12')
+                self.assertGreater(self.pixels(self.row_rect(4, len('Items: 0'))), 0)
+                before = self.row_bytes(4)
+                state.player.quiver = 3
+                self.paint(state, tiles, size)
+                self.assertNotEqual(self.row_bytes(4), before)
+        for state in self.each_layout():
+            text = ui.items_text(state.player)
+            self.assertNotIn('Arrows', text)
+            self.assertEqual(self.pixels(self.row_rect(4, len(text))), 0)
+
     def test_no_gear_is_plain_text(self):
         for _ in self.each_layout():
             for row in (ui.GEAR_TOP + 1, ui.GEAR_TOP + 3):

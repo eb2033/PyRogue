@@ -68,4 +68,7 @@ class Player(Entity):
         # Shrine boons taken this run (game/shrine.py BOONS keys), oldest
         # first. Their effects are derived from this list, never stored.
         self.boons: list[str] = []
+        # Arrows in the quiver (game/quiver.py): an archer's starts at
+        # QUIVER_CAPACITY; None means no quiver (a warrior).
+        self.quiver: int | None = None
         self.alive = True
