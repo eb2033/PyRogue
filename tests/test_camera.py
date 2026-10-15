@@ -397,5 +397,67 @@ class SmoothZoomTest(unittest.TestCase):
         self.assertEqual(state.turn, 2)
 
 
+class HitShakeTest(unittest.TestCase):
+    """Every visible hit's Impact carries a Shake; a crit's is harder and longer."""
+
+    def hit(self, crit):
+        state, goblin = lone_fight()
+        state.player.power = 1
+        goblin.hp = goblin.max_hp = 99
+        state.attack(state.player, goblin)
+        hit = state.combat_events[-1]._replace(crit=crit)
+        return state, hit
+
+    @staticmethod
+    def peak(shake, cell=40):
+        steps = 400
+        return max(
+            max(abs(dx), abs(dy))
+            for dx, dy in (camera.shake_offset(shake, i / steps, cell) for i in range(steps))
+        )
+
+    def test_a_hit_stages_an_impact_with_a_shake(self):
+        state, goblin = lone_fight()
+        director = Director()
+        director.plan(state)
+        state.attack(goblin, state.player)
+        beats = director.plan(state)
+        self.assertIsInstance(beats[0], Impact)
+        self.assertEqual(beats[0].shake, camera.shake_for(beats[0].hit))
+
+    def test_a_crit_shakes_harder_and_longer(self):
+        _, normal_hit = self.hit(False)
+        _, crit_hit = self.hit(True)
+        normal, crit = camera.shake_for(normal_hit), camera.shake_for(crit_hit)
+        self.assertGreater(crit.ms, normal.ms)
+        self.assertGreater(camera.shake_peak(crit, 40), camera.shake_peak(normal, 40))
+        self.assertGreater(self.peak(crit), self.peak(normal))
+        self.assertTrue(150 <= normal.ms <= 250, normal.ms)
+        self.assertTrue(normal.ms < crit.ms <= 350, crit.ms)
+
+    def test_offsets_stay_within_the_peak_and_settle_to_zero(self):
+        for crit in (False, True):
+            shake = camera.shake_for(self.hit(crit)[1])
+            self.assertLessEqual(self.peak(shake), camera.shake_peak(shake, 40))
+            self.assertGreater(self.peak(shake), 0)
+            self.assertEqual(camera.shake_offset(shake, 1.0, 40), (0, 0))
+            self.assertEqual(camera.shake_offset(shake, 1.5, 40), (0, 0))
+            late = [camera.shake_offset(shake, 0.97 + i / 1000, 40) for i in range(30)]
+            self.assertTrue(all(abs(dx) <= 1 and abs(dy) <= 1 for dx, dy in late))
+
+    def test_offsets_are_deterministic_per_seed(self):
+        shake = camera.Shake(camera.SHAKE_MS, camera.SHAKE_AMPLITUDE, 7)
+        times = [i / 20 for i in range(20)]
+        first = [camera.shake_offset(shake, t, 40) for t in times]
+        self.assertEqual(first, [camera.shake_offset(shake, t, 40) for t in times])
+        other = shake._replace(seed=8)
+        self.assertNotEqual(first, [camera.shake_offset(other, t, 40) for t in times])
+
+    def test_peak_scales_with_the_cell(self):
+        shake = camera.shake_for(self.hit(False)[1])
+        self.assertGreater(camera.shake_peak(shake, 64), camera.shake_peak(shake, 24))
+        self.assertGreaterEqual(camera.shake_peak(shake, 4), camera.MIN_SHAKE_PX)
+
+
 if __name__ == '__main__':
     unittest.main()

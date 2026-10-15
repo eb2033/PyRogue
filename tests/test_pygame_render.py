@@ -621,6 +621,227 @@ class TileModeTest(unittest.TestCase):
 
 
 @unittest.skipUnless(pygame, 'pygame-ce not installed')
+class HitShakeAndHealthBarTest(unittest.TestCase):
+    """The hit shake (an Impact beat that always plays out, keys left queued)
+    and enemy health bars, in tile mode."""
+
+    def setUp(self):
+        from game.paths import resource_path
+        from render.tileset import Tileset
+
+        self.renderer = PygameRenderer(WIDTH, HEIGHT, tileset=Tileset(resource_path('assets')))
+        self.renderer._set_mode((1600, 900), pygame.RESIZABLE)
+        self.renderer._relayout()
+        self.renderer.zoom_ms = 0
+        pygame.event.clear()
+
+    def tearDown(self):
+        self.renderer.close()
+
+    def fight(self, zoom=False):
+        self.renderer.director = camera.Director(zoom=zoom)
+        state = GameState(WIDTH, HEIGHT)
+        x, y = open_neighbour(state)
+        goblin = Monster(x, y, 'goblin')
+        goblin.hp = goblin.max_hp = 20
+        state.entities = [state.player, goblin]
+        state.update_fov()
+        self.renderer.draw(state)
+        return state, goblin
+
+    def played(self, state):
+        """The (ms, interruptible) of every beat draw() plays."""
+        calls = []
+        with mock.patch.object(
+            self.renderer,
+            '_play',
+            side_effect=lambda ms, paint, interruptible=True: calls.append((ms, interruptible)),
+        ):
+            self.renderer.draw(state)
+        return calls
+
+    # -- shake ----------------------------------------------------------------
+
+    def test_a_hit_plays_an_uninterruptible_shake_and_a_crit_plays_longer(self):
+        state, goblin = self.fight()
+        state.attack(goblin, state.player)
+        normal = self.played(state)
+        self.assertEqual(len(normal), 1)
+        normal_ms, interruptible = normal[0]
+        self.assertFalse(interruptible)
+        self.assertTrue(150 <= normal_ms <= 250, normal_ms)
+
+        state.player.power = 1
+        with mock.patch('game.state.BASE_CRIT_CHANCE', 1.0):
+            state.attack(state.player, goblin)
+        self.assertTrue(state.combat_events[-1].crit)
+        (crit_ms, interruptible), *_ = self.played(state)
+        self.assertFalse(interruptible)
+        self.assertTrue(normal_ms < crit_ms <= 350, crit_ms)
+
+    def test_shake_offsets_frames_and_ends_still(self):
+        state, goblin = self.fight()
+        state.attack(goblin, state.player)
+        offsets = []
+        real = self.renderer._paint_game
+
+        def paint(state, impact=None, shake=(0, 0)):
+            offsets.append(shake)
+            real(state, impact=impact, shake=shake)
+
+        with mock.patch.object(self.renderer, '_paint_game', side_effect=paint):
+            self.renderer.draw(state)
+        self.assertTrue(any(o != (0, 0) for o in offsets[:-1]), offsets)
+        self.assertEqual(offsets[-1], (0, 0))  # draw()'s own frame is still
+        hit = state.combat_events[-1]
+        shake = camera.shake_for(hit)
+        self.assertEqual(self.renderer.shake_offset(shake, 1.0), (0, 0))
+
+    def test_shake_moves_the_whole_map(self):
+        state, _ = self.fight()
+        r = self.renderer
+        r._paint_game(state)
+        still = r.canvas.surface.copy()
+        r.canvas.clear()
+        r._paint_game(state, shake=(4, -3))
+        moved = r.canvas.surface
+        centre = r.layout.map_rect().center
+        for dx, dy in ((0, 0), (17, 5), (-30, 11)):
+            p = (centre[0] + dx, centre[1] + dy)
+            self.assertEqual(moved.get_at((p[0] + 4, p[1] - 3)), still.get_at(p))
+
+    def test_keys_pressed_during_the_shake_wait_until_it_ends(self):
+        state, goblin = self.fight()
+        state.attack(goblin, state.player)
+        typed = [key(pygame.K_d, 'd'), key(pygame.K_s, 's')]
+        real_show = self.renderer._show
+        shown = []
+
+        def show(paint):
+            if not shown:  # the shake's first frame: the player types ahead
+                for event in typed:
+                    pygame.event.post(event)
+            shown.append(1)
+            real_show(paint)
+
+        start = pygame.time.get_ticks()
+        with mock.patch.object(self.renderer, '_show', side_effect=show):
+            self.renderer.draw(state)
+        elapsed = pygame.time.get_ticks() - start
+        self.assertGreaterEqual(elapsed, self.renderer.impact_ms - 20)  # not cut short
+        self.assertGreaterEqual(len(shown), 2)  # shake frame(s), then the final one
+        self.assertTrue(pygame.event.peek(pygame.KEYDOWN))  # not consumed
+        self.assertEqual(self.renderer.get_action(), Action.MOVE_E)  # in order
+        self.assertEqual(self.renderer.get_action(), Action.MOVE_S)
+
+    def test_window_close_still_ends_a_shake(self):
+        state, goblin = self.fight()
+        state.attack(goblin, state.player)
+        self.renderer.impact_ms = 5000
+        pygame.event.post(pygame.event.Event(pygame.QUIT))
+        start = pygame.time.get_ticks()
+        self.renderer.draw(state)
+        self.assertLess(pygame.time.get_ticks() - start, 1000)
+        self.assertEqual(self.renderer.get_action(), Action.QUIT)
+
+    # -- health bars ----------------------------------------------------------
+
+    def bar(self, state, goblin):
+        r = self.renderer
+        r.draw(state)
+        return r.health_bar_rect(goblin, state.player, r.layout.map_rect())
+
+    def fill_width(self, rect, color):
+        y = rect.centery
+        screen = self.renderer.canvas.surface
+        return sum(
+            1 for x in range(rect.left, rect.right) if tuple(screen.get_at((x, y)))[:3] == color
+        )
+
+    def test_bar_fill_is_proportional_and_banded(self):
+        from render.pygame_render import HEALTH_AMBER, HEALTH_GREEN, HEALTH_RED
+
+        state, goblin = self.fight()
+        for hp, color in (
+            (20, HEALTH_GREEN),
+            (11, HEALTH_GREEN),
+            (10, HEALTH_AMBER),
+            (5, HEALTH_AMBER),
+            (4, HEALTH_RED),
+        ):
+            goblin.hp = hp
+            rect = self.bar(state, goblin)
+            self.assertEqual(self.fill_width(rect, color), round(rect.width * hp / 20), hp)
+        goblin.hp = 20
+        self.assertEqual(
+            self.fill_width(self.bar(state, goblin), HEALTH_GREEN), self.bar(state, goblin).width
+        )
+
+    def test_bar_has_only_bar_colours(self):
+        from render.pygame_render import HEALTH_BAR_COLORS
+
+        state, goblin = self.fight()
+        for hp in (20, 10, 3):
+            goblin.hp = hp
+            rect = self.bar(state, goblin)
+            self.assertTrue(cell_pixels(self.renderer, rect) <= HEALTH_BAR_COLORS)
+
+    def test_bar_sits_above_the_cell_and_never_on_the_player(self):
+        state, goblin = self.fight()
+        r = self.renderer
+        map_rect = r.layout.map_rect()
+        cell = r._map_cell_rect(goblin.x, goblin.y)
+        far = collections.namedtuple('P', 'x y')(goblin.x + 5, goblin.y)
+        above = r.health_bar_rect(goblin, far, map_rect)
+        self.assertLessEqual(above.bottom, cell.top)
+        self.assertLess(above.width, cell.width)
+        # The player in the cell above: the bar moves onto the goblin's own top edge.
+        player = collections.namedtuple('P', 'x y')(goblin.x, goblin.y - 1)
+        own = r.health_bar_rect(goblin, player, map_rect)
+        self.assertTrue(cell.contains(own))
+        self.assertFalse(own.colliderect(r._map_cell_rect(player.x, player.y)))
+        # Top row of the map: along its top edge too.
+        top = Monster(goblin.x, 0, 'goblin')
+        self.assertTrue(r._map_cell_rect(top.x, 0).contains(r.health_bar_rect(top, far, map_rect)))
+
+    def test_boss_bar_is_wider_and_bars_follow_the_zoom(self):
+        state, goblin = self.fight()
+        r = self.renderer
+        map_rect = r.layout.map_rect()
+        far = collections.namedtuple('P', 'x y')(goblin.x + 5, goblin.y)
+        boss = Monster(goblin.x, goblin.y, 'goblin', is_boss=True)
+        self.assertGreater(
+            r.health_bar_rect(boss, far, map_rect).width,
+            r.health_bar_rect(goblin, far, map_rect).width,
+        )
+        normal = r.health_bar_rect(goblin, far, map_rect)
+        state, goblin = self.fight(zoom=True)
+        self.assertIsNotNone(r._view)
+        r._proj = camera.project(r._view, map_rect, r.layout.map_cell_size())
+        try:
+            zoomed = r.health_bar_rect(goblin, far, map_rect)
+            cell = r._map_cell_rect(goblin.x, goblin.y)
+        finally:
+            r._proj = None
+        self.assertGreater(zoomed.width, normal.width)
+        self.assertEqual(zoomed.centerx, cell.centerx)
+
+    def test_no_bar_for_the_player_or_an_unseen_monster(self):
+        state, goblin = self.fight()
+        painted = []
+        with mock.patch.object(
+            self.renderer, '_paint_health_bar', side_effect=lambda m, p, r: painted.append(m)
+        ):
+            self.renderer.draw(state)
+            self.assertEqual(painted, [goblin])
+            painted.clear()
+            state.visible[goblin.y][goblin.x] = False  # remembered, not in view
+            state.seen[goblin.y][goblin.x] = True
+            self.renderer.draw(state)
+        self.assertEqual(painted, [])
+
+
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
 class ChestChoiceScreenTest(unittest.TestCase):
     """The "choose one of three" overlay: drawn while state.is_choosing,
     answered with 1/2/3 or a left click on a card."""
