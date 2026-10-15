@@ -11,7 +11,8 @@ on:
 
 jobs:
   # Static checks, configured in pyproject.toml and pinned in
-  # requirements-lint.txt. Same commands as a local checkout (CLAUDE.md):
+  # requirements-lint.txt (plus requirements-test.txt, so pyright can see
+  # hypothesis). Same commands as a local checkout (CLAUDE.md):
   # pyright reads the project's .venv, so the job makes one. Every step runs
   # even if an earlier one failed, so one push shows every kind of problem.
   lint:
@@ -25,8 +26,9 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-lint.txt
+            requirements-test.txt
       - run: python -m venv .venv
-      - run: .venv/bin/pip install -r requirements.txt -r requirements-lint.txt
+      - run: .venv/bin/pip install -r requirements.txt -r requirements-lint.txt -r requirements-test.txt
       - name: ruff check
         run: .venv/bin/ruff check --output-format=github .
       - name: ruff format

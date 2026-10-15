@@ -31,7 +31,7 @@ get the tests and lint alone. No automated test touches
 the curses renderer itself (it needs a real terminal) — verify curses rendering/input changes by
 running the game.
 
-Static checks (`pip install -r requirements-lint.txt`; all configured in `pyproject.toml`; CI's
+Static checks (`pip install -r requirements-lint.txt -r requirements-test.txt` — pyright needs hypothesis; all configured in `pyproject.toml`; CI's
 `lint` job runs exactly these, and `frozen-build` waits for it):
 
 ```bash
