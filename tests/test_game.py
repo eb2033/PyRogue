@@ -1321,6 +1321,34 @@ class ChestTests(unittest.TestCase):
             gear = [c for c in spawn_chests(rooms) if c.kind == 'gear']
             self.assertLessEqual(len(gear), 1)
 
+    def test_depth_one_always_has_a_gear_chest_outside_the_start_room(self):
+        random.seed(62)
+        for _ in range(100):
+            _, rooms = generate_dungeon(40, 20)
+            chests = spawn_chests(rooms, depth=1)
+            gear = [c for c in chests if c.kind == 'gear']
+            self.assertEqual(len(gear), 1)
+            start = rooms[0]
+            in_start = start.x1 <= gear[0].x < start.x2 and start.y1 <= gear[0].y < start.y2
+            self.assertFalse(in_start)
+            self.assertNotEqual((gear[0].x, gear[0].y), rooms[-1].center())
+            self.assertEqual(len({(c.x, c.y) for c in chests}), len(chests))
+
+    def test_deeper_floors_do_not_force_a_gear_chest(self):
+        rng = random.Random(63)
+        rooms = [Rect(1 + 7 * i, 1, 6, 6) for i in range(5)]
+        counts = [
+            sum(c.kind == 'gear' for c in spawn_chests(rooms, rng=rng, depth=2))
+            for _ in range(300)
+        ]
+        self.assertIn(0, counts)
+
+    def test_game_state_depth_one_has_a_gear_chest(self):
+        for seed in range(20):
+            random.seed(seed)
+            state = GameState(40, 20)
+            self.assertTrue(any(isinstance(e, Chest) and e.kind == 'gear' for e in state.entities))
+
     def test_rarity_weights_shift_toward_better_loot_with_depth(self):
         shallow = rarity_weights_for_depth(1)
         deep = rarity_weights_for_depth(MAX_SCALING_DEPTH)

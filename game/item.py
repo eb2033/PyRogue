@@ -413,19 +413,20 @@ def _place_chest(room, kind, occupied, rng):
     return None
 
 
-def spawn_chests(rooms, rng: Rng = random):
-    """Chests for a fresh level, never in rooms[0] (the player's start): a
-    potion chest per room with POTION_CHEST_CHANCE_PER_ROOM, and at most one
-    gear chest per floor with GEAR_CHEST_CHANCE_PER_FLOOR."""
+def spawn_chests(rooms, rng: Rng = random, depth=None):
+    """Chests for a fresh level, never in rooms[0] (the player's start) or on
+    the stairs: a potion chest per room with POTION_CHEST_CHANCE_PER_ROOM, and
+    at most one gear chest per floor with GEAR_CHEST_CHANCE_PER_FLOOR -- except
+    that floor 1 (depth == 1) always gets its one gear chest."""
     chests = []
-    occupied = set()
+    occupied = {rooms[-1].center()} if rooms else set()
     candidates = rooms[1:]
     for room in candidates:
         if rng.random() < POTION_CHEST_CHANCE_PER_ROOM:
             chest = _place_chest(room, 'potion', occupied, rng)
             if chest is not None:
                 chests.append(chest)
-    if candidates and rng.random() < GEAR_CHEST_CHANCE_PER_FLOOR:
+    if candidates and (depth == 1 or rng.random() < GEAR_CHEST_CHANCE_PER_FLOOR):
         chest = _place_chest(rng.choice(candidates), 'gear', occupied, rng)
         if chest is not None:
             chests.append(chest)

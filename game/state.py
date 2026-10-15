@@ -174,7 +174,7 @@ class GameState:
         """The player, then this floor's monsters, chests and (maybe) shrine.
         The shrine avoids the stairs and every tile already taken."""
         monsters = self._spawn_level_monsters()
-        chests = spawn_chests(self.rooms)
+        chests = spawn_chests(self.rooms, depth=self.depth)
         taken = {(e.x, e.y) for e in monsters + chests}
         taken.add(self.rooms[-1].center())  # the stairs (place_stairs)
         taken.add((self.player.x, self.player.y))
