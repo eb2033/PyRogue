@@ -6,6 +6,7 @@ the game is (x, y); the flip happens here, at the boundary.
 
 import curses
 
+from game.item import BELT_SLOTS, belt_slot_label
 from render.banner import render_banner
 from render import choice
 from render.base import Action, Renderer
@@ -30,6 +31,7 @@ KEY_ACTIONS = {
     ord('S'): Action.SAVE,
     ord('L'): Action.LOAD,
     ord('q'): Action.QUIT,
+    ord('h'): Action.DRINK,
     # A chest's choice cards (render/choice.py). Numpad digits send the same
     # characters with num lock on.
     ord('1'): Action.CHOOSE_1,
@@ -193,15 +195,16 @@ class CursesRenderer(Renderer):
         self._put_str(gear_start, x, '-- gear --')
         self._draw_gear_line(gear_start + 1, x, 'Wpn', state.player.weapon, 'atk')
         self._draw_gear_line(gear_start + 2, x, 'Arm', state.player.armor, 'def')
+        self._draw_belt_line(gear_start + 3, x, state.belt)
 
-        controls_start = gear_start + 4
+        controls_start = gear_start + 5
         if state.player.char_class == 'archer':
             self._put_str(controls_start, x, 'wasd move, arrows shoot')
         else:
             self._put_str(controls_start, x, 'wasd/arrows move')
         self._put_str(controls_start + 1, x, '.  wait   e  descend')
         self._put_str(controls_start + 2, x, 'S  save   L  load')
-        self._put_str(controls_start + 3, x, 'q  quit')
+        self._put_str(controls_start + 3, x, 'h  drink  q  quit')
 
         log_start = controls_start + 5
         self._put_str(log_start, x, '-- log --')
@@ -216,6 +219,21 @@ class CursesRenderer(Renderer):
         # :+d, not a literal '+': a rapier's common bonus is -1.
         text = f'{label}: {item.name} ({item.bonus:+d} {stat_label}) [{item.rarity}]'
         self._put_str(y, x, text, curses.color_pair(item.color))
+
+    def _draw_belt_line(self, y, x, belt):
+        """'Belt: [+20] +35 ---': three slots, the bracketed first one the
+        only one 'h' drinks; each potion in its rarity's colour."""
+        label = 'Belt: '
+        self._put_str(y, x, label)
+        col = x + len(label)
+        for i in range(BELT_SLOTS):
+            item = belt[i] if i < len(belt) else None
+            text = belt_slot_label(item)
+            if i == 0:
+                text = f'[{text}]'
+            attr = curses.color_pair(item.color) if item is not None else curses.A_DIM
+            self._put_str(y, col, text, attr)
+            col += len(text) + 1
 
     def _draw_game_over(self, state):
         max_y, max_x = self.stdscr.getmaxyx()

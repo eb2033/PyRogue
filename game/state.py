@@ -21,7 +21,7 @@ from game.damage import mitigate, round_damage
 from game.dungeon import generate_dungeon, place_stairs
 from game.entity import Entity
 from game.fov import update_visibility
-from game.item import (STARTING_WEAPON_RARITY, Chest, Item, gear_power,
+from game.item import (BELT_SLOTS, STARTING_WEAPON_RARITY, Chest, Item, gear_power,
                        spawn_boss_chest, spawn_chests)
 from game.monster import Monster, is_boss_level
 from game.spawn import spawn_level
@@ -121,6 +121,10 @@ class GameState:
         # Items an opened gear chest is offering, or None. While set, the
         # player must choose() one before anything else happens.
         self.pending_choice = None
+        # The potion belt: up to BELT_SLOTS potion Items, in order. Potions
+        # found at full HP go here; 'drink' takes only belt[0] and the rest
+        # shift forward. Empty at the start of a run; kept across floors.
+        self.belt = []
         # The boss's room (a game.rect.Rect: x1, y1 inclusive, x2, y2
         # exclusive, as carved) on a boss floor, else None. The boss starts at
         # boss_arena.center(); the 3x3 block centred there is the arena's
@@ -210,9 +214,14 @@ class GameState:
         if self.is_choosing:
             return False  # a chest's choice must be made first: see choose()
 
+        # A move refused by try_move_player (a potion chest while the belt is
+        # full at full HP) takes no turn: nothing happened, so monsters don't
+        # act and GameState.turn doesn't advance. Bumping a wall still does,
+        # as it always has.
         if action in MOVE_DELTAS:
             dx, dy = MOVE_DELTAS[action]
-            self.try_move_player(dx, dy)
+            if not self.try_move_player(dx, dy):
+                return False
             self.turn += 1
             self.end_player_phase()
             return True
@@ -221,8 +230,17 @@ class GameState:
             dx, dy = SHOOT_DELTAS[action]
             if self.player.char_class == 'archer':
                 self.shoot_arrow(dx, dy)
-            else:
-                self.try_move_player(dx, dy)
+            elif not self.try_move_player(dx, dy):
+                return False
+            self.turn += 1
+            self.end_player_phase()
+            return True
+
+        if action == 'drink':
+            # Drink belt[0]. A turn, like any other action -- unless the
+            # belt is empty, which only logs.
+            if not self.drink_from_belt():
+                return False
             self.turn += 1
             self.end_player_phase()
             return True
@@ -241,25 +259,55 @@ class GameState:
         return False
 
     def try_move_player(self, dx, dy):
+        """Walk, bump-attack, or reach-attack in (dx, dy). Returns False
+        only if the move is refused and must take no turn: the target tile
+        holds a potion chest the player can neither drink (HP is full) nor
+        store (the belt is full). The player stays put, the chest stays
+        closed, and the log says why; drinking from the belt frees a slot,
+        and then the same move succeeds. Anything else -- including bumping
+        a wall -- returns True."""
         nx, ny = self.player.x + dx, self.player.y + dy
         if not is_walkable(self.game_map, nx, ny):
-            return
+            return True
 
         monster = self.monster_at(nx, ny)
         if monster is not None:
             self.melee(monster)
-            return
+            return True
 
         reach_target = self._reach_target(dx, dy)
         if reach_target is not None:
             self.melee(reach_target)
-            return
+            return True
+
+        chest = self.chest_at(nx, ny)
+        if chest is not None and self._belt_refuses(chest):
+            self.log('Your potion belt is full.')
+            return False
 
         self.player.move(dx, dy, self.game_map)
 
-        chest = self.chest_at(self.player.x, self.player.y)
         if chest is not None:
             self.open_chest(chest)
+        return True
+
+    def _belt_refuses(self, chest):
+        """True if a potion chest can't be taken now: full HP (so it
+        wouldn't be drunk) and no free belt slot to store it in."""
+        return (not chest.offers_choice
+                and self.player.hp >= self.player.max_hp
+                and len(self.belt) >= BELT_SLOTS)
+
+    def drink_from_belt(self):
+        """Drink the first belt slot's potion (heals POTION_HEAL[rarity],
+        capped at max HP); the others shift forward. Returns False, logging
+        'No potions', if the belt is empty."""
+        if not self.belt:
+            self.log('No potions')
+            return False
+        potion = self.belt.pop(0)
+        potion.apply(self.player, self.log)
+        return True
 
     def _reach_target(self, dx, dy):
         """The monster a reach weapon (the spear, reach 2) hits when the
@@ -322,17 +370,31 @@ class GameState:
     def open_chest(self, chest):
         """Open a chest and remove it from the map. Its contents are rolled
         now, against the current depth (see game/item.py). A potion chest's
-        potion is drunk at once; a gear or boss chest's drops become
-        `pending_choice`, and the player must choose() one of them."""
+        potion is drunk at once if the player is hurt, or put in the next
+        free belt slot at full HP; a gear or boss chest's drops become
+        `pending_choice`, and the player must choose() one of them.
+
+        Returns False, leaving the chest closed and in place, for a potion
+        chest at full HP with a full belt (try_move_player refuses that move
+        before getting here); True otherwise."""
+        if self._belt_refuses(chest):
+            self.log('Your potion belt is full.')
+            return False
         self.log('You open the chest.')
         items = chest.open(self.depth)
         self.entities.remove(chest)
         if not chest.offers_choice:
             for item in items:
-                item.apply(self.player, self.log)
-            return
+                if self.player.hp < self.player.max_hp:
+                    item.apply(self.player, self.log)
+                else:
+                    self.belt.append(item)
+                    self.log(f'You put the {item.name} on your belt '
+                             f'(slot {len(self.belt)}).')
+            return True
         self.pending_choice = items
         self.log('Choose one: ' + ', '.join(_describe(i) for i in items) + '.')
+        return True
 
     @property
     def is_choosing(self):

@@ -86,6 +86,8 @@ def state_to_dict(state):
         'entities': [_entity_to_dict(e) for e in state.entities if e is not state.player],
         # An opened chest's offers, stored like equipped gear (kind + rarity;
         # junk has rarity None). None when no choice is pending.
+        # The potion belt, in slot order, like the gear dicts.
+        'belt': [_gear_to_dict(i) for i in state.belt],
         'pending_choice': (None if state.pending_choice is None
                            else [_gear_to_dict(i) for i in state.pending_choice]),
         # The boss room's bounds on a boss floor, else None. Stored so a
@@ -127,6 +129,9 @@ def apply_dict(state, data):
     else:
         state.player.defense = p.get('defense', 0)
     state.player.inventory = list(p['inventory'])
+
+    # Saves from before the potion belt have no field: an empty belt.
+    state.belt = [_gear_from_dict(d) for d in data.get('belt') or []]
 
     # Saves from before chest choices have no field: nothing pending.
     pending = data.get('pending_choice')

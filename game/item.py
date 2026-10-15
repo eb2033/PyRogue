@@ -16,7 +16,8 @@ rolls the *rarity* fresh at that moment against the *current depth*, via
 there -- and the odds genuinely improve the deeper the run goes (see
 `rarity_weights_for_depth`), not just at the moment of spawning.
 
-A potion chest holds one potion, drunk at once. A gear chest holds
+A potion chest holds one potion, drunk at once when the player is hurt, or
+put on the potion belt (BELT_SLOTS) at full HP. A gear chest holds
 GEAR_CHEST_DROPS items, each independently junk (JUNK_CHANCE) or a random
 GEAR_KINDS piece, and the player must pick one of them (GameState.choose);
 the pick always equips, replacing whatever was in that slot.
@@ -40,6 +41,9 @@ MAX_SCALING_DEPTH = 20
 RARITY_COLOR = {'common': 7, 'uncommon': 4, 'rare': 5, 'epic': 6}
 
 POTION_HEAL = {'common': 20, 'uncommon': 35, 'rare': 55, 'epic': 88}
+# The potion belt (GameState.belt): potions picked up at full HP wait here,
+# in order. Only the first is drinkable ('h'); the rest shift up after it.
+BELT_SLOTS = 3
 # Weapon power bonus by rarity.
 GEAR_BONUS = {'common': 1, 'uncommon': 2, 'rare': 4, 'epic': 7}
 # Armor defense by rarity. This is the value the damage-reduction system
@@ -215,6 +219,14 @@ def roll_boss_drop(rng=random):
     armor is ARMOR_DROP_CHANCE of them directly."""
     rarity = rng.choices(BOSS_CHEST_MIN_RARITIES, weights=BOSS_CHEST_MIN_WEIGHTS)[0]
     return Item(0, 0, roll_gear_kind(ARMOR_DROP_CHANCE, rng), rarity)
+
+
+def belt_slot_label(item):
+    """Short text for one belt slot: a potion's heal ('+35'), or '---' for
+    an empty slot (None). Both renderers' panels use it."""
+    if item is None:
+        return '---'
+    return f'+{POTION_HEAL[item.rarity]}'
 
 
 def _effect_value(value, rarity):

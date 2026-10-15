@@ -22,6 +22,7 @@ import textwrap
 
 import pygame
 
+from game.item import BELT_SLOTS, belt_slot_label
 from game.paths import resource_path
 from render import noticeboard, palette
 
@@ -38,7 +39,8 @@ PANEL_PAD_BOTTOM = 2              # page margin, frame
 PANEL_TEXT_COLS = PANEL_COLS - 2 * PANEL_PAD_X
 HP_ROW = 2
 GEAR_TOP = 6                      # header; weapon name + stats, armor name + stats
-CONTROLS_TOP = GEAR_TOP + 6
+BELT_ROW = GEAR_TOP + 5           # the potion belt, under the armor
+CONTROLS_TOP = GEAR_TOP + 7
 LOG_TOP = CONTROLS_TOP + 5        # the '-- log --' header; messages start below it
 MIN_LOG_LINES = 4                 # the terminal's count: always room for this many
 LOG_LINES = 12                    # shown when the window has the rows for them
@@ -469,6 +471,7 @@ def paint_panel(canvas, state):
         put(GEAR_TOP + 1 + 2 * row, name, color)
         if stats:
             put(GEAR_TOP + 2 + 2 * row, stats, color)
+    _paint_belt(canvas, x, top + BELT_ROW, width, state.belt)
 
     if player.char_class == 'archer':
         put(CONTROLS_TOP, 'wasd move, arrows shoot')
@@ -476,7 +479,7 @@ def paint_panel(canvas, state):
         put(CONTROLS_TOP, 'wasd/arrows move')
     put(CONTROLS_TOP + 1, '.  wait   e  descend')
     put(CONTROLS_TOP + 2, 'S  save   L  load')
-    put(CONTROLS_TOP + 3, 'q  quit')
+    put(CONTROLS_TOP + 3, 'h  drink  q  quit')
 
     put(LOG_TOP, '-- log --', bold=True)
     for i, line in enumerate(log_rows(state.messages, width, layout.log_lines())):
@@ -498,6 +501,24 @@ def log_rows(messages, width, rows):
             break
         lines[:0] = wrapped
     return lines
+
+
+def _paint_belt(canvas, x, y, width, belt):
+    """'Belt: [+20] +35 ---' in text row `y`, like curses_render's
+    _draw_belt_line: the bracketed first slot is the one 'h' drinks; each
+    potion in its rarity's ink, empty slots in plain ink."""
+    label = 'Belt: '
+    canvas.put_str(x, y, label[:width], palette.INK)
+    col = len(label)
+    for i in range(BELT_SLOTS):
+        item = belt[i] if i < len(belt) else None
+        text = belt_slot_label(item)
+        if i == 0:
+            text = f'[{text}]'
+        if col < width:
+            color = palette.ink(item.color) if item is not None else palette.INK
+            canvas.put_str(x + col, y, text[:width - col], color)
+        col += len(text) + 1
 
 
 def _paint_hp_bar(canvas, x, y, width, hp, max_hp, danger):

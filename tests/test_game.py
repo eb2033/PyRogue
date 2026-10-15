@@ -19,7 +19,8 @@ from game.entity import Entity
 from game.fov import compute_fov, update_visibility
 from game.item import (ARMOR_DEFENSE, CHEST_COLOR, Chest, GEAR_BONUS, GEAR_CHEST_DROPS,
                        GEAR_DROP_KINDS, GEAR_KINDS, GEAR_SLOTS, ITEM_CHARS, Item, JUNK,
-                       JUNK_CHANCE, JUNK_NAME, MAX_SCALING_DEPTH, POTION_CHEST_COLOR, RARITIES,
+                       JUNK_CHANCE, JUNK_NAME, MAX_SCALING_DEPTH, POTION_CHEST_COLOR, POTION_HEAL,
+                       RARITIES,
                        WEAPON_TYPES, rarity_weights_for_depth, roll_rarity, spawn_boss_chest,
                        spawn_chests)
 from game.monster import (BOSS_REFERENCE_KIND, CHASE_RANGE, GIVE_UP_AFTER, MONSTER_TYPES,
@@ -767,6 +768,7 @@ class GameStateIntegrationTests(unittest.TestCase):
         state = GameState(50, 20)
         chest = Chest(state.player.x + 1, state.player.y, kind='potion')
         state.entities = [state.player, chest]
+        state.player.hp -= 1  # hurt: drunk at once, not belted
         state.try_move_player(1, 0)
         self.assertEqual(len(state.player.inventory), 1)
         self.assertNotIn(chest, state.entities)
@@ -1293,11 +1295,207 @@ class ChestTests(unittest.TestCase):
         state = GameState(50, 20)
         chest = Chest(state.player.x, state.player.y, kind='potion')
         state.entities = [state.player, chest]
+        state.player.hp -= 1  # hurt: drunk at once, not belted
         before = len(state.player.inventory)
         state.open_chest(chest)
         self.assertNotIn(chest, state.entities)
         self.assertEqual(len(state.player.inventory), before + 1)
         self.assertIsNone(state.pending_choice)
+
+
+class PotionBeltTests(unittest.TestCase):
+    """Potions found at full HP go on a 3-slot belt; 'drink' drinks slot 1."""
+
+    def setUp(self):
+        random.seed(70)
+        self.state = GameState(50, 20)
+        self.state.entities = [self.state.player]
+        self.start = (self.state.player.x, self.state.player.y)
+
+    def chest_east(self):
+        state = self.state
+        chest = Chest(state.player.x + 1, state.player.y, kind='potion')
+        state.entities.append(chest)
+        return chest
+
+    def test_belt_starts_empty(self):
+        self.assertEqual(self.state.belt, [])
+        self.assertEqual(GameState(50, 20, char_class='archer').belt, [])
+
+    def test_hurt_pickup_drinks_at_once(self):
+        state = self.state
+        state.player.hp = 1
+        chest = self.chest_east()
+        self.assertTrue(state.handle_action('move_e'))
+        self.assertGreater(state.player.hp, 1)
+        self.assertEqual(state.belt, [])
+        self.assertNotIn(chest, state.entities)
+
+    def test_full_hp_pickup_goes_in_the_first_free_slot(self):
+        state = self.state
+        state.belt.append(Item(0, 0, 'potion', 'epic'))
+        chest = self.chest_east()
+        turn = state.turn
+        self.assertTrue(state.handle_action('move_e'))
+        self.assertEqual(state.turn, turn + 1)  # the move, nothing more
+        self.assertEqual(len(state.belt), 2)
+        self.assertEqual(state.belt[0].rarity, 'epic')
+        self.assertEqual(state.belt[1].kind, 'potion')
+        self.assertNotIn(chest, state.entities)
+        self.assertEqual(state.player.hp, state.player.max_hp)
+        self.assertEqual((state.player.x, state.player.y), (self.start[0] + 1, self.start[1]))
+        self.assertIn('belt', state.messages[-1])
+        self.assertIn('slot 2', state.messages[-1])
+
+    def test_open_chest_at_full_hp_belts_the_potion(self):
+        state = self.state
+        chest = Chest(state.player.x, state.player.y, kind='potion')
+        state.entities.append(chest)
+        self.assertTrue(state.open_chest(chest))
+        self.assertEqual(len(state.belt), 1)
+        self.assertNotIn(chest, state.entities)
+        self.assertEqual(state.player.inventory, [])  # stored, not drunk
+
+    def full_belt(self):
+        self.state.belt[:] = [Item(0, 0, 'potion', r) for r in ('common', 'rare', 'uncommon')]
+
+    def test_full_belt_at_full_hp_refuses_the_move(self):
+        state = self.state
+        self.full_belt()
+        monster = Monster(state.player.x, state.player.y + 1, 'goblin')
+        state.entities.append(monster)
+        chest = self.chest_east()
+        turn, monster_hp = state.turn, monster.hp
+        self.assertFalse(state.handle_action('move_e'))
+        self.assertEqual((state.player.x, state.player.y), self.start)
+        self.assertIn(chest, state.entities)
+        self.assertEqual(state.turn, turn)
+        self.assertFalse(state.monster_phase_pending())
+        self.assertEqual(state.messages[-1], 'Your potion belt is full.')
+        self.assertEqual(len(state.belt), 3)
+        self.assertEqual(monster.hp, monster_hp)
+
+    def test_full_belt_refuses_open_chest_too(self):
+        state = self.state
+        self.full_belt()
+        chest = Chest(state.player.x, state.player.y, kind='potion')
+        state.entities.append(chest)
+        self.assertFalse(state.open_chest(chest))
+        self.assertIn(chest, state.entities)
+
+    def test_full_belt_while_hurt_still_drinks(self):
+        state = self.state
+        self.full_belt()
+        state.player.hp = 1
+        chest = self.chest_east()
+        self.assertTrue(state.handle_action('move_e'))
+        self.assertNotIn(chest, state.entities)
+        self.assertGreater(state.player.hp, 1)
+        self.assertEqual(len(state.belt), 3)
+
+    def test_full_belt_does_not_block_gear_chests(self):
+        state = self.state
+        self.full_belt()
+        state.entities.append(Chest(state.player.x + 1, state.player.y, kind='gear'))
+        self.assertTrue(state.handle_action('move_e'))
+        self.assertTrue(state.is_choosing)
+
+    def test_after_drinking_the_chest_can_be_entered(self):
+        state = self.state
+        self.full_belt()
+        chest = self.chest_east()
+        self.assertFalse(state.handle_action('move_e'))
+        state.player.hp -= 1
+        self.assertTrue(state.handle_action('drink'))
+        state.end_turn()  # (no monsters) finish the round
+        self.assertEqual(state.player.hp, state.player.max_hp)
+        self.assertEqual(len(state.belt), 2)
+        self.assertTrue(state.handle_action('move_e'))
+        self.assertNotIn(chest, state.entities)
+        self.assertEqual(len(state.belt), 3)
+        self.assertEqual((state.player.x, state.player.y), (self.start[0] + 1, self.start[1]))
+
+    def test_drink_takes_the_first_slot_and_shifts_the_rest(self):
+        state = self.state
+        self.full_belt()
+        second, third = state.belt[1], state.belt[2]
+        state.player.hp = 1
+        self.assertTrue(state.handle_action('drink'))
+        self.assertEqual(state.player.hp, 1 + POTION_HEAL['common'])
+        self.assertEqual(state.belt, [second, third])
+        self.assertEqual(state.player.inventory, ['potion of healing'])
+
+    def test_drink_is_capped_at_max_hp(self):
+        state = self.state
+        state.belt.append(Item(0, 0, 'potion', 'epic'))
+        state.player.hp = state.player.max_hp - 5
+        self.assertTrue(state.handle_action('drink'))
+        self.assertEqual(state.player.hp, state.player.max_hp)
+        self.assertEqual(state.belt, [])
+
+    def test_drink_takes_a_turn_and_monsters_act(self):
+        state = self.state
+        state.belt.append(Item(0, 0, 'potion', 'rare'))
+        state.player.hp = 5
+        monster = Monster(state.player.x, state.player.y + 1, 'goblin')
+        state.entities.append(monster)
+        turn = state.turn
+        self.assertTrue(state.handle_action('drink'))
+        self.assertEqual(state.turn, turn + 1)
+        self.assertEqual(state.player.hp, min(state.player.max_hp, 5 + POTION_HEAL['rare']))
+        self.assertTrue(state.monster_phase_pending())
+        healed = state.player.hp
+        while state.step_monster_phase():
+            pass
+        self.assertLess(state.player.hp, healed)  # the goblin answered
+
+    def test_drink_with_an_empty_belt_takes_no_turn(self):
+        state = self.state
+        state.entities.append(Monster(state.player.x, state.player.y + 1, 'goblin'))
+        turn = state.turn
+        self.assertFalse(state.handle_action('drink'))
+        self.assertEqual(state.turn, turn)
+        self.assertFalse(state.monster_phase_pending())
+        self.assertEqual(state.messages[-1], 'No potions')
+
+    def test_drink_is_ignored_while_choosing(self):
+        state = self.state
+        state.belt.append(Item(0, 0, 'potion', 'common'))
+        state.player.hp = 1
+        state.pending_choice = [Item(0, 0, 'armor', 'common')] * 3
+        turn = state.turn
+        self.assertFalse(state.handle_action('drink'))
+        self.assertEqual(state.player.hp, 1)
+        self.assertEqual(len(state.belt), 1)
+        self.assertEqual(state.turn, turn)
+
+    def round_trip(self, state):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'save.json')
+            save_game(state, path)
+            fresh = GameState(50, 20)
+            fresh.belt.append(Item(0, 0, 'potion', 'epic'))  # must be replaced
+            apply_dict(fresh, load_game(path))
+            return fresh
+
+    def test_full_belt_round_trips_in_order(self):
+        self.full_belt()
+        fresh = self.round_trip(self.state)
+        self.assertEqual([(i.kind, i.rarity) for i in fresh.belt],
+                         [('potion', 'common'), ('potion', 'rare'), ('potion', 'uncommon')])
+        self.assertEqual(state_to_dict(self.state)['belt'],
+                         [{'kind': 'potion', 'rarity': r} for r in ('common', 'rare', 'uncommon')])
+
+    def test_empty_belt_round_trips(self):
+        self.assertEqual(self.round_trip(self.state).belt, [])
+
+    def test_old_save_without_a_belt_loads_empty(self):
+        data = state_to_dict(self.state)
+        del data['belt']
+        fresh = GameState(50, 20)
+        fresh.belt.append(Item(0, 0, 'potion', 'epic'))
+        apply_dict(fresh, data)
+        self.assertEqual(fresh.belt, [])
 
 
 class ChestChoiceTests(unittest.TestCase):

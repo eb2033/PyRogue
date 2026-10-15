@@ -13,12 +13,19 @@ try:
 except ImportError:  # pragma: no cover - terminal-only checkout
     pygame = None
 
-from game.item import Item
+from unittest import mock
+
+from game.item import BELT_SLOTS, POTION_HEAL, Item, belt_slot_label
 from game.state import GameState
 from render.menu import Menu
 
 if pygame is not None:
     from render import noticeboard, palette, screens, ui
+
+try:
+    from render import curses_render
+except ImportError:  # pragma: no cover - Windows without windows-curses
+    curses_render = None
 
 WIDTH, HEIGHT = 40, 20
 
@@ -480,9 +487,10 @@ class PanelParityTest(unittest.TestCase):
       [x] 0  title                        [x] 6  '-- gear --'
       [x] 1  'Class - Depth: n' (live)    [x] 7-8  weapon, rarity ink / (none)
       [x] 2  HP, red at <= 1/3 max        [x] 9-10 armor, rarity ink / (none)
-          + bar beside it (extra)         [x] 12 class-dependent controls line
-      [x] 3  ATK / DEF                    [x] 13-15 shared controls
-      [x] 4  item count (live)            [x] 17 '-- log --', 18+ newest messages
+          + bar beside it (extra)         [x] 11 potion belt, 3 slots, rarity ink
+      [x] 3  ATK / DEF                    [x] 13 class-dependent controls line
+      [x] 4  item count (live)            [x] 14-16 shared controls (+ 'h drink')
+                                          [x] 18 '-- log --', 19+ newest messages
     """
 
     LAYOUTS = [(False, (1280, 720)), (False, (800, 1200)), (True, (1920, 1080)),
@@ -533,15 +541,15 @@ class PanelParityTest(unittest.TestCase):
         return state
 
     def test_rows_follow_curses_with_two_row_gear_slots(self):
-        # _draw_panel: HP on row 2, gear_start = 6, controls_start =
-        # gear_start + 4, log_start = controls_start + 5 -- here each of the
-        # two gear slots takes one extra row.
-        self.assertEqual((ui.HP_ROW, ui.GEAR_TOP, ui.CONTROLS_TOP, ui.LOG_TOP),
-                         (2, 6, 6 + 4 + 2, 6 + 4 + 2 + 5))
+        # _draw_panel: HP on row 2, gear_start = 6, belt on gear_start + 3,
+        # controls_start = gear_start + 5, log_start = controls_start + 5 --
+        # here each of the two gear slots takes one extra row.
+        self.assertEqual((ui.HP_ROW, ui.GEAR_TOP, ui.BELT_ROW, ui.CONTROLS_TOP, ui.LOG_TOP),
+                         (2, 6, 6 + 3 + 2, 6 + 5 + 2, 6 + 5 + 2 + 5))
 
     def test_every_text_row_is_painted_and_the_gaps_are_not(self):
         rows = [0, 1, ui.HP_ROW, 3, 4, ui.GEAR_TOP, ui.GEAR_TOP + 1, ui.GEAR_TOP + 3,
-                ui.CONTROLS_TOP, ui.CONTROLS_TOP + 1, ui.CONTROLS_TOP + 2,
+                ui.BELT_ROW, ui.CONTROLS_TOP, ui.CONTROLS_TOP + 1, ui.CONTROLS_TOP + 2,
                 ui.CONTROLS_TOP + 3, ui.LOG_TOP, ui.LOG_TOP + 1, ui.LOG_TOP + 2]
         for _ in self.each_layout():
             for row in rows:
@@ -549,7 +557,7 @@ class PanelParityTest(unittest.TestCase):
             # Every run starts with a weapon, so its stats row (GEAR_TOP + 2)
             # is drawn; no armor, so the armor's stats row stays empty.
             self.assertGreater(self.pixels(self.row_rect(ui.GEAR_TOP + 2)), 0)
-            for blank in (5, ui.GEAR_TOP + 4, ui.GEAR_TOP + 5,
+            for blank in (5, ui.GEAR_TOP + 4, ui.BELT_ROW + 1,
                           ui.CONTROLS_TOP + 4, ui.LOG_TOP + 3):
                 self.assertEqual(self.pixels(self.row_rect(blank)), 0, f'row {blank} drawn')
 
@@ -678,6 +686,107 @@ class PanelParityTest(unittest.TestCase):
         for _ in self.each_layout():
             self.assertEqual(self.drawn(self.layout.map_rect()), 0)
 
+    def belt_slot_rects(self, belt):
+        """Pixel rects of the three belt slots' text on BELT_ROW, from the
+        same column arithmetic as ui._paint_belt."""
+        col, rects = len('Belt: '), []
+        for i in range(BELT_SLOTS):
+            text = belt_slot_label(belt[i] if i < len(belt) else None)
+            if i == 0:
+                text = f'[{text}]'
+            rects.append(self.row_rect(ui.BELT_ROW, col, len(text)))
+            col += len(text) + 1
+        return rects
+
+    def test_belt_shows_three_slots_each_in_its_rarity_ink(self):
+        def make():
+            state = self.state()
+            state.belt[:] = [Item(0, 0, 'potion', 'epic'), Item(0, 0, 'potion', 'uncommon')]
+            return state
+        for state in self.each_layout(make):
+            first, second, empty = self.belt_slot_rects(state.belt)
+            epic, uncommon = palette.ink(6), palette.ink(4)
+            self.assertGreater(self.pixels(first, epic), 0)
+            self.assertEqual(self.pixels(first, uncommon), 0)
+            self.assertGreater(self.pixels(second, uncommon), 0)
+            self.assertEqual(self.pixels(second, epic), 0)
+            # The empty third slot is drawn ('---') in plain ink.
+            self.assertGreater(self.pixels(empty, palette.INK), 0)
+            self.assertEqual(self.pixels(empty, epic) + self.pixels(empty, uncommon), 0)
+
+    def test_belt_row_changes_with_its_contents(self):
+        for tiles, size in self.LAYOUTS:
+            with self.subTest(tiles=tiles, size=size):
+                state = self.state()
+                self.paint(state, tiles, size)
+                empty = self.row_bytes(ui.BELT_ROW)
+                self.assertGreater(self.pixels(self.row_rect(ui.BELT_ROW)), 0)
+                state.belt.append(Item(0, 0, 'potion', 'common'))
+                self.paint(state, tiles, size)
+                self.assertNotEqual(self.row_bytes(ui.BELT_ROW), empty)
+
+
+
+class _FakeScreen:
+    """Just enough of a curses window for CursesRenderer._draw_panel:
+    records every addstr as (y, x, text, attr)."""
+
+    def __init__(self, rows=40, cols=120):
+        self.size = (rows, cols)
+        self.writes = []
+
+    def getmaxyx(self):
+        return self.size
+
+    def addstr(self, y, x, text, attr=0):
+        self.writes.append((y, x, text, attr))
+
+
+@unittest.skipUnless(curses_render, 'curses not available')
+class CursesBeltTest(unittest.TestCase):
+    """The terminal panel's belt line, without a terminal: _draw_panel
+    against a recording stand-in window, color_pair patched (it needs
+    initscr). The pygame side is PanelParityTest's belt tests."""
+
+    def draw(self, belt):
+        state = GameState(WIDTH, HEIGHT)
+        state.belt[:] = belt
+        renderer = curses_render.CursesRenderer.__new__(curses_render.CursesRenderer)
+        renderer.stdscr = _FakeScreen()
+        with mock.patch.object(curses_render.curses, 'color_pair', lambda n: n << 8):
+            renderer._draw_panel(state)
+        return state, renderer.stdscr.writes
+
+    def belt_writes(self, writes):
+        row = 6 + 3  # gear_start + 3, as in PanelParityTest's row test
+        return [(x, text, attr) for y, x, text, attr in writes if y == row]
+
+    def test_three_slots_first_bracketed_in_rarity_colour(self):
+        epic, common = Item(0, 0, 'potion', 'epic'), Item(0, 0, 'potion', 'common')
+        state, writes = self.draw([epic, common])
+        line = self.belt_writes(writes)
+        texts = [text for _, text, _ in line]
+        self.assertEqual(texts, ['Belt: ', f'[+{POTION_HEAL["epic"]}]',
+                                 f'+{POTION_HEAL["common"]}', '---'])
+        attrs = [attr for _, _, attr in line]
+        self.assertEqual(attrs[1], epic.color << 8)
+        self.assertEqual(attrs[2], common.color << 8)
+        # Slots never overlap one another.
+        for (x1, t1, _), (x2, _, _) in zip(line, line[1:]):
+            self.assertGreater(x2, x1 + len(t1) - 1)
+
+    def test_empty_belt_shows_three_empty_slots(self):
+        _, writes = self.draw([])
+        texts = [text for _, text, _ in self.belt_writes(writes)]
+        self.assertEqual(texts, ['Belt: ', '[---]', '---', '---'])
+
+    def test_belt_row_is_its_own(self):
+        _, writes = self.draw([])
+        rows = [y for y, _, _, _ in writes]
+        # Only the belt's four writes land on its row; controls moved down.
+        self.assertEqual(rows.count(9), 4)
+        self.assertIn((11, 'wasd/arrows move'), [(y, t) for y, _, t, _ in writes])
+        self.assertIn((14, 'h  drink  q  quit'), [(y, t) for y, _, t, _ in writes])
 
 
 class GearLineSignTest(unittest.TestCase):
