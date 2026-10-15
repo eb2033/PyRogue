@@ -31,7 +31,7 @@ from game.entity import Player
 from game.fov import update_visibility
 from game.item import (
     STARTING_ARMOR,
-    STARTING_WEAPON_RARITY,
+    STARTING_WEAPON,
     Chest,
     Item,
     belt_capacity,
@@ -165,7 +165,7 @@ class GameState:
         self.player.base_power = power
         self.player.power = power
         self.player.defense = 0
-        self.player.weapon = Item(0, 0, 'weapon', STARTING_WEAPON_RARITY)
+        self.player.weapon = Item(0, 0, *STARTING_WEAPON.get(char_class, ('weapon', 'common')))
         self.player.armor = None
         if char_class in STARTING_ARMOR:
             self.player.armor = Item(0, 0, *STARTING_ARMOR[char_class])

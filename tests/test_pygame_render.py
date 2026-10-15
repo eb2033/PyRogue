@@ -458,6 +458,23 @@ class TileModeTest(unittest.TestCase):
         for point in [(layout.tile // 2, layout.tile // 2), (1, 1), (layout.tile // 3, 2)]:
             self.assertEqual(drawn.get_at(point)[:3], expected.get_at(point)[:3])
 
+    def test_archer_is_drawn_with_its_own_tile(self):
+        state = GameState(WIDTH, HEIGHT, char_class='archer')
+        self.renderer.draw(state)
+        layout = self.renderer.layout
+        rect = pygame.Rect(
+            layout.map_cell_to_pixel(state.player.x, state.player.y), layout.map_cell_size()
+        )
+        drawn = pygame.display.get_surface().subsurface(rect)
+        expected = self.renderer.tileset.glyph('.', 0, layout.tile).copy()
+        expected.blit(self.renderer.tileset.glyph('&', state.player.color, layout.tile), (0, 0))
+        point = (layout.tile // 2, layout.tile // 2)
+        self.assertEqual(drawn.get_at(point)[:3], expected.get_at(point)[:3])
+        self.assertIsNot(
+            self.renderer.tileset.glyph('&', 0, layout.tile),
+            self.renderer.tileset.glyph('@', 0, layout.tile),
+        )
+
     def fight(self):
         state = GameState(WIDTH, HEIGHT)
         x, y = open_neighbour(state)

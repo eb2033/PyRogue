@@ -7,9 +7,9 @@ animation. Each hit carries a serial number that only ever grows, so a
 renderer that draws the same round several times can tell which hits it has
 already shown without mutating the state.
 
-Every arrow also records a `Shot` in `GameState.shots` (same lifetime as
-combat_events): the cells it flew through, so a renderer can draw it flying
-and land it on each of its Hits.
+Every shot also records a `Shot` in `GameState.shots` (same lifetime as
+combat_events): the cells each of its arrows flew through, so a renderer can
+draw them flying and land each on its Hits.
 """
 
 from collections import namedtuple
@@ -25,6 +25,13 @@ Hit.__new__.__defaults__ = (False,)
 # it stopped (the last monster it hit, or the last free tile before a wall).
 # A volley's side arrow goes from the shooter's cell straight to its first,
 # diagonal, tile. `hits` are the Hits it made, in order; each one's (x, y) is
-# on the path. `serial` comes from the same counter as Hit.serial and is taken
-# before the arrow flies, so a Shot sorts before its own Hits.
-Shot = namedtuple('Shot', 'serial path hits')
+# on the path.
+Arrow = namedtuple('Arrow', 'path hits')
+
+# One shot: every arrow loosed by one shoot action, all leaving the shooter's
+# cell together. `arrows` is a tuple of Arrows, the aim arrow first -- one
+# element for every bow but the volley bow, whose extras follow it. `path` and
+# `hits` are the aim arrow's (arrows[0]), kept for readers that only fly one.
+# `serial` comes from the same counter as Hit.serial and is taken before any
+# arrow flies, so a Shot sorts before all of its Hits.
+Shot = namedtuple('Shot', 'serial path hits arrows')

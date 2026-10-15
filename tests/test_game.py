@@ -2931,12 +2931,12 @@ class ArcherArena(unittest.TestCase):
 
 class ArcherWeaponTests(ArcherArena):
     EXPECTED_BONUS = {
-        'longbow': {'common': 0, 'uncommon': 1, 'rare': 3, 'epic': 6},
-        'heavy_crossbow': {'common': 3, 'uncommon': 4, 'rare': 6, 'epic': 9},
-        'volley_bow': {'common': -1, 'uncommon': 0, 'rare': 2, 'epic': 5},
-        'sling': {'common': 0, 'uncommon': 1, 'rare': 3, 'epic': 6},
-        'hunters_bow': {'common': 0, 'uncommon': 1, 'rare': 3, 'epic': 6},
-        'quickdraw': {'common': 1, 'uncommon': 2, 'rare': 4, 'epic': 7},
+        'longbow': {'common': -1, 'uncommon': 0, 'rare': 2, 'epic': 5},
+        'heavy_crossbow': {'common': 2, 'uncommon': 3, 'rare': 5, 'epic': 8},
+        'volley_bow': {'common': -2, 'uncommon': -1, 'rare': 1, 'epic': 4},
+        'sling': {'common': -1, 'uncommon': 0, 'rare': 2, 'epic': 5},
+        'hunters_bow': {'common': -1, 'uncommon': 0, 'rare': 2, 'epic': 5},
+        'quickdraw': {'common': 0, 'uncommon': 1, 'rare': 3, 'epic': 6},
     }
     EXPECTED_EFFECT = {
         'longbow': ('pierce', (2, 2, 3, 4)),

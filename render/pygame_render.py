@@ -39,6 +39,8 @@ from render.base import Action, Renderer
 from render.menu import Menu
 from render.tileset import Tileset
 
+ARCHER_TILE = '&'  # tiles.json key for the archer player (a bow-carrying figure)
+
 ICON_FILE = 'icon.png'
 
 # Combat staging (render/camera.py). How long each beat plays; a key the
@@ -876,7 +878,10 @@ class PygameRenderer(Renderer):
                     entity.x, entity.y, entity.char, palette.brighten(rgb), entity.color, angle
                 )
             else:
-                self._paint_cell(entity.x, entity.y, entity.char, rgb, entity.color, angle=angle)
+                char = entity.char
+                if getattr(entity, 'char_class', '') == 'archer' and self.tileset.has(ARCHER_TILE):
+                    char = ARCHER_TILE  # the archer's own sprite; glyph mode keeps '@'
+                self._paint_cell(entity.x, entity.y, char, rgb, entity.color, angle=angle)
         finally:
             self._sprite_offset = (0, 0)
             if clip is not None:

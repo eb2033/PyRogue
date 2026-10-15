@@ -15,7 +15,8 @@ all defaulted for any other weapon) change the shot:
 - spread (volley bow): `spread` extra arrows at `spread_factor` damage -- the
   first two in the lanes either side of the aim line (starting diagonally
   forward of the player, then straight on), a third down the aim line itself.
-  Extras spend no arrow and leave no pile.
+  Extras spend no arrow and leave no pile. They leave with the aim arrow, on
+  the same turn, as part of the same Shot.
 - knockback (sling): a hit monster is pushed up to `knockback` tiles straight
   away from the player, a tile at a time, stopping at a wall, a monster or
   the player. A move, not a Hit.
@@ -24,14 +25,15 @@ all defaulted for any other weapon) change the shot:
 - tempo (quickdraw): every `tempo`-th shot is free -- the action queues no
   monster half (GameState._free_turn).
 
-Every arrow that flies -- the aim line and each volley extra -- records a
-game.combat.Shot in GameState.shots: its path and its Hits, so the window can
-draw it flying (render/camera.py's Flight beat).
+Every shot records one game.combat.Shot in GameState.shots: one Arrow (its
+path and its Hits) for each arrow it looses -- just the aim arrow for most
+bows, the aim arrow plus its extras for a volley -- so the window can draw
+them flying together from the player (render/camera.py's Flight beat).
 """
 
 from typing import TYPE_CHECKING
 
-from game.combat import Shot
+from game.combat import Arrow, Shot
 from game.quiver import ArrowPile
 from game.tiles import is_walkable
 
@@ -60,14 +62,16 @@ def shoot(state: 'GameState', dx, dy):
         player.quiver -= 1
     state.log('You loose an arrow.')
 
+    serial = state.next_event_serial()  # before any arrow flies: sorts first
     pierce = weapon.pierce if weapon is not None else 1
-    stop = _fly(state, player.x, player.y, dx, dy, pierce, 1.0, loud=True)
+    stop, aim = _fly(state, player.x, player.y, dx, dy, pierce, 1.0, loud=True)
+    arrows = [aim]
     _drop_arrow(state, *stop)
     if weapon is not None and weapon.spread:
         for start in _volley_starts(state, dx, dy, weapon.spread):
             if start is not None:
                 sx, sy = start
-                _fly(
+                _, extra = _fly(
                     state,
                     sx,
                     sy,
@@ -78,6 +82,8 @@ def shoot(state: 'GameState', dx, dy):
                     loud=False,
                     origin=(player.x, player.y),
                 )
+                arrows.append(extra)
+    state.shots.append(Shot(serial, aim.path, aim.hits, tuple(arrows)))
     if weapon is not None and weapon.reload:
         state.reload_turns = weapon.reload
     if weapon is not None and weapon.tempo:
@@ -91,11 +97,10 @@ def shoot(state: 'GameState', dx, dy):
 
 def _fly(state: 'GameState', x, y, dx, dy, pierce, factor, loud, origin=None):
     """Fly from (x, y), not including it, until a wall or the `pierce`-th
-    monster hit. Returns the tile the arrow stopped on. `loud` logs a wall
-    hit when nothing was struck (the aim line; volley extras stay quiet).
-    Records the flight as a Shot whose path starts at `origin` (default
-    (x, y)): the shooter's cell, which a volley's side arrow doesn't start on."""
-    serial = state.next_event_serial()
+    monster hit. Returns (the tile the arrow stopped on, its Arrow). `loud`
+    logs a wall hit when nothing was struck (the aim line; volley extras stay
+    quiet). The Arrow's path starts at `origin` (default (x, y)): the
+    shooter's cell, which a volley's side arrow doesn't start on."""
     path = [origin if origin is not None else (x, y)]
     first_event = len(state.combat_events)
     hits = 0
@@ -113,8 +118,7 @@ def _fly(state: 'GameState', x, y, dx, dy, pierce, factor, loud, origin=None):
             hits += 1
             if hits >= pierce:
                 break
-    state.shots.append(Shot(serial, tuple(path), tuple(state.combat_events[first_event:])))
-    return x, y
+    return (x, y), Arrow(tuple(path), tuple(state.combat_events[first_event:]))
 
 
 def _volley_starts(state: 'GameState', dx, dy, spread):

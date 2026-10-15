@@ -46,7 +46,9 @@ variants, sample maps and `.url` shortcuts are left out.
 Sheets are 16x16 cells with a 1 px margin, so cell `(col, row)` starts at pixel
 `(col * 17, row * 17)`. To change what a char looks like, edit its `layers` in `tiles.json` (bottom
 layer first; floor-standing things like doors and stairs put the floor tile underneath). After
-changing `@`, rerun `packaging/make_icon.py`.
+changing `@`, rerun `packaging/make_icon.py`. The archer player is drawn with the `&` tile
+(`render/pygame_render.py`'s `ARCHER_TILE`): characters-pack body (0,0), green clothes (6,7) and the
+brown bow at (52,1), all from `roguelikeChar_transparent.png` (Kenney, CC0).
 
 ## Boss-arena blood decals
 

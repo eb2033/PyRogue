@@ -12,6 +12,7 @@
     "+": {"layers": [["dungeon", 16, 12], ["rpg", 33, 0]]},
     ">": {"layers": [["dungeon", 16, 12], ["rpg", 20, 18]]},
     "@": {"layers": [["chars", 0, 11]]},
+    "&": {"layers": [["chars", 0, 0], ["chars", 6, 7], ["chars", 52, 1]]},
     "g": {"layers": [["chars", 0, 3], ["chars", 6, 1], ["chars", 42, 7]]},
     "G": {"layers": [["chars", 0, 3], ["chars", 6, 1], ["chars", 28, 6], ["chars", 44, 6]]},
     "s": {"layers": [["chars", 0, 3], ["chars", 10, 1], ["chars", 52, 0]]},

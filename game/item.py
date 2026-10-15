@@ -85,12 +85,12 @@ WEAPON_DAMAGE_OFFSET = {
     'sword_shield': 0,
     'dagger': -1,
     'spear': 0,
-    'longbow': -1,
-    'heavy_crossbow': 2,
-    'volley_bow': -2,
-    'sling': -1,
-    'hunters_bow': -1,
-    'quickdraw': 0,
+    'longbow': -2,
+    'heavy_crossbow': 1,
+    'volley_bow': -3,
+    'sling': -2,
+    'hunters_bow': -2,
+    'quickdraw': -1,
 }
 AXE_MAX_HP = {'common': 3, 'uncommon': 6, 'rare': 9, 'epic': 15}
 # The requested 1/2/3 shield defense, x3 for the ARMOR_DEFENSE rescale, with
@@ -173,13 +173,15 @@ GEAR_STATS.update(
 )
 
 # The kinds a gear-chest (or boss-chest) drop can be. The plain 'weapon' is
-# not among them: it is the starting weapon every run begins with (see
+# not among them: it is the warrior's starting weapon (STARTING_WEAPON, see
 # GameState), so it never drops. Armor's share of drops is ARMOR_DROP_CHANCE,
 # split evenly between ARMOR_KINDS; the rest are weapons, split evenly across
 # the player's class's CLASS_WEAPONS (roll_gear_kind).
 GEAR_DROP_KINDS = ARMOR_KINDS + WEAPON_TYPES
-# The starting weapon, equipped at the start of every run.
-STARTING_WEAPON_RARITY = 'common'
+# The starting weapon, by class: the warrior starts with the plain 'weapon'
+# (it never drops), the archer with a common longbow. A class not listed gets
+# the plain one.
+STARTING_WEAPON = {'warrior': ('weapon', 'common'), 'archer': ('longbow', 'common')}
 # The starting armor, by class: the archer starts in common leather (so it
 # has some dodge from the first turn); a class not listed starts with none.
 STARTING_ARMOR = {'archer': ('leather', 'common')}
