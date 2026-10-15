@@ -6,7 +6,8 @@ the game is (x, y); the flip happens here, at the boundary.
 
 import curses
 
-from game.item import BELT_SLOTS, belt_slot_label
+from game.item import belt_capacity, belt_slot_label
+from game.shrine import Shrine, boons_text
 from render import choice
 from render.banner import render_banner
 from render.base import Action, Renderer
@@ -180,6 +181,8 @@ class CursesRenderer(Renderer):
             attr = curses.color_pair(entity.color)
             if getattr(entity, 'is_boss', False):
                 attr |= curses.A_BOLD | curses.A_UNDERLINE
+            elif isinstance(entity, Shrine):
+                attr |= curses.A_BOLD  # pair 5's blue is dim on its own
             # (x, y) in, (y, x) out.
             self._put(entity.y, entity.x, entity.char, attr)
 
@@ -198,7 +201,8 @@ class CursesRenderer(Renderer):
         self._put_str(gear_start, x, '-- gear --')
         self._draw_gear_line(gear_start + 1, x, 'Wpn', state.player.weapon, 'atk')
         self._draw_gear_line(gear_start + 2, x, 'Arm', state.player.armor, 'def')
-        self._draw_belt_line(gear_start + 3, x, state.belt)
+        self._draw_belt_line(gear_start + 3, x, state.belt, state.player)
+        self._draw_boons_line(gear_start + 4, x, state.player)
 
         controls_start = gear_start + 5
         if state.player.char_class == 'archer':
@@ -223,15 +227,23 @@ class CursesRenderer(Renderer):
         text = f'{label}: {item.name} ({item.bonus:+d} {stat_label}) [{item.rarity}]'
         self._put_str(y, x, text, curses.color_pair(item.color))
 
-    def _draw_belt_line(self, y, x, belt):
-        """'Belt: [+20] +35 ---': three slots, the bracketed first one the
-        only one 'h' drinks; each potion in its rarity's colour."""
+    def _draw_boons_line(self, y, x, player):
+        """'Boons: Blood Keen' -- the shrine boons taken, by their one-word
+        labels; nothing at all (a blank row) before the first."""
+        text = boons_text(player)
+        if text:
+            self._put_str(y, x, text, curses.color_pair(5) | curses.A_BOLD)
+
+    def _draw_belt_line(self, y, x, belt, player):
+        """'Belt: [+20] +35 ---': three slots (four with Quick hands), the
+        bracketed first one the only one 'h' drinks; each potion in its
+        rarity's colour, showing what it heals after boons."""
         label = 'Belt: '
         self._put_str(y, x, label)
         col = x + len(label)
-        for i in range(BELT_SLOTS):
+        for i in range(belt_capacity(player)):
             item = belt[i] if i < len(belt) else None
-            text = belt_slot_label(item)
+            text = belt_slot_label(item, player)
             if i == 0:
                 text = f'[{text}]'
             attr = curses.color_pair(item.color) if item is not None else curses.A_DIM
@@ -265,7 +277,7 @@ class CursesRenderer(Renderer):
         def centred(y, s, attr=0):
             text(y, bx + 2 + max(0, (inner - len(s)) // 2), s, inner, attr)
 
-        centred(by + 1, choice.TITLE, curses.A_BOLD)
+        centred(by + 1, choice.title(items), curses.A_BOLD)
         for (number, item), (cx, cy, cw, ch) in zip(choice.cards(items), rects):
             attr = curses.color_pair(item.color)
             lines = choice.LINES[mode](number, item)

@@ -65,4 +65,7 @@ class Player(Entity):
         self.weapon: Item | None = None
         self.armor: Item | None = None
         self.inventory: list[str] = []  # item names, newest last
+        # Shrine boons taken this run (game/shrine.py BOONS keys), oldest
+        # first. Their effects are derived from this list, never stored.
+        self.boons: list[str] = []
         self.alive = True

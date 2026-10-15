@@ -21,6 +21,7 @@
     "=": {"layers": [["rpg", 37, 9]], "tint": 0.6},
     "!": {"layers": [["rpg", 55, 11]], "backdrop": true},
     "/": {"layers": [["chars", 44, 6]], "backdrop": true},
-    "[": {"layers": [["chars", 12, 4]], "backdrop": true}
+    "[": {"layers": [["chars", 12, 4]], "backdrop": true},
+    "_": {"layers": [["dungeon", 16, 12], ["rpg", 50, 9]]}
   }
 }

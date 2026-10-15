@@ -22,8 +22,9 @@ import textwrap
 
 import pygame
 
-from game.item import BELT_SLOTS, belt_slot_label
+from game.item import belt_capacity, belt_slot_label
 from game.paths import resource_path
+from game.shrine import BOON_COLOR, boons_text
 from render import noticeboard, palette
 
 # -- panel geometry -----------------------------------------------------------
@@ -40,6 +41,7 @@ PANEL_TEXT_COLS = PANEL_COLS - 2 * PANEL_PAD_X
 HP_ROW = 2
 GEAR_TOP = 6  # header; weapon name + stats, armor name + stats
 BELT_ROW = GEAR_TOP + 5  # the potion belt, under the armor
+BOONS_ROW = BELT_ROW + 1  # shrine boons; blank until the first is taken
 CONTROLS_TOP = GEAR_TOP + 7
 LOG_TOP = CONTROLS_TOP + 5  # the '-- log --' header; messages start below it
 MIN_LOG_LINES = 4  # the terminal's count: always room for this many
@@ -495,7 +497,10 @@ def paint_panel(canvas, state):
         put(GEAR_TOP + 1 + 2 * row, name, color)
         if stats:
             put(GEAR_TOP + 2 + 2 * row, stats, color)
-    _paint_belt(canvas, x, top + BELT_ROW, width, state.belt)
+    _paint_belt(canvas, x, top + BELT_ROW, width, state.belt, player)
+    boons = boons_text(player)
+    if boons:
+        put(BOONS_ROW, boons, palette.ink(BOON_COLOR))
 
     if player.char_class == 'archer':
         put(CONTROLS_TOP, 'wasd move, arrows shoot')
@@ -527,16 +532,17 @@ def log_rows(messages, width, rows):
     return lines
 
 
-def _paint_belt(canvas, x, y, width, belt):
+def _paint_belt(canvas, x, y, width, belt, player):
     """'Belt: [+20] +35 ---' in text row `y`, like curses_render's
     _draw_belt_line: the bracketed first slot is the one 'h' drinks; each
-    potion in its rarity's ink, empty slots in plain ink."""
+    potion in its rarity's ink, empty slots in plain ink. One slot per
+    belt_capacity(player), each showing its heal after the player's boons."""
     label = 'Belt: '
     canvas.put_str(x, y, label[:width], palette.INK)
     col = len(label)
-    for i in range(BELT_SLOTS):
+    for i in range(belt_capacity(player)):
         item = belt[i] if i < len(belt) else None
-        text = belt_slot_label(item)
+        text = belt_slot_label(item, player)
         if i == 0:
             text = f'[{text}]'
         if col < width:

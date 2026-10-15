@@ -22,6 +22,7 @@ from game.fov import compute_fov, update_visibility
 from game.item import (
     ARMOR_DEFENSE,
     ARMOR_DROP_CHANCE,
+    BELT_SLOTS,
     CHEST_COLOR,
     GEAR_BONUS,
     GEAR_CHEST_DROPS,
@@ -39,6 +40,8 @@ from game.item import (
     WEAPON_TYPES,
     Chest,
     Item,
+    belt_capacity,
+    belt_slot_label,
     rarity_weights_for_depth,
     roll_boss_drop,
     roll_gear_drop,
@@ -62,6 +65,18 @@ from game.monster import (
 )
 from game.rect import Rect
 from game.save import apply_dict, load_game, save_game, state_to_dict
+from game.shrine import (
+    BOONS,
+    BOONS_OFFERED,
+    SHRINE_CHANCE,
+    Boon,
+    Shrine,
+    boon_total,
+    boons_text,
+    heal_multiplier,
+    place_shrine,
+    roll_boons,
+)
 from game.spawn import (
     BOSS_ESCORTS,
     FIRST_BOSS_DEPTH,
@@ -2737,6 +2752,275 @@ class SlingerTests(unittest.TestCase):
                         self.assertEqual(len(slings), 1)
                         self.assertEqual({m.kind for m in here}, {'slinger'})
         self.assertGreater(seen, 0)
+
+
+def _in_room(room, e):
+    return room.x1 <= e.x < room.x2 and room.y1 <= e.y < room.y2
+
+
+class ShrinePlacementTests(unittest.TestCase):
+    """At most one shrine per floor, ~SHRINE_CHANCE of non-boss floors,
+    never in rooms[0] or on a boss floor, never on the stairs or a chest."""
+
+    def floors(self, depths, n):
+        random.seed(90)
+        state = GameState(50, 20)
+        for depth in depths:
+            for _ in range(n):
+                state.depth = depth - 1
+                state.next_level()
+                yield state
+
+    def test_at_most_one_and_never_on_start_stairs_or_chest(self):
+        found = floors = 0
+        for state in self.floors((2, 3, 5, 9), 100):
+            floors += 1
+            shrines = [e for e in state.entities if isinstance(e, Shrine)]
+            self.assertLessEqual(len(shrines), 1)
+            if not shrines:
+                continue
+            found += 1
+            shrine = shrines[0]
+            self.assertFalse(_in_room(state.rooms[0], shrine))
+            self.assertTrue(any(_in_room(r, shrine) for r in state.rooms[1:]))
+            self.assertNotEqual(state.game_map[shrine.y][shrine.x], STAIRS_DOWN)
+            self.assertIsNone(state.chest_at(shrine.x, shrine.y))
+            self.assertIsNone(state.monster_at(shrine.x, shrine.y))
+        # About SHRINE_CHANCE of floors (400 floors: well inside +-0.1).
+        self.assertGreater(found / floors, SHRINE_CHANCE - 0.1)
+        self.assertLess(found / floors, SHRINE_CHANCE + 0.1)
+
+    def test_never_on_a_boss_floor(self):
+        self.assertTrue(is_boss_level(FIRST_BOSS_DEPTH))
+        for state in self.floors((FIRST_BOSS_DEPTH, 2 * FIRST_BOSS_DEPTH), 60):
+            self.assertFalse(any(isinstance(e, Shrine) for e in state.entities))
+
+    def test_place_shrine_skips_start_boss_room_and_occupied_tiles(self):
+        rooms = [Rect(1, 1, 4, 4), Rect(10, 1, 4, 4), Rect(20, 1, 4, 4)]
+        rng = random.Random(3)
+        occupied = {(x, y) for x in range(20, 24) for y in range(1, 5)}
+        with mock.patch('game.shrine.SHRINE_CHANCE', 1.0):
+            for _ in range(50):
+                # rooms[0] is the start, rooms[1] the boss room, rooms[2] full.
+                self.assertIsNone(place_shrine(rooms, 2, occupied, rooms[1], rng))
+            shrine = place_shrine(rooms, 2, occupied, rng=rng)
+        self.assertIsNotNone(shrine)
+        self.assertTrue(_in_room(rooms[1], cast(Shrine, shrine)))
+
+
+class ShrineBoonTests(unittest.TestCase):
+    """Stepping onto a shrine offers three different boons; choosing one
+    applies it once, permanently, and takes no turn."""
+
+    def setUp(self):
+        random.seed(91)
+        self.state = GameState(50, 20)
+        self.state.entities = [self.state.player]
+        self.start = (self.state.player.x, self.state.player.y)
+
+    def shrine_east(self):
+        state = self.state
+        state.game_map[state.player.y][state.player.x + 1] = FLOOR
+        shrine = Shrine(state.player.x + 1, state.player.y)
+        state.entities.append(shrine)
+        return shrine
+
+    def offer(self, *keys):
+        self.state.pending_choice = [BOONS[k] for k in keys]
+
+    def take(self, key):
+        self.offer(key, *[k for k in BOONS if k != key][:2])
+        self.state.choose(0)
+
+    def test_every_boon_has_a_benefit_and_a_cost(self):
+        self.assertGreaterEqual(len(BOONS), 5)
+        for boon in BOONS.values():
+            self.assertTrue(boon.benefit and boon.cost, boon.key)
+            gains = [
+                boon.power > 0,
+                boon.max_hp > 0,
+                boon.defense > 0,
+                boon.crit > 0,
+                boon.belt > 0,
+            ]
+            losses = [boon.power < 0, boon.max_hp < 0, boon.heal < 1]
+            self.assertTrue(any(gains) and any(losses), boon.key)
+
+    def test_stepping_onto_a_shrine_offers_three_different_boons(self):
+        state = self.state
+        shrine = self.shrine_east()
+        turn = state.turn
+        self.assertTrue(state.handle_action('move_e'))
+        self.assertEqual(state.turn, turn + 1)  # the step itself, like a chest
+        self.assertEqual((state.player.x, state.player.y), (self.start[0] + 1, self.start[1]))
+        self.assertTrue(state.is_choosing)
+        offers = cast(list[Boon], state.pending_choice)
+        self.assertEqual(len(offers), BOONS_OFFERED)
+        self.assertTrue(all(isinstance(b, Boon) for b in offers))
+        self.assertEqual(len({b.key for b in offers}), BOONS_OFFERED)
+        self.assertNotIn(shrine, state.entities)  # used up
+        self.assertIn('shrine', ' '.join(state.messages[-2:]))
+
+    def test_roll_boons_always_different_and_prefers_new_ones(self):
+        rng = random.Random(5)
+        for _ in range(200):
+            keys = [b.key for b in roll_boons(rng=rng)]
+            self.assertEqual(len(set(keys)), BOONS_OFFERED)
+        held = ['blood_pact', 'iron_skin']
+        for _ in range(50):
+            keys = {b.key for b in roll_boons(held, rng)}
+            self.assertFalse(keys & set(held))
+        # Once fewer than three are new, repeats may come back, still distinct.
+        keys = [b.key for b in roll_boons(list(BOONS)[:4], rng)]
+        self.assertEqual(len(set(keys)), BOONS_OFFERED)
+
+    def test_choose_key_applies_once_takes_no_turn_and_clears(self):
+        state = self.state
+        self.shrine_east()
+        state.handle_action('move_e')
+        state.end_turn()
+        offers = cast(list[Boon], state.pending_choice)
+        turn = state.turn
+        self.assertFalse(state.handle_action('choose_2'))
+        self.assertEqual(state.turn, turn)
+        self.assertFalse(state.monster_phase_pending())
+        self.assertIsNone(state.pending_choice)
+        self.assertEqual(state.player.boons, [offers[1].key])
+        self.assertIn(offers[1].name, ' '.join(state.messages[-2:]))
+        # A later digit does nothing: there is no choice any more.
+        self.assertFalse(state.handle_action('choose_1'))
+        self.assertEqual(state.player.boons, [offers[1].key])
+
+    def test_blood_pact_power_up_max_hp_down_and_hp_clamped(self):
+        player = self.state.player
+        power, max_hp = player.power, player.max_hp
+        self.take('blood_pact')
+        self.assertEqual(player.power, power + 3)
+        self.assertEqual(player.max_hp, max_hp - 15)
+        self.assertEqual(player.hp, player.max_hp)  # was full: clamped down
+
+    def test_blood_pact_never_kills(self):
+        player = self.state.player
+        player.max_hp = 10
+        player.hp = 4
+        self.take('blood_pact')
+        self.assertEqual(player.max_hp, 1)
+        self.assertEqual(player.hp, 1)
+
+    def test_power_boon_survives_a_weapon_swap_without_doubling(self):
+        player = self.state.player
+        self.take('blood_pact')
+        Item(0, 0, 'weapon', 'epic').apply(player, self.state.log)
+        self.assertEqual(player.power, player.base_power + GEAR_BONUS['epic'] + 3)
+        Item(0, 0, 'weapon', 'epic').apply(player, self.state.log)
+        self.assertEqual(player.power, player.base_power + GEAR_BONUS['epic'] + 3)
+
+    def test_iron_skin_defence_up_potions_weaker(self):
+        state, player = self.state, self.state.player
+        self.take('iron_skin')
+        self.assertEqual(player.defense, 2)
+        Item(0, 0, 'armor', 'rare').apply(player, state.log)
+        self.assertEqual(player.defense, ARMOR_DEFENSE['rare'] + 2)  # kept, not doubled
+        player.hp = 1
+        state.belt.append(Item(0, 0, 'potion', 'common'))
+        state.handle_action('drink')
+        self.assertEqual(player.hp, 1 + round(POTION_HEAL['common'] * 0.75))
+
+    def test_quick_hands_adds_a_belt_slot_and_weakens_potions(self):
+        state, player = self.state, self.state.player
+        self.take('quick_hands')
+        self.assertEqual(belt_capacity(player), BELT_SLOTS + 1)
+        state.belt[:] = [Item(0, 0, 'potion', 'common') for _ in range(BELT_SLOTS)]
+        state.game_map[player.y][player.x + 1] = FLOOR
+        chest = Chest(player.x + 1, player.y, kind='potion')
+        state.entities.append(chest)
+        self.assertTrue(state.handle_action('move_e'))  # a 4th slot is free
+        self.assertEqual(len(state.belt), BELT_SLOTS + 1)
+        self.assertNotIn(chest, state.entities)
+        heal = round(POTION_HEAL['common'] * 0.75)
+        self.assertEqual(belt_slot_label(state.belt[0], player), f'+{heal}')
+        self.assertEqual(belt_slot_label(state.belt[0]), f'+{POTION_HEAL["common"]}')
+
+    def test_two_heal_costs_multiply(self):
+        player = self.state.player
+        self.take('iron_skin')
+        self.take('quick_hands')
+        self.assertAlmostEqual(heal_multiplier(player), 0.75 * 0.75)
+        self.assertEqual(belt_capacity(player), BELT_SLOTS + 1)
+
+    def test_keen_eye_crit_up_max_hp_down(self):
+        player = self.state.player
+        max_hp = player.max_hp
+        before = crit_chance(player)
+        self.take('keen_eye')
+        self.assertAlmostEqual(crit_chance(player), before + 0.10)
+        self.assertEqual(player.max_hp, max_hp - 10)
+
+    def test_stone_heart_max_hp_up_power_down(self):
+        player = self.state.player
+        power, max_hp, hp = player.power, player.max_hp, player.hp
+        self.take('stone_heart')
+        self.assertEqual(player.power, power - 1)
+        self.assertEqual(player.max_hp, max_hp + 15)
+        self.assertEqual(player.hp, hp + 15)
+
+    def test_boons_text_lists_the_short_names(self):
+        player = self.state.player
+        self.assertEqual(boons_text(player), '')
+        self.take('blood_pact')
+        self.take('keen_eye')
+        self.assertEqual(boons_text(player), 'Boons: Blood Keen')
+        self.assertEqual(boon_total(player, 'power'), 3)
+
+    def test_a_shrine_does_not_open_while_a_chest_choice_is_pending(self):
+        state = self.state
+        self.shrine_east()
+        state.pending_choice = [Item(0, 0, JUNK)] * 3
+        self.assertFalse(state.handle_action('move_e'))
+        self.assertEqual((state.player.x, state.player.y), self.start)
+
+    def round_trip(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'save.json')
+            save_game(self.state, path)
+            fresh = GameState(50, 20)
+            fresh.player.boons = ['stone_heart']  # must be replaced
+            apply_dict(fresh, load_game(path))
+            return fresh
+
+    def test_boons_survive_save_and_load(self):
+        self.take('blood_pact')
+        self.take('iron_skin')
+        self.state.player.hp = 7
+        fresh = self.round_trip()
+        self.assertEqual(fresh.player.boons, ['blood_pact', 'iron_skin'])
+        self.assertEqual(fresh.player.power, self.state.player.power)
+        self.assertEqual(fresh.player.defense, self.state.player.defense)
+        self.assertEqual(fresh.player.max_hp, self.state.player.max_hp)
+        self.assertEqual(fresh.player.hp, 7)
+        self.assertAlmostEqual(heal_multiplier(fresh.player), 0.75)
+
+    def test_pending_boon_choice_and_shrine_survive_save_and_load(self):
+        shrine = self.shrine_east()
+        self.offer('keen_eye', 'quick_hands', 'stone_heart')
+        fresh = self.round_trip()
+        self.assertEqual(
+            [b.key for b in cast(list[Boon], fresh.pending_choice)],
+            ['keen_eye', 'quick_hands', 'stone_heart'],
+        )
+        shrines = [e for e in fresh.entities if isinstance(e, Shrine)]
+        self.assertEqual([(s.x, s.y) for s in shrines], [(shrine.x, shrine.y)])
+        fresh.choose(1)
+        self.assertEqual(fresh.player.boons, ['quick_hands'])
+
+    def test_old_save_loads_with_no_boons(self):
+        data = state_to_dict(self.state)
+        del data['player']['boons']
+        fresh = GameState(50, 20)
+        fresh.player.boons = ['blood_pact']
+        apply_dict(fresh, data)
+        self.assertEqual(fresh.player.boons, [])
+        self.assertEqual(fresh.player.defense, 0)
 
 
 if __name__ == '__main__':

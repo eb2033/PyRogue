@@ -28,6 +28,7 @@ from typing import cast
 
 from game.entity import Entity
 from game.rng import Rng
+from game.shrine import boon_total, heal_multiplier
 
 RARITIES = ['common', 'uncommon', 'rare', 'epic']
 
@@ -45,6 +46,7 @@ RARITY_COLOR = {'common': 7, 'uncommon': 4, 'rare': 5, 'epic': 6}
 POTION_HEAL = {'common': 20, 'uncommon': 35, 'rare': 55, 'epic': 88}
 # The potion belt (GameState.belt): potions picked up at full HP wait here,
 # in order. Only the first is drinkable ('h'); the rest shift up after it.
+# A shrine's Quick hands boon adds a slot: see belt_capacity.
 BELT_SLOTS = 3
 # Weapon power bonus by rarity.
 GEAR_BONUS = {'common': 1, 'uncommon': 2, 'rare': 4, 'epic': 7}
@@ -241,12 +243,29 @@ def roll_boss_drop(rng: Rng = random):
     return Item(0, 0, roll_gear_kind(ARMOR_DROP_CHANCE, rng), rarity)
 
 
-def belt_slot_label(item):
-    """Short text for one belt slot: a potion's heal ('+35'), or '---' for
-    an empty slot (None). Both renderers' panels use it."""
+def belt_capacity(player):
+    """How many potions the belt holds: BELT_SLOTS plus any shrine boon's
+    extra slots (game/shrine.py)."""
+    return BELT_SLOTS + boon_total(player, 'belt')
+
+
+def potion_heal(rarity, player=None):
+    """What a potion of `rarity` heals `player`: POTION_HEAL scaled by the
+    player's boons' heal multiplier (game/shrine.py), rounded. Without a
+    player, the plain table value."""
+    base = POTION_HEAL[rarity]
+    if player is None:
+        return base
+    return round(base * heal_multiplier(player))
+
+
+def belt_slot_label(item, player=None):
+    """Short text for one belt slot: a potion's heal ('+35', after
+    `player`'s boons if given), or '---' for an empty slot (None). Both
+    renderers' panels use it."""
     if item is None:
         return '---'
-    return f'+{POTION_HEAL[item.rarity]}'
+    return f'+{potion_heal(item.rarity, player)}'
 
 
 def _effect_value(value, rarity):
@@ -255,17 +274,19 @@ def _effect_value(value, rarity):
 
 def gear_defense(player):
     """The player's defense from what is equipped: the armor's, plus a
-    shield's (Sword & Shield, weapon slot) -- the two stack."""
+    shield's (Sword & Shield, weapon slot) -- the two stack -- plus any
+    shrine boon's (game/shrine.py)."""
     armor = player.armor.bonus if player.armor is not None else 0
     shield = player.weapon.defense_bonus if player.weapon is not None else 0
-    return armor + shield
+    return armor + shield + boon_total(player, 'defense')
 
 
 def gear_power(player):
     """base_power plus the weapon's bonus (which can be negative: rapier,
-    dagger and war axe), never below MIN_POWER."""
+    dagger and war axe) plus any shrine boon's (game/shrine.py), never below
+    MIN_POWER."""
     bonus = player.weapon.bonus if player.weapon is not None else 0
-    return max(MIN_POWER, player.base_power + bonus)
+    return max(MIN_POWER, player.base_power + bonus + boon_total(player, 'power'))
 
 
 class Item(Entity):
@@ -318,7 +339,8 @@ class Item(Entity):
             return
 
         if self.kind == 'potion':
-            healed = min(POTION_HEAL[cast(str, self.rarity)], player.max_hp - player.hp)
+            heal = potion_heal(cast(str, self.rarity), player)
+            healed = min(heal, player.max_hp - player.hp)
             player.hp += healed
             player.inventory.append(self.name)
             log(f'You drink a {self.name} and recover {healed} HP.')

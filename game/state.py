@@ -23,16 +23,18 @@ from game.dungeon import generate_dungeon, place_stairs
 from game.entity import Player
 from game.fov import update_visibility
 from game.item import (
-    BELT_SLOTS,
     STARTING_WEAPON_RARITY,
     Chest,
     Item,
+    belt_capacity,
+    gear_defense,
     gear_power,
     spawn_boss_chest,
     spawn_chests,
 )
 from game.monster import Monster, is_boss_level, tier_for_depth
 from game.save import apply_dict, load_game, save_game
+from game.shrine import Boon, Shrine, boon_total, place_shrine, roll_boons
 from game.spawn import spawn_level
 from game.tiles import DOOR, FLOOR, STAIRS_DOWN, is_walkable
 
@@ -88,7 +90,10 @@ DEFAULT_CLASS = 'warrior'
 
 
 def _describe(item):
-    """Short label for an item offered in a chest choice."""
+    """Short label for an item offered in a chest choice, or a boon offered
+    by a shrine."""
+    if isinstance(item, Boon):
+        return f'{item.name} ({item.benefit}, {item.cost})'
     if item.rarity is None:
         return item.name
     return f'{item.name} ({item.rarity})'
@@ -105,11 +110,12 @@ MAX_CRIT_CHANCE = 1.0
 
 
 def crit_chance(attacker):
-    """BASE_CRIT_CHANCE plus the attacker's weapon's crit_bonus, capped at
-    MAX_CRIT_CHANCE. Only ever rolled for the player (see attack)."""
+    """BASE_CRIT_CHANCE plus the attacker's weapon's crit_bonus and any
+    shrine boon's crit (game/shrine.py), capped at MAX_CRIT_CHANCE. Only ever
+    rolled for the player (see attack)."""
     weapon = getattr(attacker, 'weapon', None)
     bonus = weapon.crit_bonus if weapon is not None else 0.0
-    return min(MAX_CRIT_CHANCE, BASE_CRIT_CHANCE + bonus)
+    return min(MAX_CRIT_CHANCE, BASE_CRIT_CHANCE + bonus + boon_total(attacker, 'crit'))
 
 
 class GameState:
@@ -129,10 +135,14 @@ class GameState:
         # handle_action; never per frame or per monster). The combat zoom's
         # hold (render/camera.py) counts turns with it.
         self.turn = 0
-        # Items an opened gear chest is offering, or None. While set, the
-        # player must choose() one before anything else happens.
-        self.pending_choice: list[Item] | None = None
-        # The potion belt: up to BELT_SLOTS potion Items, in order. Potions
+        # Items an opened gear chest is offering, or the Boons a shrine is
+        # (game/shrine.py), or None. While set, the player must choose() one
+        # before anything else happens. Typed Any, not Item | Boon: a choice
+        # is all one kind (chest or shrine), and callers that set or read a
+        # chest's items shouldn't have to narrow every element.
+        self.pending_choice: list[Any] | None = None
+        # The potion belt: up to belt_capacity(player) potion Items (3, or
+        # more with a shrine's Quick hands), in order. Potions
         # found at full HP go here; 'drink' takes only belt[0] and the rest
         # shift forward. Empty at the start of a run; kept across floors.
         self.belt = []
@@ -165,9 +175,7 @@ class GameState:
         self.player.inventory = []
         self.player.alive = True
 
-        self.entities: list[Any] = (
-            [self.player] + self._spawn_level_monsters() + spawn_chests(self.rooms)
-        )
+        self.entities: list[Any] = self._populate_level()
 
         # Monsters still owing a turn in the current round. See end_player_phase.
         self._pending_monsters: list[Monster] = []
@@ -179,6 +187,19 @@ class GameState:
         self.boss_arena."""
         monsters, self.boss_arena = spawn_level(self.rooms, self.depth)
         return monsters
+
+    def _populate_level(self):
+        """The player, then this floor's monsters, chests and (maybe) shrine.
+        The shrine avoids the stairs and every tile already taken."""
+        monsters = self._spawn_level_monsters()
+        chests = spawn_chests(self.rooms)
+        taken = {(e.x, e.y) for e in monsters + chests}
+        taken.add(self.rooms[-1].center())  # the stairs (place_stairs)
+        taken.add((self.player.x, self.player.y))
+        shrine = place_shrine(self.rooms, self.depth, taken, self.boss_arena)
+        # The shrine goes before the monsters so one standing on it is drawn
+        # on top (renderers paint in entity order).
+        return [self.player] + ([shrine] if shrine is not None else []) + monsters + chests
 
     # -- turn resolution ---------------------------------------------------
 
@@ -302,6 +323,9 @@ class GameState:
 
         if chest is not None:
             self.open_chest(chest)
+        shrine = self.shrine_at(nx, ny)
+        if shrine is not None:
+            self.visit_shrine(shrine)
         return True
 
     def _belt_refuses(self, chest):
@@ -310,12 +334,13 @@ class GameState:
         return (
             not chest.offers_choice
             and self.player.hp >= self.player.max_hp
-            and len(self.belt) >= BELT_SLOTS
+            and len(self.belt) >= belt_capacity(self.player)
         )
 
     def drink_from_belt(self):
-        """Drink the first belt slot's potion (heals POTION_HEAL[rarity],
-        capped at max HP); the others shift forward. Returns False, logging
+        """Drink the first belt slot's potion (heals item.potion_heal --
+        POTION_HEAL[rarity] after boons -- capped at max HP); the others
+        shift forward. Returns False, logging
         'No potions', if the belt is empty."""
         if not self.belt:
             self.log('No potions')
@@ -421,29 +446,66 @@ class GameState:
         self.log('Choose one: ' + ', '.join(_describe(i) for i in items) + '.')
         return True
 
+    def visit_shrine(self, shrine):
+        """Kneel at a shrine: it is used up (removed from the map) and its
+        BOONS_OFFERED different boons become `pending_choice`, chosen
+        exactly like a gear chest's items (choose)."""
+        self.entities.remove(shrine)
+        self.pending_choice = list(roll_boons(self.player.boons))
+        self.log('You kneel at the shrine. Choose a boon:')
+        self.log(', '.join(_describe(b) for b in self.pending_choice) + '.')
+
     @property
     def is_choosing(self):
         """True while an opened chest is waiting for the player to pick an
-        item. Movement and every other turn action are blocked meanwhile."""
+        item, or a shrine for a boon. Movement and every other turn action
+        are blocked meanwhile."""
         return self.pending_choice is not None
 
     def choose(self, index):
-        """Take item `index` (0-based) of the pending chest choice.
+        """Take offer `index` (0-based) of the pending choice.
 
-        Gear always equips into its slot, replacing (and discarding) what was
-        there -- the player chose it, so there is no "only if better" check.
-        Junk only logs a line. The other offers are lost. There is no cancel:
-        a choice stays pending until one is taken. Takes no turn.
+        From a chest: gear always equips into its slot, replacing (and
+        discarding) what was there -- the player chose it, so there is no
+        "only if better" check. Junk only logs a line. From a shrine: the
+        boon is taken for the rest of the run (take_boon). The other offers
+        are lost. There is no cancel: a choice stays pending until one is
+        taken. Takes no turn.
         Raises ValueError if nothing is pending or `index` is out of range.
         """
         if self.pending_choice is None:
             raise ValueError('no chest choice is pending')
         if not 0 <= index < len(self.pending_choice):
             raise ValueError(f'choice index out of range: {index!r}')
-        item = self.pending_choice[index]
+        offer = self.pending_choice[index]
         self.pending_choice = None
-        item.x, item.y = self.player.x, self.player.y
-        item.apply(self.player, self.log)
+        if isinstance(offer, Boon):
+            self.take_boon(offer)
+            return
+        offer.x, offer.y = self.player.x, self.player.y
+        offer.apply(self.player, self.log)
+
+    def take_boon(self, boon):
+        """Add `boon` to the player's boons and bring the stats up to date.
+
+        Power and defence are recomputed from scratch (gear_power /
+        gear_defense read Player.boons), crit, the belt's size and potion
+        heals are read from Player.boons when used, so none of them can
+        double-apply. Max HP is a running total (a War Axe changes it the
+        same way): the boon's max_hp goes on here, once, and HP is clamped
+        to [1, max_hp] -- a cost can lower HP but never kill. A belt that
+        no longer fits (it can't today: no boon removes a slot) keeps its
+        potions."""
+        player = self.player
+        player.boons.append(boon.key)
+        if boon.max_hp:
+            player.max_hp = max(1, player.max_hp + boon.max_hp)
+            gained = max(0, boon.max_hp)
+            player.hp = max(1, min(player.max_hp, player.hp + gained))
+        player.power = gear_power(player)
+        player.defense = gear_defense(player)
+        self.log(f'You take the {boon.name}: {boon.benefit}, {boon.cost}.')
+        self.log('The shrine crumbles to dust.')
 
     def shoot_arrow(self, dx, dy):
         """Archer-only ranged attack: travels in a straight line until it
@@ -480,7 +542,7 @@ class GameState:
 
         self.cancel_monster_phase()
         self.pending_choice = None
-        self.entities = [self.player] + self._spawn_level_monsters() + spawn_chests(self.rooms)
+        self.entities = self._populate_level()
         if is_boss_level(self.depth):
             self.log(f'You descend to level {self.depth}. Something powerful lurks here...')
         else:
@@ -710,6 +772,12 @@ class GameState:
     def chest_at(self, x, y):
         for e in self.entities:
             if isinstance(e, Chest) and e.x == x and e.y == y:
+                return e
+        return None
+
+    def shrine_at(self, x, y):
+        for e in self.entities:
+            if isinstance(e, Shrine) and e.x == x and e.y == y:
                 return e
         return None
 

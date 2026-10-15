@@ -19,6 +19,7 @@ except ImportError:  # pragma: no cover - terminal-only checkout
 from game.item import CHEST_CHAR, CHEST_COLOR, ITEM_CHARS, POTION_CHEST_COLOR
 from game.monster import MONSTER_TYPES
 from game.paths import resource_path
+from game.shrine import SHRINE_CHAR
 from game.tiles import FLOOR, WALL
 
 if pygame is not None:
@@ -32,7 +33,7 @@ def drawable_chars():
     """Every char the game can put on the map (CLAUDE.md, Tile chars)."""
     monsters = {char for char, *_ in MONSTER_TYPES.values()}
     return (
-        {WALL, FLOOR, '+', '>', '@', CHEST_CHAR}
+        {WALL, FLOOR, '+', '>', '@', CHEST_CHAR, SHRINE_CHAR}
         | set(ITEM_CHARS.values())
         | monsters
         | {c.upper() for c in monsters}

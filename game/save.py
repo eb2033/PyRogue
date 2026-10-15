@@ -14,6 +14,7 @@ from game.entity import Entity
 from game.item import Chest, Item, gear_defense
 from game.monster import Monster
 from game.rect import Rect
+from game.shrine import BOONS, Boon, Shrine
 
 SAVE_VERSION = 1
 
@@ -33,6 +34,8 @@ def _entity_to_dict(e):
             chasing=e.chasing,
             lost_sight=e.lost_sight,
         )
+    elif isinstance(e, Shrine):
+        d.update(type='shrine')
     elif isinstance(e, Chest):
         d.update(type='chest', guaranteed_min_rarity=e.guaranteed_min_rarity, kind=e.kind)
     elif isinstance(e, Item):
@@ -57,6 +60,8 @@ def _entity_from_dict(d):
     if d['type'] == 'chest':
         # A save from before chests had a kind gets one rolled now.
         return Chest(d['x'], d['y'], d.get('guaranteed_min_rarity'), kind=d.get('kind'))
+    if d['type'] == 'shrine':
+        return Shrine(d['x'], d['y'])
     if d['type'] == 'item':
         return Item(d['x'], d['y'], d['kind'], d.get('rarity', 'common'))
     e = Entity(d['x'], d['y'], d['char'], color=d['color'], name=d['name'])
@@ -69,6 +74,20 @@ def _gear_to_dict(item):
 
 def _gear_from_dict(d):
     return None if d is None else Item(0, 0, d['kind'], d['rarity'])
+
+
+def _offer_to_dict(offer):
+    """A pending choice's offer: a shrine's Boon by its key, else an Item
+    like equipped gear."""
+    if isinstance(offer, Boon):
+        return {'boon': offer.key}
+    return _gear_to_dict(offer)
+
+
+def _offer_from_dict(d):
+    if 'boon' in d:
+        return BOONS[d['boon']]
+    return _gear_from_dict(d)
 
 
 def state_to_dict(state):
@@ -94,16 +113,20 @@ def state_to_dict(state):
             'weapon': _gear_to_dict(state.player.weapon),
             'armor': _gear_to_dict(state.player.armor),
             'inventory': list(state.player.inventory),
+            # Shrine boons by key. Their effects are derived from this list
+            # (game/shrine.py); max_hp above already includes theirs.
+            'boons': list(state.player.boons),
         },
         'entities': [_entity_to_dict(e) for e in state.entities if e is not state.player],
         # An opened chest's offers, stored like equipped gear (kind + rarity;
-        # junk has rarity None). None when no choice is pending.
+        # junk has rarity None), or a shrine's boons ({'boon': key}). None
+        # when no choice is pending.
         # The potion belt, in slot order, like the gear dicts.
         'belt': [_gear_to_dict(i) for i in state.belt],
         'pending_choice': (
             None
             if state.pending_choice is None
-            else [_gear_to_dict(i) for i in state.pending_choice]
+            else [_offer_to_dict(i) for i in state.pending_choice]
         ),
         # The boss room's bounds on a boss floor, else None. Stored so a
         # loaded boss floor keeps its arena.
@@ -141,6 +164,9 @@ def apply_dict(state, data):
     state.player.power = p['power']
     state.player.weapon = _gear_from_dict(p.get('weapon'))
     state.player.armor = _gear_from_dict(p.get('armor'))
+    # Saves from before shrines have no boons; unknown keys are dropped. Set
+    # before defence is derived below, which reads them.
+    state.player.boons = [k for k in p.get('boons') or [] if k in BOONS]
     # Defense comes from the gear (armor, plus a Sword & Shield's), so derive
     # it from the current tables: a save from before ARMOR_DEFENSE stored the
     # old, smaller value. Weapon effects (crit, reach, ...) come from the
@@ -157,7 +183,7 @@ def apply_dict(state, data):
 
     # Saves from before chest choices have no field: nothing pending.
     pending = data.get('pending_choice')
-    state.pending_choice = None if pending is None else [_gear_from_dict(d) for d in pending]
+    state.pending_choice = None if pending is None else [_offer_from_dict(d) for d in pending]
 
     # Saves from before boss arenas have no field: no arena.
     arena = data.get('boss_arena')

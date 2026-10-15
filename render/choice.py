@@ -1,16 +1,21 @@
-"""What the "choose one of three" chest screen says. Standard library only.
+"""What the "choose one of three" screen says. Standard library only.
 
-Both renderers draw a pending chest choice (GameState.pending_choice) from the
+Both renderers draw a pending choice (GameState.pending_choice) from the
 text here, so the terminal and the window show the same three cards, with the
-same numbers, in the same order. Geometry is each renderer's own business
+same numbers, in the same order. The offers are a chest's Items or a shrine's
+Boons (game/shrine.py); every function here takes either, and a boon card
+reads its name, its benefit and its cost where an item card reads its name,
+rarity and stat. Geometry is each renderer's own business
 (curses works in terminal cells, the window in pixels); `grid_layout` is the
 cell version, which curses uses.
 """
 
 from game.item import GEAR_SLOTS
+from game.shrine import Boon
 from render.base import Action
 
 TITLE = 'Choose one'
+BOON_TITLE = 'Choose a boon'
 HINT = 'press 1, 2 or 3'
 # Action -> index into pending_choice; GameState.handle_action uses the same order.
 CHOOSE_ACTIONS = (Action.CHOOSE_1, Action.CHOOSE_2, Action.CHOOSE_3)
@@ -36,10 +41,18 @@ def _effect_text(item):
     return None
 
 
+def title(offers):
+    """The box's title: BOON_TITLE for a shrine's boons, else TITLE."""
+    return BOON_TITLE if offers and isinstance(offers[0], Boon) else TITLE
+
+
 def stat_text(item):
     """'+N damage' (with the weapon type's effect after a comma, e.g.
     '-1 damage, strikes twice') / '+N defence', or 'nothing useful' for junk.
-    Every kind in the weapon slot reads 'damage'; armor reads 'defence'."""
+    Every kind in the weapon slot reads 'damage'; armor reads 'defence'.
+    For a boon: its cost (rarity_text gives its benefit)."""
+    if isinstance(item, Boon):
+        return item.cost
     slot = GEAR_SLOTS.get(item.kind)
     if slot is None or item.bonus is None:
         return JUNK_STAT
@@ -51,12 +64,16 @@ def stat_text(item):
 
 
 def rarity_text(item):
+    """An item's rarity ('junk' for junk), or a boon's benefit."""
+    if isinstance(item, Boon):
+        return item.benefit
     return item.rarity or JUNK_RARITY
 
 
 def card_lines(number, item):
     """A card's lines, top to bottom, for a card drawn side by side:
-    its number, the name, the rarity, the stat."""
+    its number, the name, the rarity, the stat (a boon: the number, the
+    name, the benefit, the cost)."""
     return [f'[{number}]', item.name, rarity_text(item), stat_text(item)]
 
 
@@ -102,7 +119,7 @@ def grid_layout(items, cols, rows):
 
     card_w = widest(ACROSS) + 4  # border + a space each side
     card_h = len(card_lines(1, items[0])) + 2 if items else 2
-    frame_w = max(len(TITLE), len(HINT))
+    frame_w = max(len(title(items)), len(HINT))
     sizes = {
         ACROSS: (max(len(items) * card_w + (len(items) - 1) * CARD_GAP, frame_w) + 4, card_h + 6),
         COMPACT: (max(widest(COMPACT), frame_w) + 4, 2 * len(items) + 6),

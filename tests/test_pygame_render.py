@@ -964,6 +964,83 @@ class NewWeaponChoiceScreenTest(ChestChoiceScreenTest):
         self.state.pending_choice = list(self.items)
 
 
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
+class BoonChoiceScreenTest(unittest.TestCase):
+    """A shrine's boons on the same overlay as a chest's items: painted in
+    glyph and tile mode, chosen with 2 or a click on the second card; and
+    the shrine itself painted on the map."""
+
+    tiles = False
+
+    def setUp(self):
+        import random
+
+        from game.shrine import BOONS
+
+        tileset = None
+        if self.tiles:
+            from game.paths import resource_path
+            from render.tileset import Tileset
+
+            tileset = Tileset(resource_path('assets'))
+        self.renderer = PygameRenderer(WIDTH, HEIGHT, tileset=tileset)
+        self.renderer._set_mode((1600, 900), pygame.RESIZABLE)
+        self.renderer._relayout()
+        pygame.event.clear()
+        random.seed(71)
+        self.state = GameState(WIDTH, HEIGHT)
+        self.boons = [BOONS['blood_pact'], BOONS['iron_skin'], BOONS['quick_hands']]
+        self.state.pending_choice = list(self.boons)
+
+    def tearDown(self):
+        self.renderer.close()
+
+    def cards(self):
+        return screens.choice_rects(self.renderer.layout, self.state)[1]
+
+    def test_boon_cards_paint_inside_the_box(self):
+        box, cards, _ = screens.choice_rects(self.renderer.layout, self.state)
+        self.assertEqual(len(cards), 3)
+        self.renderer.draw(self.state)
+        for card in cards:
+            self.assertTrue(box.contains(card))
+            self.assertGreater(len(cell_pixels(self.renderer, card)), 2)  # inked text
+
+    def test_clicking_a_boon_card_takes_that_boon(self):
+        self.renderer.draw(self.state)
+        pygame.event.post(
+            pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=self.cards()[1].center, button=1)
+        )
+        action = self.renderer.get_action()
+        self.assertEqual(action, Action.CHOOSE_2)
+        self.assertFalse(self.state.handle_action(action))  # no turn
+        self.assertFalse(self.state.is_choosing)
+        self.assertEqual(self.state.player.boons, ['iron_skin'])
+
+    def test_keyboard_3_takes_the_third_boon(self):
+        self.renderer.draw(self.state)
+        pygame.event.post(key(pygame.K_3, '3'))
+        self.state.handle_action(self.renderer.get_action())
+        self.assertEqual(self.state.player.boons, ['quick_hands'])
+
+    def test_shrine_is_painted_on_the_map(self):
+        from game.shrine import Shrine
+
+        state = self.state
+        state.pending_choice = None
+        x, y = open_neighbour(state)
+        self.renderer.draw(state)
+        rect = self.renderer._map_cell_rect(x, y)
+        floor = cell_pixels(self.renderer, rect, as_list=True)
+        state.entities.append(Shrine(x, y))
+        self.renderer.draw(state)
+        self.assertNotEqual(cell_pixels(self.renderer, rect, as_list=True), floor)
+
+
+class TileModeBoonChoiceScreenTest(BoonChoiceScreenTest):
+    tiles = True
+
+
 class ChoiceCardTextTest(unittest.TestCase):
     """render/choice.py's card text (stdlib only: no pygame needed)."""
 

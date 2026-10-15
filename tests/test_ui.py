@@ -17,6 +17,7 @@ from typing import Any, cast
 from unittest import mock
 
 from game.item import BELT_SLOTS, POTION_HEAL, Item, belt_slot_label
+from game.shrine import BOON_COLOR, BOONS, SHRINE_CHAR, Shrine
 from game.state import GameState
 from render.menu import Menu
 
@@ -518,7 +519,8 @@ class PanelParityTest(unittest.TestCase):
       [x] 1  'Class - Depth: n' (live)    [x] 7-8  weapon, rarity ink / (none)
       [x] 2  HP, red at <= 1/3 max        [x] 9-10 armor, rarity ink / (none)
           + bar beside it (extra)         [x] 11 potion belt, 3 slots, rarity ink
-      [x] 3  ATK / DEF                    [x] 13 class-dependent controls line
+      [x] 3  ATK / DEF                    [x] 12 shrine boons, once one is taken
+                                          [x] 13 class-dependent controls line
       [x] 4  item count (live)            [x] 14-16 shared controls (+ 'h drink')
                                           [x] 18 '-- log --', 19+ newest messages
     """
@@ -781,6 +783,32 @@ class PanelParityTest(unittest.TestCase):
             self.assertGreater(self.pixels(empty, palette.INK), 0)
             self.assertEqual(self.pixels(empty, epic) + self.pixels(empty, uncommon), 0)
 
+    def test_boons_row_appears_once_a_boon_is_taken(self):
+        # Curses: gear_start + 4, the row under the belt; here BELT_ROW + 1.
+        self.assertEqual(ui.BOONS_ROW, ui.BELT_ROW + 1)
+
+        def make():
+            state = self.state()
+            state.player.boons[:] = ['blood_pact', 'keen_eye']
+            return state
+
+        for _ in self.each_layout(make):
+            row = self.row_rect(ui.BOONS_ROW)
+            self.assertGreater(self.pixels(row, palette.ink(BOON_COLOR)), 0)
+        # Without boons the row stays the blank gap above the controls
+        # (test_every_text_row_is_painted_and_the_gaps_are_not).
+
+    def test_quick_hands_belt_shows_four_slots(self):
+        def make():
+            state = self.state()
+            state.player.boons[:] = ['quick_hands']
+            return state
+
+        for state in self.each_layout(make):
+            line = 'Belt: [---] --- --- ---'
+            self.assertGreater(self.pixels(self.row_rect(ui.BELT_ROW, len(line) - 3, 3)), 0)
+            self.assertEqual(state.player.boons, ['quick_hands'])
+
     def test_belt_row_changes_with_its_contents(self):
         for tiles, size in self.LAYOUTS:
             with self.subTest(tiles=tiles, size=size):
@@ -806,6 +834,9 @@ class _FakeScreen:
 
     def addstr(self, y, x, text, attr=0):
         self.writes.append((y, x, text, attr))
+
+    def addch(self, y, x, ch, attr=0):
+        self.writes.append((y, x, ch, attr))
 
 
 @unittest.skipUnless(curses_render, 'curses not available')
@@ -869,3 +900,64 @@ class GearLineSignTest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+@unittest.skipUnless(curses_render, 'curses not available')
+class CursesShrineTest(unittest.TestCase):
+    """The terminal side of shrines without a terminal: the shrine glyph,
+    the boon row in the panel, a fourth belt slot, and the boon cards."""
+
+    def renderer(self, rows=40, cols=120):
+        renderer = curses_render.CursesRenderer.__new__(curses_render.CursesRenderer)
+        screen = _FakeScreen(rows, cols)
+        renderer.stdscr = cast(Any, screen)
+        return renderer, screen
+
+    def patched(self):
+        return mock.patch.object(curses_render.curses, 'color_pair', lambda n: n << 8)
+
+    def test_shrine_glyph_is_drawn_in_its_colour(self):
+        state = GameState(WIDTH, HEIGHT)
+        shrine = Shrine(state.player.x + 1, state.player.y)
+        state.entities.append(shrine)
+        state.visible[shrine.y][shrine.x] = True
+        renderer, screen = self.renderer()
+        with self.patched():
+            renderer._draw_entities(state)
+        hits = [w for w in screen.writes if w[:3] == (shrine.y, shrine.x, SHRINE_CHAR)]
+        self.assertEqual(len(hits), 1)
+        self.assertTrue(hits[0][3] & (shrine.color << 8))
+
+    def panel(self, boons):
+        state = GameState(WIDTH, HEIGHT)
+        state.player.boons[:] = boons
+        renderer, screen = self.renderer()
+        with self.patched():
+            renderer._draw_panel(state)
+        return screen.writes
+
+    def test_boon_row_under_the_belt_only_once_a_boon_is_taken(self):
+        row = 6 + 4  # gear_start + 4
+        self.assertEqual([w for w in self.panel([]) if w[0] == row], [])
+        texts = [w[2] for w in self.panel(['blood_pact', 'iron_skin']) if w[0] == row]
+        self.assertEqual(texts, ['Boons: Blood Iron'])
+
+    def test_quick_hands_draws_four_belt_slots(self):
+        texts = [w[2] for w in self.panel(['quick_hands']) if w[0] == 6 + 3]
+        self.assertEqual(texts, ['Belt: ', '[---]', '---', '---', '---'])
+
+    def test_boon_cards_are_drawn(self):
+        state = GameState(WIDTH, HEIGHT)
+        offers = [BOONS['blood_pact'], BOONS['iron_skin'], BOONS['quick_hands']]
+        state.pending_choice = list(offers)
+        for rows, cols in ((40, 120), (12, 30)):
+            with self.subTest(rows=rows, cols=cols):
+                renderer, screen = self.renderer(rows, cols)
+                with self.patched():
+                    renderer._draw_choice(state)
+                text = ' '.join(str(w[2]) for w in screen.writes)
+                self.assertIn('Choose a boon', text)
+                if rows == 40:
+                    for boon in offers:
+                        self.assertIn(boon.name, text)
+                        self.assertIn(boon.cost, text)
