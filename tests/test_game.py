@@ -27,6 +27,8 @@ from game.monster import (BOSS_REFERENCE_KIND, CHASE_RANGE, GIVE_UP_AFTER, MONST
                           is_boss_level, scale_stats, spawn_boss, spawn_monsters,
                           tier_for_depth)
 from game.rect import Rect
+from game.spawn import (BOSS_ESCORTS, FIRST_BOSS_DEPTH, SPAWN_RULES, SpawnRule, goblin_pack_size,
+                        pick_tiles, spawn_level)
 from game.save import apply_dict, load_game, save_game, state_to_dict
 from game.damage import mitigate, round_damage
 from game.state import BASE_CRIT_CHANCE, CRIT_MULTIPLIER, GameState, crit_chance
@@ -332,12 +334,176 @@ class MonsterTests(unittest.TestCase):
                         self.assertNotEqual((m.x, m.y), (px, py))
 
     def test_spawn_monsters_skips_first_room(self):
-        random.seed(6)
         rooms = [Rect(1, 1, 8, 8), Rect(20, 1, 8, 8), Rect(1, 12, 8, 6)]
-        monsters = spawn_monsters(rooms)
-        for m in monsters:
-            in_room0 = rooms[0].x1 <= m.x < rooms[0].x2 and rooms[0].y1 <= m.y < rooms[0].y2
-            self.assertFalse(in_room0)
+        for seed in range(50):
+            for depth in (1, 8, 12):
+                monsters = spawn_monsters(rooms, depth, rng=random.Random(seed))
+                self.assertTrue(monsters)
+                for m in monsters:
+                    self.assertFalse(in_room(rooms[0], m))
+
+
+def in_room(room, m):
+    return room.x1 <= m.x < room.x2 and room.y1 <= m.y < room.y2
+
+
+_ROOMS_CACHE = {}
+
+
+def seeded_floors(depth, n=200, sizes=((40, 20), (50, 20))):
+    """(rooms, monsters, boss_room) for n seeded floors at `depth`."""
+    for seed in range(n):
+        w, h = sizes[seed % len(sizes)]
+        key = (seed, w, h)
+        if key not in _ROOMS_CACHE:   # generation dominates; spawning is cheap
+            random.seed(seed)
+            _ROOMS_CACHE[key] = generate_dungeon(w, h)[1]
+        rooms = _ROOMS_CACHE[key]
+        monsters, boss_room = spawn_level(rooms, depth, rng=random.Random(seed))
+        yield rooms, monsters, boss_room
+
+
+class SpawnRuleTests(unittest.TestCase):
+    """game/spawn.py: one enemy kind per room, pack sizes by depth, orc
+    pairs never touching, and the boss arena."""
+
+    def test_goblin_pack_size_by_depth(self):
+        for d in range(1, 6):
+            self.assertEqual(goblin_pack_size(d), 1)
+        for d in range(6, 11):
+            self.assertEqual(goblin_pack_size(d), 2)
+        for d in range(11, 200):
+            self.assertEqual(goblin_pack_size(d), 3)
+
+    def test_every_non_start_room_has_exactly_one_kind(self):
+        for depth in (1, 3, 6, 8, 9, 12, 16, 30):
+            for rooms, monsters, boss_room in seeded_floors(depth, n=100):
+                for room in rooms[1:]:
+                    here = [m for m in monsters if in_room(room, m)]
+                    self.assertTrue(here, f'empty room at depth {depth}')
+                    kinds = {(m.kind, m.is_boss) for m in here if not m.is_boss}
+                    if room is boss_room:
+                        self.assertTrue(any(m.is_boss for m in here))
+                        self.assertLessEqual(len(kinds), 1)
+                    else:
+                        self.assertEqual(len(kinds), 1)
+
+    def test_start_room_is_empty(self):
+        for depth in (1, 8, 9, 16):
+            for rooms, monsters, _ in seeded_floors(depth, n=100):
+                self.assertFalse([m for m in monsters if in_room(rooms[0], m)])
+
+    def test_goblin_packs_follow_the_depth_size(self):
+        for depth in (1, 5, 6, 10, 11, 15, 20):
+            for rooms, monsters, boss_room in seeded_floors(depth, n=100):
+                for room in rooms[1:]:
+                    gob = [m for m in monsters if in_room(room, m) and m.kind == 'goblin']
+                    if gob:
+                        self.assertEqual(len(gob), goblin_pack_size(depth))
+                        self.assertLessEqual(len(gob), 3)
+
+    def test_orcs_are_single_before_and_on_the_first_boss_floor(self):
+        seen_orc = False
+        for depth in (1, 4, 7, 8):
+            for rooms, monsters, boss_room in seeded_floors(depth, n=100):
+                for room in rooms[1:]:
+                    if room is boss_room:
+                        continue
+                    orcs = [m for m in monsters if in_room(room, m) and m.kind == 'orc']
+                    self.assertLessEqual(len(orcs), 1)
+                    seen_orc = seen_orc or bool(orcs)
+        self.assertTrue(seen_orc)
+
+    def test_orc_pairs_after_first_boss_never_touch(self):
+        pairs = 0
+        for depth in (9, 12, 16, 25):
+            for rooms, monsters, boss_room in seeded_floors(depth, n=150):
+                for room in rooms[1:]:
+                    if room is boss_room:
+                        continue
+                    orcs = [m for m in monsters if in_room(room, m) and m.kind == 'orc']
+                    if orcs:
+                        self.assertEqual(len(orcs), 2)
+                        a, b = orcs
+                        self.assertGreaterEqual(a.distance_to(b), 2)
+                        pairs += 1
+        self.assertGreater(pairs, 100)
+
+    def test_both_kinds_appear_about_evenly(self):
+        counts = {'goblin': 0, 'orc': 0}
+        for rooms, monsters, _ in seeded_floors(3, n=300):
+            for room in rooms[1:]:
+                counts[[m for m in monsters if in_room(room, m)][0].kind] += 1
+        total = sum(counts.values())
+        self.assertLess(abs(counts['goblin'] / total - 0.5), 0.06)
+
+    def test_first_boss_floor_has_boss_at_centre_with_one_adjacent_escort(self):
+        for rooms, monsters, boss_room in seeded_floors(FIRST_BOSS_DEPTH, n=200):
+            self.assertIsNotNone(boss_room)
+            self.assertIsNot(boss_room, rooms[0])
+            bosses = [m for m in monsters if m.is_boss]
+            self.assertEqual(len(bosses), 1)
+            boss = bosses[0]
+            self.assertEqual((boss.x, boss.y), boss_room.center())
+            others = [m for m in monsters if in_room(boss_room, m) and not m.is_boss]
+            self.assertEqual(len(others), 1)
+            escort = others[0]
+            self.assertEqual(escort.kind, 'orc')
+            self.assertTrue(escort.is_adjacent(boss))
+
+    def test_later_boss_floors_have_no_escort(self):
+        self.assertNotIn(16, BOSS_ESCORTS)
+        for depth in (16, 24):
+            for rooms, monsters, boss_room in seeded_floors(depth, n=100):
+                here = [m for m in monsters if in_room(boss_room, m)]
+                self.assertEqual(len(here), 1)
+                self.assertTrue(here[0].is_boss)
+                self.assertEqual((here[0].x, here[0].y), boss_room.center())
+
+    def test_no_boss_off_boss_floors(self):
+        for depth in (1, 7, 9, 15):
+            for _, monsters, boss_room in seeded_floors(depth, n=30):
+                self.assertIsNone(boss_room)
+                self.assertFalse(any(m.is_boss for m in monsters))
+
+    def test_boss_arena_attribute(self):
+        random.seed(3)
+        state = GameState(40, 20)
+        self.assertIsNone(state.boss_arena)
+        while state.depth < 16:
+            state.next_level()
+            if is_boss_level(state.depth):
+                self.assertIn(state.boss_arena, state.rooms[1:])
+                boss = next(m for m in state.entities if getattr(m, 'is_boss', False))
+                self.assertEqual((boss.x, boss.y), state.boss_arena.center())
+                cx, cy = state.boss_arena.center()
+                # The 3x3 centre area is inside the room.
+                for x in (cx - 1, cx + 1):
+                    self.assertTrue(state.boss_arena.x1 <= x < state.boss_arena.x2)
+                for y in (cy - 1, cy + 1):
+                    self.assertTrue(state.boss_arena.y1 <= y < state.boss_arena.y2)
+            else:
+                self.assertIsNone(state.boss_arena)
+
+    def test_a_new_rule_adds_a_kind(self):
+        rules = (SpawnRule('goblin', 1, None, lambda d: 1, 1, False),
+                 SpawnRule('orc', 1, None, lambda d: 3, 1, True))
+        rooms = [Rect(1, 1, 4, 4), Rect(10, 1, 6, 6), Rect(20, 1, 6, 6)]
+        for seed in range(50):
+            monsters, _ = spawn_level(rooms, 2, rng=random.Random(seed), rules=rules)
+            for room in rooms[1:]:
+                here = [m for m in monsters if in_room(room, m)]
+                self.assertEqual(len({m.kind for m in here}), 1)
+                if here[0].kind == 'orc':
+                    self.assertEqual(len(here), 3)
+                    for i, a in enumerate(here):
+                        for b in here[i + 1:]:
+                            self.assertGreaterEqual(a.distance_to(b), 2)
+
+    def test_spread_tiles_fit_in_the_smallest_room(self):
+        for seed in range(200):
+            tiles = pick_tiles(Rect(1, 1, 4, 4), 3, random.Random(seed), spread=True)
+            self.assertEqual(len(tiles), 3)
 
 
 def open_floor_state(seed, fov_radius=6):
@@ -447,15 +613,15 @@ class MonsterCollisionTests(unittest.TestCase):
         # so the one behind queues up against a rather than overlapping it.
         self.assertEqual((behind.x, behind.y), (a.x + 1, a.y))
 
-    def test_boss_does_not_spawn_on_another_monster(self):
-        rooms = [Rect(1, 1, 3, 3), Rect(10, 1, 3, 3)]
-        boss_room = rooms[1]
-        taken = {(x, y) for x in range(boss_room.x1, boss_room.x2)
-                 for y in range(boss_room.y1, boss_room.y2)}
-        taken.discard((boss_room.x1, boss_room.y1))  # leave exactly one free tile
-        for seed in range(30):
-            boss = spawn_boss(rooms, 8, rng=random.Random(seed), occupied=taken)
-            self.assertNotIn((boss.x, boss.y), taken)
+    def test_no_two_monsters_spawn_on_one_tile(self):
+        for seed in range(100):
+            random.seed(seed)
+            game_map, rooms = generate_dungeon(40, 20)
+            for depth in (1, 8, 9, 16):
+                monsters, _ = spawn_level(rooms, depth, rng=random.Random(seed))
+                spots = [(m.x, m.y) for m in monsters]
+                self.assertEqual(len(spots), len(set(spots)))
+                self.assertNotIn(rooms[0].center(), spots)
 
 
 class ChaseGiveUpTests(unittest.TestCase):
@@ -965,7 +1131,7 @@ class DifficultyScalingTests(unittest.TestCase):
         depth = 8
         base_hp, base_power = MONSTER_TYPES[BOSS_REFERENCE_KIND][2], MONSTER_TYPES[BOSS_REFERENCE_KIND][3]
         reg_hp, reg_power = scale_stats(base_hp, base_power, depth)
-        boss = spawn_boss([Rect(1, 1, 10, 10)], depth, rng=random.Random(1))
+        boss = spawn_boss(Rect(1, 1, 10, 10), depth)
         self.assertTrue(boss.is_boss)
         self.assertEqual(boss.hp, max(1, round(reg_hp * 2.0)))
         self.assertEqual(boss.power, max(1, round(reg_power * 1.5)))

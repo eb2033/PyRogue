@@ -23,7 +23,8 @@ from game.entity import Entity
 from game.fov import update_visibility
 from game.item import (STARTING_WEAPON_RARITY, Chest, Item, gear_power,
                        spawn_boss_chest, spawn_chests)
-from game.monster import Monster, is_boss_level, spawn_boss, spawn_monsters
+from game.monster import Monster, is_boss_level
+from game.spawn import spawn_level
 from game.save import apply_dict, load_game, save_game
 from game.tiles import DOOR, STAIRS_DOWN, is_walkable
 
@@ -116,6 +117,12 @@ class GameState:
         # Items an opened gear chest is offering, or None. While set, the
         # player must choose() one before anything else happens.
         self.pending_choice = None
+        # The boss's room (a game.rect.Rect: x1, y1 inclusive, x2, y2
+        # exclusive, as carved) on a boss floor, else None. The boss starts at
+        # boss_arena.center(); the 3x3 block centred there is the arena's
+        # centre area. An overlay for the renderer -- not a map char. Set by
+        # _spawn_level_monsters on every new floor.
+        self.boss_arena = None
 
         self.game_map, self.rooms = generate_dungeon(width, height)
         place_stairs(self.game_map, self.rooms)
@@ -147,10 +154,9 @@ class GameState:
         self.update_fov()
 
     def _spawn_level_monsters(self):
-        monsters = spawn_monsters(self.rooms, depth=self.depth)
-        if is_boss_level(self.depth):
-            occupied = {(m.x, m.y) for m in monsters}
-            monsters.append(spawn_boss(self.rooms, self.depth, occupied=occupied))
+        """This floor's enemies (game/spawn.py has the rules). Also sets
+        self.boss_arena."""
+        monsters, self.boss_arena = spawn_level(self.rooms, self.depth)
         return monsters
 
     # -- turn resolution ---------------------------------------------------

@@ -20,6 +20,9 @@ power, compounding (tier 2 is 1.2x *that*, not 1.2x the base). Every 8th
 floor also spawns exactly one boss: 2x the hp and 1.5x the power of the
 toughest regular monster at that depth's tier, flagged is_boss so GameState
 knows to guarantee a rare+ drop on its death.
+
+Who spawns where (one enemy kind per room, pack sizes, the boss room) is
+decided by game/spawn.py.
 """
 
 import random
@@ -169,33 +172,15 @@ class Monster(Entity):
 
 
 def spawn_monsters(rooms, depth=1, rng=random):
-    """One roll per room (skipping the player's starting room) for 0-2 monsters."""
-    monsters = []
-    occupied = set()
-    for room in rooms[1:]:
-        count = rng.choice([0, 0, 1, 1, 2])
-        for _ in range(count):
-            kind = rng.choice(list(MONSTER_TYPES))
-            for _ in range(10):  # a few tries to avoid stacking
-                x = rng.randint(room.x1, room.x2 - 1)
-                y = rng.randint(room.y1, room.y2 - 1)
-                if (x, y) not in occupied:
-                    occupied.add((x, y))
-                    monsters.append(Monster(x, y, kind, depth=depth))
-                    break
-    return monsters
+    """Every enemy on a floor -- one kind per non-start room, plus the boss
+    (and its escort) on a boss floor. The rules live in game/spawn.py; this
+    is the old entry point, kept for callers that only want the list."""
+    from game.spawn import spawn_level   # spawn imports this module
+    return spawn_level(rooms, depth, rng)[0]
 
 
-def spawn_boss(rooms, depth, rng=random, occupied=()):
-    """One boss, placed in a room other than the player's start when possible,
-    and off any tile in `occupied` (the monsters already spawned) when a few
-    tries can find one."""
-    room = rng.choice(rooms[1:]) if len(rooms) > 1 else rooms[-1]
-    x = rng.randint(room.x1, room.x2 - 1)
-    y = rng.randint(room.y1, room.y2 - 1)
-    if (x, y) in occupied:
-        free = [(fx, fy) for fy in range(room.y1, room.y2)
-                for fx in range(room.x1, room.x2) if (fx, fy) not in occupied]
-        if free:
-            x, y = rng.choice(free)
+def spawn_boss(room, depth, at=None):
+    """The boss, standing at `at` or else at the centre of `room` (its
+    arena). Stats scale off BOSS_REFERENCE_KIND at this depth."""
+    x, y = at if at is not None else room.center()
     return Monster(x, y, BOSS_REFERENCE_KIND, depth=depth, is_boss=True)
