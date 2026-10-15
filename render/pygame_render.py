@@ -15,9 +15,12 @@ Division of labour with the other render modules:
   palette                Entity.color int -> RGB (this stream)
   input_map              key -> Action (this stream)
   camera.Director        the combat zoom: what part of the map to show, and
-                         the beats (impacts, pans) staged before each frame
+                         the beats (arrow flights, impacts, pans) staged
+                         before each frame
 """
 
+import copy
+import math
 import os
 import random
 import warnings
@@ -29,6 +32,7 @@ import pygame
 
 from game.monster import Monster
 from game.paths import resource_path
+from game.quiver import RESTOCK_TURNS
 from render import camera, choice, input_map, palette, screens, ui
 from render.banner import render_banner
 from render.base import Action, Renderer
@@ -44,6 +48,7 @@ ICON_FILE = 'icon.png'
 # (camera.CRIT_SHAKE_MS / camera.SHAKE_MS).
 ZOOM_MS = 220
 IMPACT_MS = camera.SHAKE_MS
+FLIGHT_MS = camera.FLIGHT_MS_PER_CELL  # per cell an arrow crosses
 FRAME_MS = 16
 
 # Walking gait: an entity that just took a step leans this many degrees, the
@@ -67,6 +72,29 @@ HEALTH_TRACK = (25, 20, 20)
 HEALTH_BAR_COLORS = frozenset({HEALTH_GREEN, HEALTH_AMBER, HEALTH_RED, HEALTH_TRACK})
 HEALTH_BAR_WIDTH = 0.7  # of the cell's width; a boss's spans the whole cell
 HEALTH_BAR_HEIGHT = 0.08  # of the cell's height, at least 2 px
+
+# The archer's restock bar: a thin light grey bar along the bottom edge of the
+# player's own cell (so it never leaves the map, and never meets a monster's
+# health bar), filled in proportion to restock_progress / RESTOCK_TURNS.
+RESTOCK_FILL = (205, 205, 205)
+RESTOCK_TRACK = (45, 45, 45)
+RESTOCK_BAR_WIDTH = 0.7  # of the cell's width
+RESTOCK_BAR_HEIGHT = 0.1  # of the cell's height, at least 2 px; the track
+# (a 1 px dark rim round the bar) keeps it readable over the sprite's feet
+
+# Arrows, drawn rather than tiled (the bundled sheets have no arrow): the one
+# in flight and the ones lying in a pile. A bright shaft, a steel head and red
+# fletching, all outlined in near-black so they read on any floor.
+ARROW_SHAFT = (255, 222, 110)
+ARROW_HEAD = (235, 240, 250)
+ARROW_FLETCH = (235, 70, 60)
+ARROW_OUTLINE = (20, 14, 8)
+ARROW_LENGTH = 0.9  # of the cell's smaller side
+PILE_BACKDROP_ALPHA = 70  # the pile's light tint, in its Entity.color
+PILE_MAX_ARROWS = 3  # arrows drawn for a pile of this many or more
+PILE_ANGLE = 45  # degrees: the pile's arrows lie diagonally, side by side
+PILE_ARROW_LENGTH = 0.8  # of the cell's smaller side
+PILE_SPACING = 0.2  # of the cell, between neighbouring arrows in a pile
 
 # Events after which the window contents may be stale: repaint the last frame.
 REPAINT_EVENTS = (
@@ -97,6 +125,7 @@ class PygameRenderer(Renderer):
         combat_zoom=True,
         zoom_ms=ZOOM_MS,
         impact_ms=IMPACT_MS,
+        flight_ms=FLIGHT_MS,
     ):
         """`tileset`: a tileset.Tileset (None -> an unavailable one, i.e. glyphs).
         An available one puts the layout in tile mode: square map cells.
@@ -104,8 +133,9 @@ class PygameRenderer(Renderer):
         (None -> a system monospace font); a bundled font goes through here.
         `combat_zoom`: zoom the map in on melee fights (render/camera.py);
         `zoom_ms` / `impact_ms`: how long a pan / a normal hit's flash and
-        shake play -- a crit's in proportion longer (0 = no animation, the
-        frame just changes)."""
+        shake play -- a crit's in proportion longer; `flight_ms`: how long
+        an arrow takes to cross one cell (0 = no animation, the frame just
+        changes)."""
         pygame.display.init()
         pygame.display.set_caption('PyRogue')
         _set_window_icon()
@@ -131,6 +161,7 @@ class PygameRenderer(Renderer):
         self.director = camera.Director(zoom=combat_zoom)
         self.zoom_ms = zoom_ms
         self.impact_ms = impact_ms
+        self.flight_ms = flight_ms
         # The view being painted (None = the whole map, the unzoomed layout),
         # its projection for the frame being painted, and whether a beat is
         # mid-play (in-between sizes are drawn uncached -- see _tile).
@@ -159,6 +190,10 @@ class PygameRenderer(Renderer):
             tuple[int, int, int, int], dict[tuple[int, int], tuple[int, int, float]]
         ] = {}
         self._decal_sprites = {}
+        # Drawn arrows: (length, angle) -> Surface; cells an entity other
+        # than an arrow pile stands on, in the frame being painted.
+        self._arrow_sprites = {}
+        self._occupied = set()
 
     @staticmethod
     def _set_mode(size, flags):
@@ -318,20 +353,34 @@ class PygameRenderer(Renderer):
     # -- game frame -----------------------------------------------------------
 
     def draw(self, state):
-        """Play whatever the combat camera stages (impacts, then a pan), then
-        show the frame. With nothing to stage this is just the paint."""
+        """Play whatever the combat camera stages (arrow flights and impacts,
+        then a pan), then show the frame. With nothing to stage this is just
+        the paint. While a flight or impact plays, the monsters that later
+        beats' hits are still to land on are drawn as they were before those
+        hits (`pending`)."""
         self._state = state
         tilts = self.track_steps(state.visible_entities())
-        for beat in self.director.plan(state):
-            if isinstance(beat, camera.Impact):
+        beats = self.director.plan(state)
+        for i, beat in enumerate(beats):
+            pending = [b.hit for b in beats[i + 1 :] if isinstance(b, camera.Impact)]
+            if isinstance(beat, camera.Flight):
+                self._play(
+                    camera.flight_ms(beat, self.flight_ms),
+                    lambda t, flight=beat, pending=pending: self._paint_game(
+                        state, flight=(flight, t), pending=pending
+                    ),
+                    interruptible=False,
+                )
+            elif isinstance(beat, camera.Impact):
                 shake = beat.shake or camera.shake_for(beat.hit)
                 self._play(
                     self.impact_ms_for(shake),
-                    lambda t, hit=beat.hit, shake=shake: self._paint_game(
+                    lambda t, hit=beat.hit, shake=shake, pending=pending: self._paint_game(
                         state,
                         impact=(hit, t),
                         shake=self.shake_offset(shake, t),
                         sprite_shake=shake,
+                        pending=pending,
                     ),
                     interruptible=False,
                 )
@@ -431,12 +480,17 @@ class PygameRenderer(Renderer):
 
     # -- game frame -----------------------------------------------------------
 
-    def _paint_game(self, state, impact=None, shake=(0, 0), sprite_shake=None):
+    def _paint_game(
+        self, state, impact=None, shake=(0, 0), sprite_shake=None, flight=None, pending=()
+    ):
         """The map at the current view, clipped to the map's area, then the
         panel. `impact`: (Hit, t) to draw a blow landing, t running 0 -> 1.
         `shake`: (dx, dy) pixels to shift the whole painted map by.
         `sprite_shake`: the impact's Shake, to jolt the struck sprite (and its
-        health bar) inside its cell as well."""
+        health bar) inside its cell as well. `flight`: (Flight, t) to draw an
+        arrow in the air, over the map and the monsters, under an impact.
+        `pending`: Hits not yet shown -- their monsters are drawn as they were
+        before them (see _before_hits)."""
         surface = self.canvas.surface
         map_rect = self.layout.map_rect()
         if self._view is None:
@@ -475,14 +529,23 @@ class PygameRenderer(Renderer):
                 hit, t = impact
                 self._jolt = (hit.defender, self.sprite_shake_offset(sprite_shake, t, hit))
             entities = state.visible_entities()
+            if pending:
+                entities = self._before_hits(state, entities, pending)
             if self._jolt is not None and any(e is self._jolt[0] for e in entities):
                 # The struck sprite last, so it shakes on top of a neighbour.
                 entities = [e for e in entities if e is not self._jolt[0]] + [self._jolt[0]]
+            # Cells something stands on: a pile under it isn't drawn in glyph
+            # mode, where the two characters would overlap.
+            self._occupied = {(e.x, e.y) for e in entities if getattr(e, 'kind', None) != 'arrows'}
             for entity in entities:
                 self._paint_entity(entity)
             for entity in entities:
                 if isinstance(entity, Monster) and entity is not state.player:
                     self._paint_health_bar(entity, state.player, map_rect)
+            if getattr(state.player, 'quiver', None) is not None:
+                self._paint_restock_bar(state, map_rect)
+            if flight is not None:
+                self._paint_flight(*flight)
             if impact is not None:
                 self._paint_impact(*impact)
             if shake != (0, 0):
@@ -531,6 +594,167 @@ class PygameRenderer(Renderer):
             top = rect.top + gap
         bar = pygame.Rect(rect.centerx - width // 2, top, width, height)
         return bar.move(self._jolt_of(monster))  # stays on a sprite that shakes
+
+    def _before_hits(self, state, entities, pending):
+        """`entities` as they stood before the `pending` hits landed: each
+        monster they strike is drawn at the cell of its first such hit (a
+        sling's knockback hasn't happened yet), with the hp it had then, and
+        back on screen if one of them killed it. Copies -- the state is never
+        touched. The player is left alone (no health bar on the map)."""
+        ghosts = {}
+        for hit in pending:
+            monster = hit.defender
+            if monster is state.player or not isinstance(monster, Monster):
+                continue
+            ghost = ghosts.get(id(monster))
+            if ghost is None:
+                ghost = copy.copy(monster)
+                ghost.x, ghost.y, ghost.alive = hit.x, hit.y, True
+                ghosts[id(monster)] = ghost
+            ghost.hp += hit.damage
+        if not ghosts:
+            return entities
+        drawn = [ghosts.get(id(e), e) for e in entities]
+        present = {id(e) for e in entities}
+        drawn += [g for key, g in ghosts.items() if key not in present and state.visible[g.y][g.x]]
+        if self._jolt is not None and id(self._jolt[0]) in ghosts:
+            self._jolt = (ghosts[id(self._jolt[0])], self._jolt[1])
+        return drawn
+
+    def restock_bar_rect(self, player):
+        """Pixel rect of the archer's restock bar: centred along the bottom
+        edge, inside the player's own cell -- so it stays on the map wherever
+        the player stands, zoomed or not -- and moving with a shaking sprite."""
+        rect = self._map_cell_rect(player.x, player.y)
+        width = max(4, round(rect.width * RESTOCK_BAR_WIDTH))
+        height = max(2, round(rect.height * RESTOCK_BAR_HEIGHT))
+        gap = max(1, rect.height // 20)
+        bar = pygame.Rect(rect.centerx - width // 2, rect.bottom - gap - height, width, height)
+        return bar.move(self._jolt_of(player))
+
+    @staticmethod
+    def restock_fill(width, progress):
+        """Filled pixels of a restock bar `width` wide: progress / RESTOCK_TURNS."""
+        return round(width * min(1.0, max(0.0, progress / RESTOCK_TURNS)))
+
+    def _paint_restock_bar(self, state, map_rect):
+        """The track, then the light grey fill: how near the next free arrow is."""
+        bar = self.restock_bar_rect(state.player)
+        surface = self.canvas.surface
+        clip = surface.get_clip()
+        surface.set_clip(map_rect.clip(clip))
+        try:
+            surface.fill(RESTOCK_TRACK, bar.inflate(2, 2))
+            fill = self.restock_fill(bar.width, getattr(state, 'restock_progress', 0))
+            if fill:
+                surface.fill(RESTOCK_FILL, (bar.left, bar.top, fill, bar.height))
+        finally:
+            surface.set_clip(clip)
+
+    # -- arrows ---------------------------------------------------------------
+
+    def arrow_sprite(self, length, angle):
+        """An arrow `length` px long pointing `angle` degrees anticlockwise
+        from east (screen up is +90), outlined, on a transparent square."""
+        key = (length, angle)
+        sprite = self._arrow_sprites.get(key)
+        if sprite is not None:
+            return sprite
+        n = max(8, length)
+        art = pygame.Surface((n, n), pygame.SRCALPHA)
+        mid = n / 2
+        thick = max(2, n // 10)
+        tail, neck, tip = n * 0.08, n * 0.66, n * 0.94
+        barb = max(2.0, n * 0.15)
+        pygame.draw.line(art, ARROW_SHAFT, (tail, mid), (neck, mid), thick)
+        pygame.draw.polygon(art, ARROW_HEAD, [(tip, mid), (neck, mid - barb), (neck, mid + barb)])
+        feather = n * 0.2
+        for side in (-1, 1):
+            pygame.draw.polygon(
+                art,
+                ARROW_FLETCH,
+                [
+                    (tail, mid + side * barb * 0.9),
+                    (tail + feather * 0.6, mid + side * barb * 0.9),
+                    (tail + feather, mid),
+                    (tail, mid),
+                ],
+            )
+        outline = pygame.mask.from_surface(art).to_surface(
+            setcolor=(*ARROW_OUTLINE, 255), unsetcolor=(0, 0, 0, 0)
+        )
+        sprite = pygame.Surface((n + 2, n + 2), pygame.SRCALPHA)
+        for dx in (0, 1, 2):
+            for dy in (0, 1, 2):
+                if dx != 1 or dy != 1:
+                    sprite.blit(outline, (dx, dy))
+        sprite.blit(art, (1, 1))
+        if angle:
+            sprite = pygame.transform.rotate(sprite, angle)
+        if len(self._arrow_sprites) > 64:
+            self._arrow_sprites.clear()
+        self._arrow_sprites[key] = sprite
+        return sprite
+
+    def flight_point(self, flight, t):
+        """(pixel centre, angle in degrees) of the arrow at t of `flight`."""
+        a, b, f = camera.flight_step(flight.path, t)
+        ra, rb = self._map_cell_rect(*a), self._map_cell_rect(*b)
+        centre = (
+            round(ra.centerx + (rb.centerx - ra.centerx) * f),
+            round(ra.centery + (rb.centery - ra.centery) * f),
+        )
+        angle = round(math.degrees(math.atan2(-(b[1] - a[1]), b[0] - a[0])))
+        return centre, angle
+
+    def _paint_flight(self, flight, t):
+        """The arrow in the air, pointing the way it flies."""
+        centre, angle = self.flight_point(flight, t)
+        rect = self._map_cell_rect(*flight.path[-1])
+        sprite = self.arrow_sprite(round(min(rect.size) * ARROW_LENGTH), angle)
+        clip = self._clip_to_map()
+        try:
+            self.canvas.surface.blit(sprite, sprite.get_rect(center=centre))
+        finally:
+            self.canvas.surface.set_clip(clip)
+
+    def _paint_arrow_pile(self, pile):
+        """Arrows on the floor: a light tint in the pile's colour over its
+        cell, then up to PILE_MAX_ARROWS drawn arrows side by side across it
+        -- or, in a text cell too narrow for a drawn arrow, the bold glyph."""
+        if not self.layout.tile and (pile.x, pile.y) in self._occupied:
+            return
+        rect = self._map_cell_rect(pile.x, pile.y)
+        rgb = palette.color(pile.color, palette.VISIBLE)
+        tint = pygame.Surface(rect.size, pygame.SRCALPHA)
+        inset = max(1, min(rect.size) // 10)
+        pygame.draw.rect(
+            tint,
+            (*rgb, PILE_BACKDROP_ALPHA),
+            tint.get_rect().inflate(-2 * inset, -2 * inset),
+            border_radius=max(1, min(rect.size) // 4),
+        )
+        surface = self.canvas.surface
+        if not self.layout.tile:
+            surface.fill(palette.BACKGROUND, rect)  # no floor dot under the tint
+        surface.blit(tint, rect)
+        if not self.layout.tile and min(rect.size) < 2 * ui.MIN_FONT_SIZE:
+            glyph = self._glyph(pile.char, palette.brighten(rgb), bold=True)
+            self._blit_centred(glyph, pile.x, pile.y)
+            return
+        side = min(rect.size)
+        sprite = self.arrow_sprite(round(side * PILE_ARROW_LENGTH), PILE_ANGLE)
+        count = max(1, min(PILE_MAX_ARROWS, getattr(pile, 'count', 1)))
+        step = side * PILE_SPACING / math.sqrt(2)  # across the diagonal
+        clip = surface.get_clip()
+        surface.set_clip(rect.clip(clip))
+        try:
+            for i in range(count):
+                k = i - (count - 1) / 2
+                at = (round(rect.centerx + k * step), round(rect.centery + k * step))
+                surface.blit(sprite, sprite.get_rect(center=at))
+        finally:
+            surface.set_clip(clip)
 
     @staticmethod
     def health_bar_color(fraction):
@@ -634,6 +858,9 @@ class PygameRenderer(Renderer):
         """The entity's tile or glyph in its cell -- leaning if it just
         stepped, and offset inside the cell (clipped to the map) if it is the
         one being struck. Its floor was painted first and stays put."""
+        if getattr(entity, 'kind', None) == 'arrows':
+            self._paint_arrow_pile(entity)
+            return
         angle = self._tilts.get(id(entity), 0)
         offset = self._jolt_of(entity)
         rgb = palette.color(entity.color, palette.VISIBLE)

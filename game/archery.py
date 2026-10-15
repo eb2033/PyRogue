@@ -23,10 +23,15 @@ all defaulted for any other weapon) change the shot:
   a time); arrows at the marked monster deal (1 + mark_bonus) x damage.
 - tempo (quickdraw): every `tempo`-th shot is free -- the action queues no
   monster half (GameState._free_turn).
+
+Every arrow that flies -- the aim line and each volley extra -- records a
+game.combat.Shot in GameState.shots: its path and its Hits, so the window can
+draw it flying (render/camera.py's Flight beat).
 """
 
 from typing import TYPE_CHECKING
 
+from game.combat import Shot
 from game.quiver import ArrowPile
 from game.tiles import is_walkable
 
@@ -62,7 +67,17 @@ def shoot(state: 'GameState', dx, dy):
         for start in _volley_starts(state, dx, dy, weapon.spread):
             if start is not None:
                 sx, sy = start
-                _fly(state, sx, sy, dx, dy, 1, weapon.spread_factor, loud=False)
+                _fly(
+                    state,
+                    sx,
+                    sy,
+                    dx,
+                    dy,
+                    1,
+                    weapon.spread_factor,
+                    loud=False,
+                    origin=(player.x, player.y),
+                )
     if weapon is not None and weapon.reload:
         state.reload_turns = weapon.reload
     if weapon is not None and weapon.tempo:
@@ -74,24 +89,32 @@ def shoot(state: 'GameState', dx, dy):
     return True
 
 
-def _fly(state: 'GameState', x, y, dx, dy, pierce, factor, loud):
+def _fly(state: 'GameState', x, y, dx, dy, pierce, factor, loud, origin=None):
     """Fly from (x, y), not including it, until a wall or the `pierce`-th
     monster hit. Returns the tile the arrow stopped on. `loud` logs a wall
-    hit when nothing was struck (the aim line; volley extras stay quiet)."""
+    hit when nothing was struck (the aim line; volley extras stay quiet).
+    Records the flight as a Shot whose path starts at `origin` (default
+    (x, y)): the shooter's cell, which a volley's side arrow doesn't start on."""
+    serial = state.next_event_serial()
+    path = [origin if origin is not None else (x, y)]
+    first_event = len(state.combat_events)
     hits = 0
     while True:
         nx, ny = x + dx, y + dy
         if not is_walkable(state.game_map, nx, ny):
             if loud and hits == 0:
                 state.log('The arrow thuds into a wall.')
-            return x, y
+            break
         x, y = nx, ny
+        path.append((x, y))
         monster = state.monster_at(x, y)
         if monster is not None:
             _hit(state, monster, factor, dx, dy)
             hits += 1
             if hits >= pierce:
-                return x, y
+                break
+    state.shots.append(Shot(serial, tuple(path), tuple(state.combat_events[first_event:])))
+    return x, y
 
 
 def _volley_starts(state: 'GameState', dx, dy, spread):

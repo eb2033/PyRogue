@@ -8,8 +8,17 @@ back out when the fight ends. Ranged combat (the archer) doesn't zoom for now:
 
 The camera is *staged*: `Director.plan(state)` turns what changed since the
 last frame into a list of beats, and the renderer plays them one after another
-before showing the frame. Today there are two kinds:
+before showing the frame. Today there are three kinds:
 
+  Flight(path)       an arrow flying cell to cell along `path` (the shooter's
+                     cell first), FLIGHT_MS_PER_CELL a cell. Planned from
+                     GameState.shots (game/combat.py's Shot): one Flight per
+                     stretch of the arrow's path, each ending on a monster it
+                     hit -- whose Impact comes right after it -- or on the
+                     tile it landed on. So the damage shows the moment the
+                     arrow arrives, and a pierce's second hit waits for the
+                     arrow to fly on to it. Plays out like an Impact: keys
+                     wait in the queue until it ends.
   Impact(hit, shake) a blow landing -- played at the current view, so a
                      killing blow is seen before the camera pulls back. The
                      map shakes for the length of the beat (`Shake`: harder
@@ -22,14 +31,16 @@ A new effect (a lunge, a screen shake, a death animation) is another beat type
 here plus a player for it in the renderer; the loop in main.py never changes.
 The renderer services the window during every beat and leaves key presses
 queued, so input typed during an animation is never lost -- and a queued key
-cuts the remaining animation short (except an Impact's shake, which is
-short and always finishes), so it never holds the player up for long.
+cuts the remaining animation short (except an Impact's shake or a Flight,
+which are short and always finish), so it never holds the player up for long.
 
 Pure geometry, no pygame: views are in map cells (floats while animating).
 """
 
 import random
 from collections import namedtuple
+
+from game.combat import Shot
 
 MARGIN = 2  # squares of map shown around the fight
 ZOOM_CLASSES = frozenset({'warrior'})
@@ -50,6 +61,8 @@ class View(namedtuple('View', 'left top width height')):
 Impact = namedtuple('Impact', 'hit shake')
 Impact.__new__.__defaults__ = (None,)
 Pan = namedtuple('Pan', 'start end')
+Flight = namedtuple('Flight', 'path')
+FLIGHT_MS_PER_CELL = 40  # a 5-cell shot flies for 0.2 s
 
 # The hit shake: `ms` is how long the impact beat (and its shake) lasts,
 # `amplitude` the peak offset as a fraction of an unzoomed map cell, `seed`
@@ -110,6 +123,21 @@ def _jitter(shake, t, peak, skip):
         rng.random()
     peak *= (1 - t) ** 2
     return round(rng.uniform(-1, 1) * peak), round(rng.uniform(-1, 1) * peak)
+
+
+def flight_ms(flight, per_cell=FLIGHT_MS_PER_CELL):
+    """How long `flight` plays: `per_cell` for every cell it crosses."""
+    return (len(flight.path) - 1) * per_cell
+
+
+def flight_step(path, t):
+    """Where the arrow is at t (0 -> 1 over the flight): (a, b, f) -- it is
+    `f` of the way from cell a to the next cell b on `path`. Cells are
+    crossed at an even pace, so at t = 1 it is on the last cell (f = 1)."""
+    steps = len(path) - 1
+    s = min(1.0, max(0.0, t)) * steps
+    i = min(int(s), steps - 1)
+    return path[i], path[i + 1], s - i
 
 
 def full_view(map_width, map_height):
@@ -195,15 +223,21 @@ class Director:
         return self.view or full_view(state.width, state.height)
 
     def plan(self, state):
-        """The beats to play before showing `state`: any new hits, then a pan
-        if the camera has to move. Updates the director as if they had
+        """The beats to play before showing `state`: any new arrows' flights
+        and hits, in the order they happened, then a pan if the camera has to
+        move. Updates the director as if they had
         played (the renderer may cut an animation short, never skip one)."""
         beats = []
-        for hit in state.combat_events:
-            if hit.serial > self._last_hit:
-                self._last_hit = hit.serial
-                if state.visible[hit.y][hit.x]:
-                    beats.append(Impact(hit, shake_for(hit)))
+        new = [e for e in state.combat_events if e.serial > self._last_hit]
+        new += [s for s in getattr(state, 'shots', ()) if s.serial > self._last_hit]
+        staged = set()  # serials of hits a shot has already staged
+        for event in sorted(new, key=lambda e: e.serial):
+            self._last_hit = max(self._last_hit, event.serial)
+            if isinstance(event, Shot):
+                beats += self._shot_beats(state, event)
+                staged.update(hit.serial for hit in event.hits)
+            elif event.serial not in staged and state.visible[event.y][event.x]:
+                beats.append(Impact(event, shake_for(event)))
 
         self._track_turn(state)
         start = self.current(state)
@@ -215,6 +249,34 @@ class Director:
             beats.append(Pan(start, target))
         self.view = view
         return beats
+
+    @staticmethod
+    def _shot_beats(state, shot):
+        """An arrow's beats: a Flight to each monster it hit, that hit's
+        Impact (if in view), and a last Flight on to where it landed."""
+        beats, at = [], 0
+        path = shot.path
+        for hit in shot.hits:
+            cell = (hit.x, hit.y)
+            if cell not in path[at:]:
+                continue  # not on its path: nothing to fly to
+            end = path.index(cell, at)
+            beats += Director._flight(state, path[at : end + 1])
+            if state.visible[hit.y][hit.x]:
+                beats.append(Impact(hit, shake_for(hit)))
+            at = end
+        return beats + Director._flight(state, path[at:])
+
+    @staticmethod
+    def _flight(state, cells):
+        """A Flight over `cells`, cut short where the arrow leaves the
+        player's sight; none if it never enters a visible cell."""
+        seen = list(cells[:1])
+        for x, y in cells[1:]:
+            if not state.visible[y][x]:
+                break
+            seen.append((x, y))
+        return [Flight(tuple(seen))] if len(seen) > 1 else []
 
     def _track_turn(self, state):
         """Remember where the player stood before their latest turn. The

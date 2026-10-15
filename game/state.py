@@ -123,6 +123,9 @@ class GameState:
         # This round's blows, oldest first -- see game/combat.py. Cleared when
         # the player acts; the serial keeps counting across rounds and levels.
         self.combat_events = []
+        # This round's arrows (game.combat.Shot), oldest first: their paths,
+        # for a renderer to draw them flying. Cleared with combat_events.
+        self.shots = []
         self._hit_serial = 0
         # Player actions taken so far (+1 per turn-consuming action in
         # handle_action; never per frame or per monster). The combat zoom's
@@ -226,6 +229,7 @@ class GameState:
         # always finished before anything else happens.
         self.resolve_player_phase()
         self.combat_events = []
+        self.shots = []
         self._free_turn = False
 
         if action == 'quit':
@@ -655,6 +659,12 @@ class GameState:
             self.log(f'You descend to level {self.depth}.')
         self.update_fov()
 
+    def next_event_serial(self):
+        """The next serial for a combat record (a Hit or a Shot): one counter
+        for both, so they sort in the order they happened."""
+        self._hit_serial += 1
+        return self._hit_serial
+
     def attack(self, attacker, defender, factor=1.0):
         """One blow. `factor` scales the attacker's raw power before crits
         and defence (a volley's extra arrows, the hunter's mark)."""
@@ -674,10 +684,9 @@ class GameState:
         self.log(f'{subject} {verb} {target} for {damage}.')
         if crit:
             self.log('Critical hit!')
-        self._hit_serial += 1
         self.combat_events.append(
             Hit(
-                self._hit_serial,
+                self.next_event_serial(),
                 attacker,
                 defender,
                 damage,

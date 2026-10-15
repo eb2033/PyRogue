@@ -2,11 +2,14 @@
 pygame -- runs in the nothing-installed CI job too."""
 
 import unittest
+from unittest import mock
 
+from game.item import Item
 from game.monster import Monster
 from game.state import GameState
+from game.tiles import FLOOR, WALL
 from render import camera
-from render.camera import Director, Impact, Pan, View
+from render.camera import Director, Flight, Impact, Pan, View
 
 WIDTH, HEIGHT = 40, 20
 
@@ -474,6 +477,107 @@ class HitShakeTest(unittest.TestCase):
             self.assertEqual(camera.sprite_shake_offset(shake, 1.0, 40), (0, 0))
             # Its own draws from the hit's sequence, not the map's offset again.
             self.assertNotEqual(offsets, [camera.shake_offset(shake, t, 40) for t in times])
+
+
+def archer_arena():
+    """An archer at (10, 10) on open floor with nothing else on the level;
+    crits off, so damage is predictable."""
+    import random
+
+    random.seed(5)
+    state = GameState(WIDTH, HEIGHT, char_class='archer')
+    for y in range(1, HEIGHT - 1):
+        for x in range(1, WIDTH - 1):
+            state.game_map[y][x] = FLOOR
+    state.player.x, state.player.y = 10, 10
+    state.entities = [state.player]
+    state.update_fov()
+    return state
+
+
+def add_goblin(state, x, y, hp=1000):
+    goblin = Monster(x, y, 'goblin')
+    goblin.hp = goblin.max_hp = hp
+    state.entities.append(goblin)
+    state.update_fov()
+    return goblin
+
+
+class ArrowFlightTest(unittest.TestCase):
+    """Every arrow is staged as Flight beats along its path (from
+    GameState.shots), each hit's Impact right after the Flight that reaches it."""
+
+    def setUp(self):
+        patcher = mock.patch('game.state.BASE_CRIT_CHANCE', 0.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.state = archer_arena()
+        self.director = Director()
+        self.director.plan(self.state)
+
+    def shoot(self, dx=1, dy=0):
+        self.assertTrue(self.state.shoot_arrow(dx, dy))
+        return self.director.plan(self.state)
+
+    def test_a_shot_flies_to_its_target_then_the_impact_plays(self):
+        goblin = add_goblin(self.state, 14, 10)
+        beats = self.shoot()
+        self.assertEqual([type(b) for b in beats], [Flight, Impact])
+        self.assertEqual(beats[0].path, ((10, 10), (11, 10), (12, 10), (13, 10), (14, 10)))
+        self.assertEqual(beats[0].path[-1], (beats[1].hit.x, beats[1].hit.y))
+        self.assertIs(beats[1].hit.defender, goblin)
+        self.assertEqual(self.director.plan(self.state), [])  # staged once
+
+    def test_a_pierce_shots_second_impact_follows_the_second_flight(self):
+        Item(0, 0, 'longbow', 'common').apply(self.state.player, self.state.log)
+        first, second = add_goblin(self.state, 12, 10), add_goblin(self.state, 14, 10)
+        beats = self.shoot()
+        self.assertEqual([type(b) for b in beats], [Flight, Impact, Flight, Impact])
+        self.assertEqual(beats[0].path[-1], (12, 10))
+        self.assertIs(beats[1].hit.defender, first)
+        # The arrow flies on from the first goblin to the second.
+        self.assertEqual(beats[2].path, ((12, 10), (13, 10), (14, 10)))
+        self.assertIs(beats[3].hit.defender, second)
+
+    def test_a_miss_flies_to_the_landing_tile_with_no_impact(self):
+        self.state.game_map[10][14] = WALL
+        beats = self.shoot()
+        self.assertEqual([type(b) for b in beats], [Flight])
+        self.assertEqual(beats[0].path[-1], (13, 10))
+        self.assertIsNotNone(self.state.arrows_at(13, 10))  # the pile tile
+
+    def test_each_volley_arrow_gets_its_own_flight_and_impact(self):
+        Item(0, 0, 'volley_bow', 'common').apply(self.state.player, self.state.log)
+        add_goblin(self.state, 13, 10)
+        add_goblin(self.state, 13, 9)
+        add_goblin(self.state, 13, 11)
+        beats = self.shoot()
+        flights = [b for b in beats if isinstance(b, Flight)]
+        self.assertEqual(len(flights), len(self.state.shots))
+        for i, beat in enumerate(beats):
+            if isinstance(beat, Impact):
+                before = beats[i - 1]
+                self.assertIsInstance(before, Flight)
+                self.assertEqual(before.path[-1], (beat.hit.x, beat.hit.y))
+        # A side arrow goes from the player straight to its diagonal first tile.
+        side = flights[1].path
+        self.assertEqual(side[0], (10, 10))
+        self.assertEqual(abs(side[1][0] - 10) + abs(side[1][1] - 10), 2)
+
+    def test_a_flight_stops_where_the_arrow_leaves_sight(self):
+        beats = self.shoot()  # down an open row longer than the FOV radius
+        path = beats[0].path
+        self.assertTrue(all(self.state.visible[y][x] for x, y in path))
+        x, y = path[-1]
+        self.assertFalse(self.state.visible[y][x + 1])
+
+    def test_flight_timing_and_position(self):
+        flight = Flight(((0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0)))
+        self.assertEqual(camera.flight_ms(flight), 5 * camera.FLIGHT_MS_PER_CELL)
+        self.assertTrue(35 <= camera.FLIGHT_MS_PER_CELL <= 45)
+        self.assertEqual(camera.flight_step(flight.path, 0), ((0, 0), (1, 0), 0))
+        self.assertEqual(camera.flight_step(flight.path, 0.5), ((2, 0), (3, 0), 0.5))
+        self.assertEqual(camera.flight_step(flight.path, 1), ((4, 0), (5, 0), 1))
 
 
 if __name__ == '__main__':

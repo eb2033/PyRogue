@@ -1413,6 +1413,293 @@ class BossArenaTest(unittest.TestCase):
         self.assertEqual(wall, self.cell(self.renderer.canvas.surface, 10, 6))
 
 
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
+class ArcherVisualsTest(unittest.TestCase):
+    """The archer in the window, in tile mode: an arrow flying to each hit
+    before its impact, the restock bar under the player, and arrow piles."""
+
+    TILES = True
+
+    def setUp(self):
+        from game.paths import resource_path
+        from render.tileset import Tileset
+
+        tileset = Tileset(resource_path('assets')) if self.TILES else None
+        self.renderer = PygameRenderer(WIDTH, HEIGHT, tileset=tileset)
+        self.renderer._set_mode((1600, 900), pygame.RESIZABLE)
+        self.renderer._relayout()
+        self.renderer.zoom_ms = 0
+        pygame.event.clear()
+        patcher = mock.patch('game.state.BASE_CRIT_CHANCE', 0.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.state = self.arena()
+        self.renderer.draw(self.state)
+
+    def tearDown(self):
+        self.renderer.close()
+
+    @staticmethod
+    def arena(char_class='archer'):
+        state = GameState(WIDTH, HEIGHT, char_class=char_class)
+        for y in range(1, HEIGHT - 1):
+            for x in range(1, WIDTH - 1):
+                state.game_map[y][x] = '.'
+        state.player.x, state.player.y = 10, 10
+        state.entities = [state.player]
+        state.update_fov()
+        return state
+
+    def goblin(self, x, y, hp=1000):
+        goblin = Monster(x, y, 'goblin')
+        goblin.hp = goblin.max_hp = hp
+        self.state.entities.append(goblin)
+        self.state.update_fov()
+        return goblin
+
+    def played(self):
+        """(kind, ms, interruptible) of every beat draw() plays: 'flight' or
+        'impact', told apart by the paint's keyword arguments."""
+        calls = []
+
+        def play(ms, paint, interruptible=True):
+            seen = {}
+            with mock.patch.object(
+                self.renderer, '_paint_game', side_effect=lambda state, **kw: seen.update(kw)
+            ):
+                paint(0.5)
+            kind = 'flight' if seen.get('flight') else 'impact' if seen.get('impact') else '?'
+            calls.append((kind, ms, interruptible, seen))
+
+        with mock.patch.object(self.renderer, '_play', side_effect=play):
+            self.renderer.draw(self.state)
+        return calls
+
+    # -- flight ---------------------------------------------------------------
+
+    def test_a_shot_plays_its_flight_then_the_impact(self):
+        from render.pygame_render import FLIGHT_MS
+
+        goblin = self.goblin(14, 10)
+        self.state.handle_action('shoot_e')
+        calls = self.played()
+        self.assertEqual([c[0] for c in calls], ['flight', 'impact'])
+        kind, ms, interruptible, seen = calls[0]
+        self.assertEqual(ms, 4 * FLIGHT_MS)
+        self.assertFalse(interruptible)
+        flight, _ = seen['flight']
+        self.assertEqual(flight.path[-1], (goblin.x, goblin.y))
+        # While the arrow flies the goblin is drawn as it was before the hit.
+        self.assertEqual([h.defender for h in seen['pending']], [goblin])
+        impact_hit, _ = calls[1][3]['impact']
+        self.assertIs(impact_hit.defender, goblin)
+
+    def test_a_pierce_shots_second_impact_follows_the_second_flight(self):
+        from game.item import Item
+
+        Item(0, 0, 'longbow', 'common').apply(self.state.player, self.state.log)
+        first, second = self.goblin(12, 10), self.goblin(14, 10)
+        self.state.handle_action('shoot_e')
+        calls = self.played()
+        self.assertEqual([c[0] for c in calls], ['flight', 'impact', 'flight', 'impact'])
+        self.assertEqual(calls[0][3]['flight'][0].path[-1], (12, 10))
+        self.assertIs(calls[1][3]['impact'][0].defender, first)
+        self.assertEqual(calls[2][3]['flight'][0].path, ((12, 10), (13, 10), (14, 10)))
+        self.assertIs(calls[3][3]['impact'][0].defender, second)
+
+    def test_a_miss_flies_to_the_pile_with_no_impact(self):
+        self.state.game_map[10][14] = '#'
+        self.state.handle_action('shoot_e')
+        calls = self.played()
+        self.assertEqual([c[0] for c in calls], ['flight'])
+        self.assertEqual(calls[0][3]['flight'][0].path[-1], (13, 10))
+        self.assertIsNotNone(self.state.arrows_at(13, 10))
+
+    def test_the_arrow_is_drawn_along_its_path_pointing_the_way_it_flies(self):
+        r = self.renderer
+        self.state.game_map[10][16] = '#'
+        self.state.handle_action('shoot_e')
+        flight = camera.Flight(self.state.shots[0].path)
+        centre, angle = r.flight_point(flight, 0.5)
+        self.assertEqual(angle, 0)  # east
+        self.assertEqual(r.flight_point(flight, 1.0)[0], r._map_cell_rect(15, 10).center)
+        self.assertEqual(r.flight_point(camera.Flight(((5, 5), (5, 4))), 0.5)[1], 90)
+        r.canvas.clear()
+        r._paint_game(self.state)
+        without = r.canvas.surface.copy()
+        r.canvas.clear()
+        r._paint_game(self.state, flight=(flight, 0.5))
+        around = pygame.Rect(0, 0, 8, 8)
+        around.center = centre
+        self.assertNotEqual(area_bytes(r.canvas.surface, around), area_bytes(without, around))
+
+    def test_the_arrow_is_drawn_under_the_impact(self):
+        goblin = self.goblin(14, 10)
+        self.state.handle_action('shoot_e')
+        order = []
+        r = self.renderer
+        with (
+            mock.patch.object(r, '_paint_flight', side_effect=lambda *a: order.append('arrow')),
+            mock.patch.object(r, '_paint_impact', side_effect=lambda *a: order.append('impact')),
+            mock.patch.object(r, '_paint_entity', side_effect=lambda e: order.append('entity')),
+        ):
+            hit = self.state.combat_events[-1]
+            flight = camera.Flight(self.state.shots[0].path)
+            r._paint_game(self.state, impact=(hit, 0.1), flight=(flight, 0.9))
+        self.assertIs(hit.defender, goblin)
+        self.assertEqual(order[-2:], ['arrow', 'impact'])
+        self.assertLess(order.index('entity'), order.index('arrow'))
+
+    def test_a_monster_killed_by_the_arrow_stays_on_screen_until_it_lands(self):
+        goblin = self.goblin(13, 10, hp=1)
+        self.state.handle_action('shoot_e')
+        self.assertFalse(goblin.alive)
+        hit = self.state.combat_events[-1]
+        drawn = self.renderer._before_hits(self.state, self.state.visible_entities(), [hit])
+        ghost = [e for e in drawn if isinstance(e, Monster)]
+        self.assertEqual(len(ghost), 1)
+        self.assertEqual((ghost[0].x, ghost[0].y, ghost[0].hp), (13, 10, 1))
+        self.assertTrue(ghost[0].alive)
+        self.assertFalse(goblin.alive)  # the state itself is untouched
+
+    def test_keys_pressed_during_a_flight_wait_until_it_ends(self):
+        r = self.renderer
+        r.impact_ms = 0
+        self.state.game_map[10][16] = '#'
+        self.state.handle_action('shoot_e')  # five cells to fly
+        typed = [key(pygame.K_d, 'd'), key(pygame.K_s, 's')]
+        real_show = r._show
+        shown = []
+
+        def show(paint):
+            if not shown:
+                for event in typed:
+                    pygame.event.post(event)
+            shown.append(1)
+            real_show(paint)
+
+        start = pygame.time.get_ticks()
+        with mock.patch.object(r, '_show', side_effect=show):
+            r.draw(self.state)
+        elapsed = pygame.time.get_ticks() - start
+        self.assertGreaterEqual(elapsed, 5 * r.flight_ms - 20)  # not cut short
+        self.assertGreaterEqual(len(shown), 2)  # flight frame(s), then the final one
+        self.assertTrue(pygame.event.peek(pygame.KEYDOWN))  # not consumed
+        self.assertEqual(r.get_action(), Action.MOVE_E)
+        self.assertEqual(r.get_action(), Action.MOVE_S)
+
+    # -- restock bar ----------------------------------------------------------
+
+    def fill_pixels(self, bar):
+        from render.pygame_render import RESTOCK_FILL
+
+        screen = self.renderer.canvas.surface
+        y = bar.centery
+        return sum(
+            1
+            for x in range(bar.left, bar.right)
+            if tuple(screen.get_at((x, y)))[:3] == RESTOCK_FILL
+        )
+
+    def test_restock_bar_fill_is_proportional(self):
+        r = self.renderer
+        for progress in (0, 1, 2):
+            self.state.restock_progress = progress
+            r.draw(self.state)
+            bar = r.restock_bar_rect(self.state.player)
+            self.assertEqual(self.fill_pixels(bar), round(bar.width * progress / 3), progress)
+            self.assertEqual(r.restock_fill(bar.width, progress), round(bar.width * progress / 3))
+        self.assertEqual(r.restock_fill(30, 3), 30)
+
+    def test_restock_bar_sits_under_the_player_in_its_cell(self):
+        r = self.renderer
+        cell = r._map_cell_rect(self.state.player.x, self.state.player.y)
+        bar = r.restock_bar_rect(self.state.player)
+        self.assertTrue(cell.contains(bar))
+        self.assertGreater(bar.top, cell.centery)  # along the bottom edge
+        self.assertEqual(bar.centerx, cell.centerx)
+        self.assertLess(bar.width, cell.width)
+        self.assertLessEqual(bar.height, max(3, cell.height // 6))
+
+    def test_no_restock_bar_for_a_warrior(self):
+        r = self.renderer
+        painted = []
+        with mock.patch.object(
+            r, '_paint_restock_bar', side_effect=lambda *a: painted.append(1)
+        ) as paint:
+            r.draw(self.state)
+            self.assertEqual(painted, [1])
+            painted.clear()
+            warrior = self.arena('warrior')
+            r.draw(warrior)
+        self.assertEqual(painted, [])
+        self.assertTrue(paint.called)
+        warrior.restock_progress = 2  # never set for a warrior, but even so
+        r.draw(warrior)
+        bar = r.restock_bar_rect(warrior.player)
+        self.assertEqual(self.fill_pixels(bar), 0)
+
+    def test_restock_bar_stays_inside_the_map(self):
+        r = self.renderer
+        map_rect = r.layout.map_rect()
+        player = self.state.player
+        for y in (0, 1, HEIGHT - 1):
+            player.y = y
+            self.assertTrue(map_rect.contains(r.restock_bar_rect(player)), y)
+        player.y = 10
+        unzoomed = r.restock_bar_rect(player)
+        # The combat zoom: the bar follows the projection, still on the map.
+        r._view = camera.combat_view(player, collections.namedtuple('P', 'x y')(11, 10))
+        r._proj = camera.project(r._view, map_rect, r.layout.map_cell_size())
+        try:
+            bar = r.restock_bar_rect(player)
+            cell = r._map_cell_rect(player.x, player.y)
+        finally:
+            r._proj = None
+        self.assertTrue(map_rect.contains(bar))
+        self.assertTrue(cell.contains(bar))
+        self.assertGreater(bar.width, unzoomed.width)
+        self.state.restock_progress = 2
+        r.canvas.clear()
+        r._paint_game(self.state)  # painted through the projection
+        self.assertEqual(self.fill_pixels(bar), round(bar.width * 2 / 3))
+        r._view = None
+
+    # -- arrow piles ----------------------------------------------------------
+
+    def test_an_arrow_pile_is_painted_over_the_floor(self):
+        from game.quiver import ArrowPile
+
+        r = self.renderer
+        floor = r._map_cell_rect(13, 13)
+        plain = cell_pixels(r, floor, as_list=True)
+        self.state.entities.insert(1, ArrowPile(13, 13))
+        r.draw(self.state)
+        painted = cell_pixels(r, floor, as_list=True)
+        changed = sum(1 for a, b in zip(plain, painted) if a != b)
+        self.assertGreater(changed, len(plain) // 10)  # clearly there, not a speck
+        self.assert_arrow_look(painted)
+
+    def assert_arrow_look(self, pixels):
+        from render.pygame_render import ARROW_HEAD, ARROW_SHAFT
+
+        self.assertTrue({ARROW_HEAD, ARROW_SHAFT} & set(pixels))
+
+
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
+class GlyphModeArcherVisualsTest(ArcherVisualsTest):
+    TILES = False
+
+    def assert_arrow_look(self, pixels):
+        # The pile's light tint fills most of its text cell (a floor cell is
+        # black round its dot), with the bold glyph on top.
+        from render.pygame_render import PILE_BACKDROP_ALPHA
+
+        tint = round(230 * PILE_BACKDROP_ALPHA / 255)
+        tinted = [p for p in pixels if p[0] == p[1] == p[2] and abs(p[0] - tint) <= 2]
+        self.assertGreater(len(tinted), len(pixels) // 4)
+
+
 def cell_pixels(renderer, rect, as_list=False):
     screen = renderer.canvas.surface
     pixels = [
