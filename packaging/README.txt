@@ -23,8 +23,6 @@ Controls
   Arrow keys    Warrior: move.  Archer: shoot an arrow in that direction
   .             wait a turn
   e             go down the stairs (>) when standing on them
-  Shift+S       save
-  Shift+L       load
   q             quit
   F11           fullscreen
 
@@ -33,8 +31,8 @@ The menus also take the mouse.
 Walk onto a chest to open it: pink chests hold a healing potion, cyan ones a
 weapon or armour. Gear equips itself if it's better than what you wear.
 
-Saves and crash.log
--------------------
+crash.log
+---------
   Windows:  %APPDATA%\PyRogue
   Linux:    ~/.local/share/pyrogue
 

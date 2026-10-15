@@ -28,6 +28,7 @@ from typing import cast
 
 from game.entity import Entity
 from game.rng import Rng
+from game.shrine import boon_total, heal_multiplier
 
 RARITIES = ['common', 'uncommon', 'rare', 'epic']
 
@@ -38,13 +39,14 @@ RARITY_WEIGHTS_SHALLOW = [0.60, 0.25, 0.12, 0.03]
 RARITY_WEIGHTS_DEEP = [0.10, 0.25, 0.35, 0.30]
 MAX_SCALING_DEPTH = 20
 
-# Rarity -> curses color-pair number. Pairs 4-7 are reserved for this in
-# render/curses_render.py's COLOR_PAIRS table.
+# Rarity -> Entity.color number. 4-7 are reserved for this in
+# render/palette.py's COLORS table.
 RARITY_COLOR = {'common': 7, 'uncommon': 4, 'rare': 5, 'epic': 6}
 
 POTION_HEAL = {'common': 20, 'uncommon': 35, 'rare': 55, 'epic': 88}
 # The potion belt (GameState.belt): potions picked up at full HP wait here,
 # in order. Only the first is drinkable ('h'); the rest shift up after it.
+# A shrine's Quick hands boon adds a slot: see belt_capacity.
 BELT_SLOTS = 3
 # Weapon power bonus by rarity.
 GEAR_BONUS = {'common': 1, 'uncommon': 2, 'rare': 4, 'epic': 7}
@@ -55,7 +57,7 @@ ARMOR_DEFENSE = {'common': 3, 'uncommon': 6, 'rare': 12, 'epic': 21}
 # The six weapon types (each fills the weapon slot). Their damage bonus is the
 # GEAR_BONUS table plus a per-kind offset; their special effect is data in
 # WEAPON_EFFECTS below. The plain 'weapon' kind is the original sword line
-# with no effect (old saves hold it, and it still drops).
+# with no effect (it still drops).
 WEAPON_TYPES = ['war_axe', 'rapier', 'great_sword', 'sword_shield', 'dagger', 'spear']
 WEAPON_DAMAGE_OFFSET = {
     'war_axe': -1,
@@ -80,7 +82,7 @@ MIN_POWER = 1
 # these attributes (EFFECT_DEFAULTS for anything not listed), so code reads
 # player.weapon.reach and friends directly. A value is either a constant or a
 # rarity table. Effects come from (kind, rarity) when the Item is built, so
-# a save only needs the kind and rarity.
+# the kind and rarity are all an Item needs.
 EFFECT_DEFAULTS = {
     'max_hp_bonus': 0,
     'strikes': 1,
@@ -182,7 +184,7 @@ ARMOR_DROP_CHANCE = 0.20
 
 CHEST_CHAR = '='
 CHEST_COLOR = 3  # gear chests: reuses the cyan pair the old flat "item" color used
-POTION_CHEST_COLOR = 8  # potion chests: pink (pair 8 in render/curses_render.py)
+POTION_CHEST_COLOR = 8  # potion chests: pink (8 in render/palette.py)
 CHEST_KINDS = ['potion', 'gear']
 # How many items a gear chest (and a boss chest) offers to choose from.
 GEAR_CHEST_DROPS = 3
@@ -212,8 +214,8 @@ def roll_rarity(depth=1, rng: Rng = random):
 
 
 def roll_kind(rng: Rng = random):
-    """Potion or gear, 50/50. Only used for a chest loaded from a save that
-    predates chest kinds; new chests get their kind from spawn_chests."""
+    """Potion or gear, 50/50: the kind of a Chest built without one. Chests
+    on the map get their kind from spawn_chests."""
     return rng.choice(CHEST_KINDS)
 
 
@@ -241,12 +243,29 @@ def roll_boss_drop(rng: Rng = random):
     return Item(0, 0, roll_gear_kind(ARMOR_DROP_CHANCE, rng), rarity)
 
 
-def belt_slot_label(item):
-    """Short text for one belt slot: a potion's heal ('+35'), or '---' for
-    an empty slot (None). Both renderers' panels use it."""
+def belt_capacity(player):
+    """How many potions the belt holds: BELT_SLOTS plus any shrine boon's
+    extra slots (game/shrine.py)."""
+    return BELT_SLOTS + boon_total(player, 'belt')
+
+
+def potion_heal(rarity, player=None):
+    """What a potion of `rarity` heals `player`: POTION_HEAL scaled by the
+    player's boons' heal multiplier (game/shrine.py), rounded. Without a
+    player, the plain table value."""
+    base = POTION_HEAL[rarity]
+    if player is None:
+        return base
+    return round(base * heal_multiplier(player))
+
+
+def belt_slot_label(item, player=None):
+    """Short text for one belt slot: a potion's heal ('+35', after
+    `player`'s boons if given), or '---' for an empty slot (None). Both
+    renderers' panels use it."""
     if item is None:
         return '---'
-    return f'+{POTION_HEAL[item.rarity]}'
+    return f'+{potion_heal(item.rarity, player)}'
 
 
 def _effect_value(value, rarity):
@@ -255,17 +274,19 @@ def _effect_value(value, rarity):
 
 def gear_defense(player):
     """The player's defense from what is equipped: the armor's, plus a
-    shield's (Sword & Shield, weapon slot) -- the two stack."""
+    shield's (Sword & Shield, weapon slot) -- the two stack -- plus any
+    shrine boon's (game/shrine.py)."""
     armor = player.armor.bonus if player.armor is not None else 0
     shield = player.weapon.defense_bonus if player.weapon is not None else 0
-    return armor + shield
+    return armor + shield + boon_total(player, 'defense')
 
 
 def gear_power(player):
     """base_power plus the weapon's bonus (which can be negative: rapier,
-    dagger and war axe), never below MIN_POWER."""
+    dagger and war axe) plus any shrine boon's (game/shrine.py), never below
+    MIN_POWER."""
     bonus = player.weapon.bonus if player.weapon is not None else 0
-    return max(MIN_POWER, player.base_power + bonus)
+    return max(MIN_POWER, player.base_power + bonus + boon_total(player, 'power'))
 
 
 class Item(Entity):
@@ -318,7 +339,8 @@ class Item(Entity):
             return
 
         if self.kind == 'potion':
-            healed = min(POTION_HEAL[cast(str, self.rarity)], player.max_hp - player.hp)
+            heal = potion_heal(cast(str, self.rarity), player)
+            healed = min(heal, player.max_hp - player.hp)
             player.hp += healed
             player.inventory.append(self.name)
             log(f'You drink a {self.name} and recover {healed} HP.')
@@ -361,8 +383,6 @@ class Chest(Entity):
     def __init__(self, x, y, guaranteed_min_rarity=None, kind=None, rng: Rng = random):
         if kind is None:
             kind = 'gear' if guaranteed_min_rarity else roll_kind(rng)
-        elif kind in GEAR_SLOTS:
-            kind = 'gear'  # a save from when gear chests were 'weapon'/'armor'
         color = POTION_CHEST_COLOR if kind == 'potion' else CHEST_COLOR
         super().__init__(x, y, CHEST_CHAR, color=color, name='chest')
         self.guaranteed_min_rarity = guaranteed_min_rarity
@@ -393,19 +413,20 @@ def _place_chest(room, kind, occupied, rng):
     return None
 
 
-def spawn_chests(rooms, rng: Rng = random):
-    """Chests for a fresh level, never in rooms[0] (the player's start): a
-    potion chest per room with POTION_CHEST_CHANCE_PER_ROOM, and at most one
-    gear chest per floor with GEAR_CHEST_CHANCE_PER_FLOOR."""
+def spawn_chests(rooms, rng: Rng = random, depth=None):
+    """Chests for a fresh level, never in rooms[0] (the player's start) or on
+    the stairs: a potion chest per room with POTION_CHEST_CHANCE_PER_ROOM, and
+    at most one gear chest per floor with GEAR_CHEST_CHANCE_PER_FLOOR -- except
+    that floor 1 (depth == 1) always gets its one gear chest."""
     chests = []
-    occupied = set()
+    occupied = {rooms[-1].center()} if rooms else set()
     candidates = rooms[1:]
     for room in candidates:
         if rng.random() < POTION_CHEST_CHANCE_PER_ROOM:
             chest = _place_chest(room, 'potion', occupied, rng)
             if chest is not None:
                 chests.append(chest)
-    if candidates and rng.random() < GEAR_CHEST_CHANCE_PER_FLOOR:
+    if candidates and (depth == 1 or rng.random() < GEAR_CHEST_CHANCE_PER_FLOOR):
         chest = _place_chest(rng.choice(candidates), 'gear', occupied, rng)
         if chest is not None:
             chests.append(chest)

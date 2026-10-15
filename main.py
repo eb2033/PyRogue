@@ -1,28 +1,18 @@
 """PythonRogue entry point.
 
-Picks a renderer, builds the world, runs the loop. The loop itself is
-renderer-agnostic: it only ever sees semantic actions (render.base.Action), so
-adding a graphical front end does not touch this file.
+Builds the window, builds the world, runs the loop. The loop itself only ever
+sees semantic actions (render.base.Action), never keycodes.
 
-    .venv/bin/python main.py                    # terminal (default from source)
-    .venv/bin/python main.py --renderer pygame  # window (needs pygame-ce)
-
-A frozen build (PyInstaller exe) defaults to the window instead: it is built
-without a console, so there is no terminal for curses to draw in.
+    .venv/bin/python main.py    # the game, in a window (needs pygame-ce)
 
 Settings come from the environment, then a .env file (game/settings.py), then
 the code defaults below. An uncaught exception is appended to crash.log in the
 per-user data directory (game/paths.py) -- the windowed exe has no stderr.
-
-The terminal path imports nothing outside the standard library.
 """
 
-import argparse
-import os
 import sys
 
 from game import crashlog, settings
-from game.paths import is_frozen
 from game.settings import env_int
 from game.state import GameState
 
@@ -35,41 +25,43 @@ DEFAULT_FOV_RADIUS = 6
 DEFAULT_TURN_DELAY_MS = 110
 
 
-RENDERERS = ['curses', 'pygame']
-
-
 BUNDLED_FONT = 'JetBrainsMono-Regular.ttf'
 
 
-def default_renderer():
-    """$RENDERER if set, else 'pygame' in a frozen build and 'curses' from source."""
-    return os.getenv('RENDERER') or ('pygame' if is_frozen() else 'curses')
+def make_renderer(width, height):
+    from game.paths import resource_path
+    from render.pygame_render import PygameRenderer
+    from render.tileset import Tileset
+
+    # TILES=0 keeps the window drawing characters instead of tiles.
+    tileset = Tileset(resource_path('assets')) if env_int('TILES', 1) else None
+    # The bundled font, so Windows and Linux draw the same glyphs; a missing
+    # file falls back to a system monospace font.
+    font = resource_path('assets', 'fonts', BUNDLED_FONT)
+    # COMBAT_ZOOM=0 keeps the whole map in view during melee fights.
+    return PygameRenderer(
+        width,
+        height,
+        tileset=tileset,
+        font_path=str(font) if font.is_file() else None,
+        combat_zoom=bool(env_int('COMBAT_ZOOM', 1)),
+    )
 
 
-def make_renderer(name, width, height):
-    if name == 'curses':
-        from render.curses_render import CursesRenderer
+def resolve_player_strikes(renderer, state, delay_ms):
+    """Drive the rest of the player's half: a rapier's queued second strike.
 
-        return CursesRenderer()
-    if name == 'pygame':
-        from game.paths import resource_path
-        from render.pygame_render import PygameRenderer
-        from render.tileset import Tileset
-
-        # TILES=0 keeps the window drawing characters, like the terminal.
-        tileset = Tileset(resource_path('assets')) if env_int('TILES', 1) else None
-        # The bundled font, so Windows and Linux draw the same glyphs; a missing
-        # file falls back to a system monospace font.
-        font = resource_path('assets', 'fonts', BUNDLED_FONT)
-        # COMBAT_ZOOM=0 keeps the whole map in view during melee fights.
-        return PygameRenderer(
-            width,
-            height,
-            tileset=tileset,
-            font_path=str(font) if font.is_file() else None,
-            combat_zoom=bool(env_int('COMBAT_ZOOM', 1)),
-        )
-    raise SystemExit(f'unknown renderer: {name}')
+    The first strike landed in handle_action. Each pass draws it -- the
+    renderer plays its hit beat (flash, damage number, shake) before the
+    frame shows -- holds that frame, and only then rolls the next strike, so
+    no strike's damage exists before the one before it has been seen. The
+    last strike ends the player's half (GameState.step_strike queues the
+    monsters), and resolve_monster_phase's first draw shows it.
+    """
+    while state.strike_pending():
+        renderer.draw(state)
+        renderer.pause(delay_ms)
+        state.step_strike()
 
 
 def resolve_monster_phase(renderer, state, delay_ms):
@@ -94,21 +86,18 @@ def run(renderer, state, delay_ms=DEFAULT_TURN_DELAY_MS):
     while state.running:
         renderer.draw(state)
         state.handle_action(renderer.get_action())
+        resolve_player_strikes(renderer, state, delay_ms)
         resolve_monster_phase(renderer, state, delay_ms)
 
 
 def main():
-    # Before anything reads the environment -- default_renderer() included.
+    # Before anything reads the environment.
     settings.load()
-
-    parser = argparse.ArgumentParser(description='PythonRogue')
-    parser.add_argument('--renderer', default=default_renderer(), choices=RENDERERS)
-    args = parser.parse_args()
 
     width = env_int('MAP_WIDTH', DEFAULT_WIDTH)
     height = env_int('MAP_HEIGHT', DEFAULT_HEIGHT)
 
-    renderer = make_renderer(args.renderer, width, height)
+    renderer = make_renderer(width, height)
     try:
         if not renderer.show_title_screen():
             return  # player chose Quit
@@ -131,6 +120,6 @@ if __name__ == '__main__':
         # Written here rather than via crashlog.install()'s excepthook: a
         # --windowed PyInstaller build reports the exception in its own dialog
         # and may never run sys.excepthook. renderer.close() has already run
-        # (main's finally), so a terminal is restored before the traceback.
+        # (main's finally), so the window is gone before the traceback.
         crashlog.write(*sys.exc_info())
         raise

@@ -15,6 +15,12 @@ the player and every other living monster, and a step into one is skipped.
 A chasing monster that goes GIVE_UP_AFTER (3) turns in a row without seeing
 the player gives up and wanders until it sees the player again.
 
+The goblin slinger (kind 'slinger', RANGED_KINDS) keeps its distance: while
+it sees the player it backs off when the player is within KEEP_AWAY (2)
+tiles and otherwise shoots along a clear row or column up to SHOOT_RANGE (5)
+tiles, returning 'attack' so GameState.attack resolves the shot. It never
+shoots through a wall or a closed door. Out of sight it chases like a goblin.
+
 Difficulty: every 3 floors (a "tier") regular monsters get 1.2x hp and +1
 power, compounding (tier 2 is 1.2x *that*, not 1.2x the base). Every 8th
 floor also spawns exactly one boss: 2x the hp and 1.5x the power of the
@@ -29,13 +35,19 @@ import random
 
 from game.entity import Entity
 from game.rng import Rng
-from game.tiles import is_walkable
+from game.tiles import is_transparent, is_walkable
 
 # name -> (char, color, hp, power)
 MONSTER_TYPES = {
-    'goblin': ('g', 2, 12, 2),
-    'orc': ('o', 2, 30, 4),
+    'goblin': ('g', 2, 11, 2),
+    'orc': ('o', 2, 27, 4),
+    # Ranged: keeps its distance and shoots (see Monster._slinger_turn).
+    'slinger': ('s', 2, 7, 1),
 }
+
+RANGED_KINDS = frozenset({'slinger'})
+SHOOT_RANGE = 5  # Chebyshev; the shot itself must be along a row or column
+KEEP_AWAY = 2  # a ranged monster backs off when the player is this close
 
 # The only steps anything in this game takes. Order is north/south/west/east
 # to match state.MOVE_DELTAS; (0, 0) is in the wander set so a monster can
@@ -90,6 +102,7 @@ class Monster(Entity):
         self.power = power
         self.alive = True
         self.is_boss = is_boss
+        self.enraged = False  # a boss summons help once, at half HP
         self.chasing = False  # pursuing the player (see take_turn)
         self.lost_sight = 0  # consecutive chasing turns without sight of the player
 
@@ -119,6 +132,11 @@ class Monster(Entity):
         step can never land on the player's tile: reaching it would mean
         the monster was already adjacent and had returned 'attack'.
         """
+        if self.kind in RANGED_KINDS and not self.is_boss:
+            ranged = self._slinger_turn(player, game_map, occupied, sees_player)
+            if ranged is not None:
+                return ranged or None  # '' = stepped away, nothing to resolve
+
         if self.is_adjacent(player):
             self.chasing = True
             self.lost_sight = 0
@@ -144,6 +162,68 @@ class Monster(Entity):
         if step is not None:
             self.move(step[0], step[1], game_map)
         return None
+
+    def clear_shot(self, player, game_map, occupied=()):
+        """True if the player is on this monster's row or column, within
+        SHOOT_RANGE, with nothing between them that blocks sight (a wall or a
+        closed door, see tiles.is_transparent) and no other creature in the
+        way. Adjacent counts: nothing lies between."""
+        dx, dy = player.x - self.x, player.y - self.y
+        if (dx and dy) or not (dx or dy) or self.distance_to(player) > SHOOT_RANGE:
+            return False
+        sx, sy = (dx > 0) - (dx < 0), (dy > 0) - (dy < 0)
+        x, y = self.x + sx, self.y + sy
+        while (x, y) != (player.x, player.y):
+            if not is_transparent(game_map, x, y) or (x, y) in occupied:
+                return False
+            x, y = x + sx, y + sy
+        return True
+
+    def _slinger_turn(self, player, game_map, occupied, sees_player):
+        """A ranged monster's turn while it can see the player.
+
+        Returns 'attack' to shoot (GameState.attack resolves it, the same
+        path as a melee blow or the archer's arrow), '' after stepping away,
+        or None to fall back to the ordinary chase -- which is what happens
+        whenever the player is out of sight or out of a clear line.
+
+        Seeing the player is the chase's rule: `sees_player` (the monster's
+        tile is in the player's FOV) and within CHASE_RANGE. Within
+        KEEP_AWAY tiles it first tries an orthogonal step that leaves it
+        farther away; cornered, it shoots if it has a clear shot.
+        """
+        if not (sees_player and self.distance_to(player) <= CHASE_RANGE):
+            return None
+        self.chasing = True
+        self.lost_sight = 0
+        if self.distance_to(player) <= KEEP_AWAY:
+            step = self._retreat_step(player, game_map, occupied)
+            if step is not None:
+                self.move(step[0], step[1], game_map)
+                return ''
+        if self.clear_shot(player, game_map, occupied):
+            return 'attack'
+        return None
+
+    def _retreat_step(self, player, game_map, occupied=()):
+        """A free orthogonal step that widens the Chebyshev gap to the
+        player (ties broken by the larger Manhattan gap), or None if none
+        does. A sidestep that only adds Manhattan distance is not a retreat."""
+
+        def gap(x, y):
+            ax, ay = abs(player.x - x), abs(player.y - y)
+            return (max(ax, ay), ax + ay)
+
+        here = gap(self.x, self.y)[0]
+        best, best_gap = None, None
+        for sx, sy in ORTHOGONAL_STEPS:
+            tx, ty = self.x + sx, self.y + sy
+            if not is_walkable(game_map, tx, ty) or (tx, ty) in occupied:
+                continue
+            g = gap(tx, ty)
+            if g[0] > here and (best_gap is None or g > best_gap):
+                best, best_gap = (sx, sy), g
+        return best
 
     def _chase_step(self, player, game_map, occupied=()):
         """Pick a greedy 4-way step toward the player.

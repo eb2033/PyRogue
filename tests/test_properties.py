@@ -15,7 +15,6 @@ pinned version is in requirements-test.txt.
 import os
 import random
 import sys
-import tempfile
 import unittest
 from collections import deque
 from unittest import mock
@@ -23,7 +22,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    from hypothesis import HealthCheck, assume, given, settings
+    from hypothesis import HealthCheck, given, settings
     from hypothesis import strategies as st
 except ImportError:  # pragma: no cover - stdlib-only checkout
     raise unittest.SkipTest('hypothesis not installed') from None
@@ -38,7 +37,6 @@ from game.dungeon import generate_dungeon, place_stairs
 from game.fov import compute_fov
 from game.item import RARITIES, rarity_weights_for_depth, roll_rarity
 from game.monster import Monster, scale_stats
-from game.save import apply_dict, load_game, save_game, state_to_dict
 from game.state import GameState
 from game.tiles import DOOR, WALL, is_walkable
 from render import camera
@@ -47,8 +45,8 @@ from render.base import Action
 if pygame is not None:
     from render import ui
 
-# Everything a player can press that stays inside one game: SAVE/LOAD touch
-# the user data dir and QUIT ends the loop, so they are tested elsewhere.
+# Everything a player can press that stays inside one game: QUIT ends the
+# loop, so it is tested elsewhere.
 PLAY_ACTIONS = [
     Action.MOVE_N,
     Action.MOVE_S,
@@ -321,21 +319,6 @@ class PlaythroughPropertyTests(unittest.TestCase):
             state.handle_action(action)
             state.end_turn()
             self.check_invariants(state)
-
-    @SLOW
-    @playthroughs
-    def test_save_and_load_round_trip_any_game(self, seed, char_class, actions):
-        state = self.new_game(seed, char_class)
-        for action in actions:
-            state.handle_action(action)
-            state.end_turn()
-        assume(not state.game_over)
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, 'save.json')
-            save_game(state, path)
-            fresh = GameState(40, 20)
-            apply_dict(fresh, load_game(path))
-        self.assertEqual(state_to_dict(fresh), state_to_dict(state))
 
 
 if __name__ == '__main__':

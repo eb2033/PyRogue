@@ -38,7 +38,7 @@ def _option_text(option, selected):
 
 def paint_menu(canvas, menu, banner_lines, descriptions=None):
     """A banner, the menu's options (selected one highlighted), and the
-    selected option's description, laid out like the curses menu."""
+    selected option's description, centred in the text grid."""
     rows = canvas.layout.rows
     options = menu.options
     top, options_top = _menu_geometry(canvas.layout, options, banner_lines)
@@ -147,7 +147,8 @@ def choice_rects(layout, state):
     line_h = layout.font.get_linesize()
     pad = layout.cell_w
     area = layout.map_rect()
-    frame_w = max(layout.font.size(choice.TITLE)[0], layout.font.size(choice.HINT)[0])
+    title = choice.title(items)
+    frame_w = max(layout.font.size(title)[0], layout.font.size(choice.HINT)[0])
 
     full = [line for n, item in numbered for line in choice.card_lines(n, item)]
     card_w = _choice_text_w(layout, full) + 2 * pad
@@ -195,9 +196,10 @@ def choice_card_at(layout, state, pixel):
 
 
 def paint_choice(canvas, state):
-    """Overlay for a pending chest choice: a dark framed box over the map,
-    TEXT for the title and hint, and each card a parchment page (the panel's
-    paper) inked in its item's rarity colour."""
+    """Overlay for a pending choice: a dark framed box over the map, TEXT
+    for the title and hint, and each card a parchment page (the panel's
+    paper) inked in its item's rarity colour -- or, for a shrine's boons,
+    the boon's colour (render/choice.py has every card's text)."""
     layout = canvas.layout
     surface = canvas.surface
     box, cards, compact = choice_rects(layout, state)
@@ -206,7 +208,7 @@ def paint_choice(canvas, state):
     surface.fill(palette.BACKGROUND, box)
     pygame.draw.rect(surface, palette.PAGE_EDGE, box, border)
 
-    title = canvas.text_surface(choice.TITLE, palette.TEXT, bold=True)
+    title = canvas.text_surface(choice.title(state.pending_choice), palette.TEXT, bold=True)
     surface.blit(title, title.get_rect(centerx=box.centerx, top=box.top + line_h // 2))
     hint = canvas.text_surface(choice.HINT, palette.TEXT)
     surface.blit(hint, hint.get_rect(centerx=box.centerx, bottom=box.bottom - line_h // 2))

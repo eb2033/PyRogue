@@ -55,15 +55,11 @@ a single file — which is what itch.io and every Ren'Py game ship anyway. Playe
   stdlib — a candidate to trim if size ever matters).
 - Start-up: window created ~0.15–0.26 s after launch (budget: < 2 s). Windows numbers come from CI
   and a real machine; Defender scanning makes the very first launch slower.
-- Excluded on purpose: `tkinter`, `numpy`, `unittest`, `test`, `pydoc`, `doctest`, `curses`,
-  `render.curses_render`, `tcod`, `render.tcod_render`, `pygame.tests`/`examples`/`docs`.
+- Excluded on purpose: `tkinter`, `numpy`, `unittest`, `test`, `pydoc`, `doctest`, `curses`
+  (the curses renderer is deleted; the game is pygame-only), `tcod`, `render.tcod_render`, `pygame.tests`/`examples`/`docs`.
 
 ## Things the exe currently relies on from other workstreams
 
-- **Renderer default (WS-A).** The exe has no curses (excluded), so it only works with the pygame
-  renderer. Until `main.py` defaults to `pygame` when frozen, the exe crashes on start with
-  `No module named 'render.curses_render'` unless `RENDERER=pygame` is set. The smoke test sets it
-  explicitly.
 - **python-dotenv (WS-B).** `main.py` still imports `dotenv`, so the bundle includes it (PyInstaller
   finds it by import scan; nothing in the spec names it). Once `game/settings.py`'s `load()` replaces
   it, drop `python-dotenv` from `requirements.txt` and confirm `dotenv` is gone from the bundle
@@ -71,7 +67,7 @@ a single file — which is what itch.io and every Ren'Py game ship anyway. Playe
 - **`.env` is not shipped.** The frozen game uses the code defaults (50x20 map), not the repo's
   `.env` (40x20). If the release should ship different defaults, decide that explicitly and add the
   file next to the exe in the build scripts — it's a release checklist item, not an accident.
-- **Saves and crash log (WS-B).** Must go to `game.paths.user_data_dir()`, never the CWD or the
+- **Crash log (WS-B).** Must go to `game.paths.user_data_dir()`, never the CWD or the
   install folder.
 
 ## Adding a data file
@@ -121,9 +117,6 @@ Before announcing it:
 - [ ] **Fresh-machine launch**: a Windows box (or VM) that never had Python. Unzip to a normal user
       folder *and* to `C:\Program Files\PyRogue` (read-only install dir). Double-click: window
       opens, **no console window**, title screen responds to keys and to the close button.
-- [ ] **Save/load round-trip**: play, `S`ave, quit, relaunch, `L`oad — same floor, HP, gear. Confirm
-      the save landed in `%APPDATA%\PyRogue`, not next to the exe. Also load a save made by the
-      previous release.
 - [ ] **Crash path**: a broken build (e.g. a renamed asset) leaves `%APPDATA%\PyRogue\crash.log`.
 - [ ] **Settings defaults**: record which map size / FOV / turn delay the build ships with (see the
       `.env` note above).

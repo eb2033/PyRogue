@@ -1,6 +1,6 @@
-"""Pure menu-selection state, kept separate from curses so it's unit-testable
-without a terminal. CursesRenderer owns drawing and key->call translation;
-this owns "which option is highlighted."
+"""Pure menu-selection state, kept separate from pygame so it's unit-testable
+without a window. The renderer owns drawing and input translation; this owns
+"which option is highlighted."
 """
 
 

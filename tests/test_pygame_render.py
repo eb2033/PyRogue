@@ -7,7 +7,6 @@ queue a real window feeds -- so these exercise the actual blocking wait.
 
 import collections
 import os
-import sys
 import unittest
 from typing import Any, cast
 from unittest import mock
@@ -94,15 +93,15 @@ class PygameRendererTest(unittest.TestCase):
         self.assertEqual(play.call_args[0][0], 110)
         self.assertEqual(self.renderer._tilts, {})
 
-    def test_get_action_maps_keys_like_curses(self):
+    def test_get_action_maps_keys(self):
         self.post(
             key(pygame.K_w, 'w'),
-            key(pygame.K_s, 'S', shift=True),
+            key(pygame.K_e, 'e'),
             key(pygame.K_UP),
             key(pygame.K_PERIOD, '.'),
         )
         self.assertEqual(self.renderer.get_action(), Action.MOVE_N)
-        self.assertEqual(self.renderer.get_action(), Action.SAVE)
+        self.assertEqual(self.renderer.get_action(), Action.DESCEND)
         self.assertEqual(self.renderer.get_action(), Action.SHOOT_N)
         self.assertEqual(self.renderer.get_action(), Action.WAIT)
 
@@ -263,7 +262,7 @@ class PygameRendererTest(unittest.TestCase):
         self.renderer.draw(GameState(WIDTH, HEIGHT))
 
     def test_make_renderer_uses_the_bundled_font(self):
-        renderer = cast(PygameRenderer, main.make_renderer('pygame', WIDTH, HEIGHT))
+        renderer = cast(PygameRenderer, main.make_renderer(WIDTH, HEIGHT))
         try:
             font_path = cast(str, renderer.layout.font_path)
             self.assertTrue(font_path.endswith(main.BUNDLED_FONT))
@@ -604,7 +603,7 @@ class TileModeTest(unittest.TestCase):
 
     def test_tiles_env_zero_keeps_glyph_mode(self):
         with mock.patch.dict(os.environ, {'TILES': '0'}):
-            renderer = cast(PygameRenderer, main.make_renderer('pygame', WIDTH, HEIGHT))
+            renderer = cast(PygameRenderer, main.make_renderer(WIDTH, HEIGHT))
         try:
             self.assertFalse(renderer.layout.tiles)
         finally:
@@ -613,11 +612,380 @@ class TileModeTest(unittest.TestCase):
     def test_make_renderer_uses_the_bundled_tiles_by_default(self):
         with mock.patch.dict(os.environ):
             os.environ.pop('TILES', None)
-            renderer = cast(PygameRenderer, main.make_renderer('pygame', WIDTH, HEIGHT))
+            renderer = cast(PygameRenderer, main.make_renderer(WIDTH, HEIGHT))
         try:
             self.assertTrue(renderer.layout.tiles)
         finally:
             renderer.close()
+
+
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
+class HitShakeAndHealthBarTest(unittest.TestCase):
+    """The hit shake (an Impact beat that always plays out, keys left queued)
+    and enemy health bars, in tile mode."""
+
+    def setUp(self):
+        from game.paths import resource_path
+        from render.tileset import Tileset
+
+        self.renderer = PygameRenderer(WIDTH, HEIGHT, tileset=Tileset(resource_path('assets')))
+        self.renderer._set_mode((1600, 900), pygame.RESIZABLE)
+        self.renderer._relayout()
+        self.renderer.zoom_ms = 0
+        pygame.event.clear()
+
+    def tearDown(self):
+        self.renderer.close()
+
+    def fight(self, zoom=False):
+        self.renderer.director = camera.Director(zoom=zoom)
+        state = GameState(WIDTH, HEIGHT)
+        x, y = open_neighbour(state)
+        goblin = Monster(x, y, 'goblin')
+        goblin.hp = goblin.max_hp = 20
+        state.entities = [state.player, goblin]
+        state.update_fov()
+        self.renderer.draw(state)
+        return state, goblin
+
+    def played(self, state):
+        """The (ms, interruptible) of every beat draw() plays."""
+        calls = []
+        with mock.patch.object(
+            self.renderer,
+            '_play',
+            side_effect=lambda ms, paint, interruptible=True: calls.append((ms, interruptible)),
+        ):
+            self.renderer.draw(state)
+        return calls
+
+    # -- shake ----------------------------------------------------------------
+
+    def test_a_hit_plays_an_uninterruptible_shake_and_a_crit_plays_longer(self):
+        state, goblin = self.fight()
+        state.attack(goblin, state.player)
+        normal = self.played(state)
+        self.assertEqual(len(normal), 1)
+        normal_ms, interruptible = normal[0]
+        self.assertFalse(interruptible)
+        self.assertTrue(150 <= normal_ms <= 250, normal_ms)
+
+        state.player.power = 1
+        with mock.patch('game.state.BASE_CRIT_CHANCE', 1.0):
+            state.attack(state.player, goblin)
+        self.assertTrue(state.combat_events[-1].crit)
+        (crit_ms, interruptible), *_ = self.played(state)
+        self.assertFalse(interruptible)
+        self.assertTrue(normal_ms < crit_ms <= 350, crit_ms)
+
+    def test_shake_offsets_frames_and_ends_still(self):
+        state, goblin = self.fight()
+        state.attack(goblin, state.player)
+        offsets = []
+        real = self.renderer._paint_game
+
+        def paint(state, impact=None, shake=(0, 0), **kw):
+            offsets.append(shake)
+            real(state, impact=impact, shake=shake, **kw)
+
+        with mock.patch.object(self.renderer, '_paint_game', side_effect=paint):
+            self.renderer.draw(state)
+        self.assertTrue(any(o != (0, 0) for o in offsets[:-1]), offsets)
+        self.assertEqual(offsets[-1], (0, 0))  # draw()'s own frame is still
+        hit = state.combat_events[-1]
+        shake = camera.shake_for(hit)
+        self.assertEqual(self.renderer.shake_offset(shake, 1.0), (0, 0))
+
+    def test_shake_moves_the_whole_map(self):
+        state, _ = self.fight()
+        r = self.renderer
+        r._paint_game(state)
+        still = r.canvas.surface.copy()
+        r.canvas.clear()
+        r._paint_game(state, shake=(4, -3))
+        moved = r.canvas.surface
+        centre = r.layout.map_rect().center
+        for dx, dy in ((0, 0), (17, 5), (-30, 11)):
+            p = (centre[0] + dx, centre[1] + dy)
+            self.assertEqual(moved.get_at((p[0] + 4, p[1] - 3)), still.get_at(p))
+
+    def test_keys_pressed_during_the_shake_wait_until_it_ends(self):
+        state, goblin = self.fight()
+        state.attack(goblin, state.player)
+        typed = [key(pygame.K_d, 'd'), key(pygame.K_s, 's')]
+        real_show = self.renderer._show
+        shown = []
+
+        def show(paint):
+            if not shown:  # the shake's first frame: the player types ahead
+                for event in typed:
+                    pygame.event.post(event)
+            shown.append(1)
+            real_show(paint)
+
+        start = pygame.time.get_ticks()
+        with mock.patch.object(self.renderer, '_show', side_effect=show):
+            self.renderer.draw(state)
+        elapsed = pygame.time.get_ticks() - start
+        self.assertGreaterEqual(elapsed, self.renderer.impact_ms - 20)  # not cut short
+        self.assertGreaterEqual(len(shown), 2)  # shake frame(s), then the final one
+        self.assertTrue(pygame.event.peek(pygame.KEYDOWN))  # not consumed
+        self.assertEqual(self.renderer.get_action(), Action.MOVE_E)  # in order
+        self.assertEqual(self.renderer.get_action(), Action.MOVE_S)
+
+    def test_window_close_still_ends_a_shake(self):
+        state, goblin = self.fight()
+        state.attack(goblin, state.player)
+        self.renderer.impact_ms = 5000
+        pygame.event.post(pygame.event.Event(pygame.QUIT))
+        start = pygame.time.get_ticks()
+        self.renderer.draw(state)
+        self.assertLess(pygame.time.get_ticks() - start, 1000)
+        self.assertEqual(self.renderer.get_action(), Action.QUIT)
+
+    # -- the struck sprite's own shake ----------------------------------------
+
+    def impact_frame(self, state, hit, t, sprite=True):
+        """The map painted at t of `hit`'s beat, without the map's shake, so
+        only the sprite's own jitter differs between sprite=True and False."""
+        r = self.renderer
+        r.canvas.clear()
+        shake = camera.shake_for(hit)
+        r._paint_game(state, impact=(hit, t), sprite_shake=shake if sprite else None)
+        return r.canvas.surface.copy()
+
+    def assert_sprite_shakes(self, state, hit, attacker):
+        r = self.renderer
+        map_rect = r.layout.map_rect()
+        if r._view is not None:
+            r._proj = camera.project(r._view, map_rect, r.layout.map_cell_size())
+        try:
+            struck = r._map_cell_rect(hit.x, hit.y)
+            other = r._map_cell_rect(attacker.x, attacker.y)
+        finally:
+            r._proj = None
+        # The struck sprite may spill a few pixels over the edge it shares
+        # with the attacker; the rest of the attacker's cell is its own
+        # sprite, which must not jitter.
+        spill = camera.sprite_shake_peak(camera.shake_for(hit), struck.height)
+        dx, dy = attacker.x - hit.x, attacker.y - hit.y
+        own = pygame.Rect(other)
+        if dx:
+            own.width -= spill
+            own.left += spill if dx > 0 else 0
+        else:
+            own.height -= spill
+            own.top += spill if dy > 0 else 0
+        moved = False
+        for step in range(10):
+            t = step / 10
+            jolted = self.impact_frame(state, hit, t)
+            still = self.impact_frame(state, hit, t, sprite=False)
+            if area_bytes(jolted, struck) != area_bytes(still, struck):
+                moved = True
+            self.assertEqual(area_bytes(jolted, own), area_bytes(still, own), t)
+        self.assertTrue(moved, 'the struck sprite never moved')
+        # The beat's end: exactly back in its cell, the whole map unchanged.
+        end = self.impact_frame(state, hit, 1.0)
+        still = self.impact_frame(state, hit, 1.0, sprite=False)
+        self.assertEqual(area_bytes(end, map_rect), area_bytes(still, map_rect))
+
+    def test_the_struck_monster_shakes_in_its_cell(self):
+        state, goblin = self.fight()
+        state.attack(state.player, goblin)
+        hit = state.combat_events[-1]
+        self.assertIs(hit.defender, goblin)
+        self.assertFalse(hit.killed)
+        self.assert_sprite_shakes(state, hit, state.player)
+
+    def test_the_struck_player_shakes_in_its_cell(self):
+        state, goblin = self.fight()
+        state.attack(goblin, state.player)
+        hit = state.combat_events[-1]
+        self.assertIs(hit.defender, state.player)
+        self.assert_sprite_shakes(state, hit, goblin)
+
+    def test_the_struck_sprite_shakes_zoomed_in(self):
+        state, goblin = self.fight(zoom=True)
+        self.assertIsNotNone(self.renderer._view)
+        state.attack(state.player, goblin)
+        self.assert_sprite_shakes(state, state.combat_events[-1], state.player)
+
+    def test_sprite_shake_is_repeatable_decays_and_is_bigger_for_a_crit(self):
+        state, goblin = self.fight()
+        state.attack(state.player, goblin)
+        hit = state.combat_events[-1]
+        crit = hit._replace(crit=True)
+        r = self.renderer
+        cell = r._map_cell_rect(hit.x, hit.y).height
+
+        def peak(h):
+            shake = camera.shake_for(h)
+            ts = [i / 50 for i in range(50)]
+            offsets = [r.sprite_shake_offset(shake, t, h) for t in ts]
+            self.assertEqual(offsets, [r.sprite_shake_offset(shake, t, h) for t in ts])
+            self.assertEqual(r.sprite_shake_offset(shake, 1.0, h), (0, 0))
+            return max(max(abs(dx), abs(dy)) for dx, dy in offsets)
+
+        normal, big = peak(hit), peak(crit)
+        self.assertGreater(normal, 0)
+        self.assertGreater(big, normal)
+        self.assertLessEqual(normal, round(cell * camera.SHAKE_AMPLITUDE))
+        self.assertLessEqual(big, round(cell * camera.CRIT_SHAKE_AMPLITUDE))
+        # Not just the map's shake again: the sprite has its own draws.
+        shake = camera.shake_for(hit)
+        self.assertNotEqual(
+            [camera.sprite_shake_offset(shake, i / 10, cell) for i in range(10)],
+            [camera.shake_offset(shake, i / 10, cell) for i in range(10)],
+        )
+
+    def test_health_bar_moves_with_the_shaking_sprite(self):
+        from render.pygame_render import HEALTH_BAR_COLORS
+
+        state, goblin = self.fight()
+        r = self.renderer
+        map_rect = r.layout.map_rect()
+        still = r.health_bar_rect(goblin, state.player, map_rect)
+        r._jolt = (goblin, (3, -2))
+        try:
+            moved = r.health_bar_rect(goblin, state.player, map_rect)
+        finally:
+            r._jolt = None
+        self.assertEqual(moved, still.move(3, -2))
+        # Painted with the goblin jolted: the bar is drawn at the moved rect.
+        r.canvas.clear()
+        r._jolt = (goblin, (3, -2))
+        r._paint_game(state)
+        self.assertIsNone(r._jolt)  # one frame only
+        self.assertTrue(set(cell_pixels(r, moved)) <= HEALTH_BAR_COLORS)
+        r.canvas.clear()
+        r._paint_game(state)
+        self.assertTrue(set(cell_pixels(r, still)) <= HEALTH_BAR_COLORS)
+
+    # -- health bars ----------------------------------------------------------
+
+    def bar(self, state, goblin):
+        r = self.renderer
+        r.draw(state)
+        return r.health_bar_rect(goblin, state.player, r.layout.map_rect())
+
+    def fill_width(self, rect, color):
+        y = rect.centery
+        screen = self.renderer.canvas.surface
+        return sum(
+            1 for x in range(rect.left, rect.right) if tuple(screen.get_at((x, y)))[:3] == color
+        )
+
+    def test_bar_fill_is_proportional_and_banded(self):
+        from render.pygame_render import HEALTH_AMBER, HEALTH_GREEN, HEALTH_RED
+
+        state, goblin = self.fight()
+        for hp, color in (
+            (20, HEALTH_GREEN),
+            (11, HEALTH_GREEN),
+            (10, HEALTH_AMBER),
+            (5, HEALTH_AMBER),
+            (4, HEALTH_RED),
+        ):
+            goblin.hp = hp
+            rect = self.bar(state, goblin)
+            self.assertEqual(self.fill_width(rect, color), round(rect.width * hp / 20), hp)
+        goblin.hp = 20
+        self.assertEqual(
+            self.fill_width(self.bar(state, goblin), HEALTH_GREEN), self.bar(state, goblin).width
+        )
+
+    def test_bar_has_only_bar_colours(self):
+        from render.pygame_render import HEALTH_BAR_COLORS
+
+        state, goblin = self.fight()
+        for hp in (20, 10, 3):
+            goblin.hp = hp
+            rect = self.bar(state, goblin)
+            self.assertTrue(set(cell_pixels(self.renderer, rect)) <= HEALTH_BAR_COLORS)
+
+    def test_bar_sits_above_the_cell_and_never_on_the_player(self):
+        state, goblin = self.fight()
+        r = self.renderer
+        map_rect = r.layout.map_rect()
+        cell = r._map_cell_rect(goblin.x, goblin.y)
+        far = collections.namedtuple('P', 'x y')(goblin.x + 5, goblin.y)
+        above = r.health_bar_rect(goblin, far, map_rect)
+        self.assertLessEqual(above.bottom, cell.top)
+        self.assertLess(above.width, cell.width)
+        # The player in the cell above: the bar moves onto the goblin's own top edge.
+        player = collections.namedtuple('P', 'x y')(goblin.x, goblin.y - 1)
+        own = r.health_bar_rect(goblin, player, map_rect)
+        self.assertTrue(cell.contains(own))
+        self.assertFalse(own.colliderect(r._map_cell_rect(player.x, player.y)))
+        # Top row of the map: along its top edge too.
+        top = Monster(goblin.x, 0, 'goblin')
+        self.assertTrue(r._map_cell_rect(top.x, 0).contains(r.health_bar_rect(top, far, map_rect)))
+
+    def test_boss_bar_is_wider_and_bars_follow_the_zoom(self):
+        state, goblin = self.fight()
+        r = self.renderer
+        map_rect = r.layout.map_rect()
+        far = collections.namedtuple('P', 'x y')(goblin.x + 5, goblin.y)
+        boss = Monster(goblin.x, goblin.y, 'goblin', is_boss=True)
+        self.assertGreater(
+            r.health_bar_rect(boss, far, map_rect).width,
+            r.health_bar_rect(goblin, far, map_rect).width,
+        )
+        normal = r.health_bar_rect(goblin, far, map_rect)
+        state, goblin = self.fight(zoom=True)
+        self.assertIsNotNone(r._view)
+        r._proj = camera.project(r._view, map_rect, r.layout.map_cell_size())
+        try:
+            zoomed = r.health_bar_rect(goblin, far, map_rect)
+            cell = r._map_cell_rect(goblin.x, goblin.y)
+        finally:
+            r._proj = None
+        self.assertGreater(zoomed.width, normal.width)
+        self.assertEqual(zoomed.centerx, cell.centerx)
+
+    def test_no_bar_for_the_player_or_an_unseen_monster(self):
+        state, goblin = self.fight()
+        painted = []
+        with mock.patch.object(
+            self.renderer, '_paint_health_bar', side_effect=lambda m, p, r: painted.append(m)
+        ):
+            self.renderer.draw(state)
+            self.assertEqual(painted, [goblin])
+            painted.clear()
+            state.visible[goblin.y][goblin.x] = False  # remembered, not in view
+            state.seen[goblin.y][goblin.x] = True
+            self.renderer.draw(state)
+        self.assertEqual(painted, [])
+
+
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
+class GlyphModeSpriteShakeTest(unittest.TestCase):
+    """The struck sprite's own shake with no tileset: glyphs, not tiles."""
+
+    fight = HitShakeAndHealthBarTest.fight
+    impact_frame = HitShakeAndHealthBarTest.impact_frame
+    assert_sprite_shakes = HitShakeAndHealthBarTest.assert_sprite_shakes
+    test_the_struck_monster_shakes_in_its_cell = (
+        HitShakeAndHealthBarTest.test_the_struck_monster_shakes_in_its_cell
+    )
+    test_the_struck_player_shakes_in_its_cell = (
+        HitShakeAndHealthBarTest.test_the_struck_player_shakes_in_its_cell
+    )
+    test_the_struck_sprite_shakes_zoomed_in = (
+        HitShakeAndHealthBarTest.test_the_struck_sprite_shakes_zoomed_in
+    )
+
+    def setUp(self):
+        self.renderer = PygameRenderer(WIDTH, HEIGHT)
+        self.renderer._set_mode((1600, 900), pygame.RESIZABLE)
+        self.renderer._relayout()
+        self.renderer.zoom_ms = 0
+        self.assertFalse(self.renderer.layout.tile)
+        pygame.event.clear()
+
+    def tearDown(self):
+        self.renderer.close()
 
 
 @unittest.skipUnless(pygame, 'pygame-ce not installed')
@@ -743,6 +1111,83 @@ class NewWeaponChoiceScreenTest(ChestChoiceScreenTest):
         self.state.pending_choice = list(self.items)
 
 
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
+class BoonChoiceScreenTest(unittest.TestCase):
+    """A shrine's boons on the same overlay as a chest's items: painted in
+    glyph and tile mode, chosen with 2 or a click on the second card; and
+    the shrine itself painted on the map."""
+
+    tiles = False
+
+    def setUp(self):
+        import random
+
+        from game.shrine import BOONS
+
+        tileset = None
+        if self.tiles:
+            from game.paths import resource_path
+            from render.tileset import Tileset
+
+            tileset = Tileset(resource_path('assets'))
+        self.renderer = PygameRenderer(WIDTH, HEIGHT, tileset=tileset)
+        self.renderer._set_mode((1600, 900), pygame.RESIZABLE)
+        self.renderer._relayout()
+        pygame.event.clear()
+        random.seed(71)
+        self.state = GameState(WIDTH, HEIGHT)
+        self.boons = [BOONS['blood_pact'], BOONS['iron_skin'], BOONS['quick_hands']]
+        self.state.pending_choice = list(self.boons)
+
+    def tearDown(self):
+        self.renderer.close()
+
+    def cards(self):
+        return screens.choice_rects(self.renderer.layout, self.state)[1]
+
+    def test_boon_cards_paint_inside_the_box(self):
+        box, cards, _ = screens.choice_rects(self.renderer.layout, self.state)
+        self.assertEqual(len(cards), 3)
+        self.renderer.draw(self.state)
+        for card in cards:
+            self.assertTrue(box.contains(card))
+            self.assertGreater(len(cell_pixels(self.renderer, card)), 2)  # inked text
+
+    def test_clicking_a_boon_card_takes_that_boon(self):
+        self.renderer.draw(self.state)
+        pygame.event.post(
+            pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=self.cards()[1].center, button=1)
+        )
+        action = self.renderer.get_action()
+        self.assertEqual(action, Action.CHOOSE_2)
+        self.assertFalse(self.state.handle_action(action))  # no turn
+        self.assertFalse(self.state.is_choosing)
+        self.assertEqual(self.state.player.boons, ['iron_skin'])
+
+    def test_keyboard_3_takes_the_third_boon(self):
+        self.renderer.draw(self.state)
+        pygame.event.post(key(pygame.K_3, '3'))
+        self.state.handle_action(self.renderer.get_action())
+        self.assertEqual(self.state.player.boons, ['quick_hands'])
+
+    def test_shrine_is_painted_on_the_map(self):
+        from game.shrine import Shrine
+
+        state = self.state
+        state.pending_choice = None
+        x, y = open_neighbour(state)
+        self.renderer.draw(state)
+        rect = self.renderer._map_cell_rect(x, y)
+        floor = cell_pixels(self.renderer, rect, as_list=True)
+        state.entities.append(Shrine(x, y))
+        self.renderer.draw(state)
+        self.assertNotEqual(cell_pixels(self.renderer, rect, as_list=True), floor)
+
+
+class TileModeBoonChoiceScreenTest(BoonChoiceScreenTest):
+    tiles = True
+
+
 class ChoiceCardTextTest(unittest.TestCase):
     """render/choice.py's card text (stdlib only: no pygame needed)."""
 
@@ -817,34 +1262,7 @@ class ChoiceCardTextTest(unittest.TestCase):
         self.assertEqual(
             choice.card_lines(1, item), ['[1]', item.name, 'rare', '+3 damage, +15% crit']
         )
-        self.assertIn('+15% crit', choice.tight_line(1, item))
         self.assertIn('+15% crit', choice.compact_lines(1, item)[1])
-
-
-class DefaultRendererTest(unittest.TestCase):
-    """main.default_renderer: a frozen (--windowed) exe has no terminal."""
-
-    def setUp(self):
-        patcher = mock.patch.dict(os.environ)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        os.environ.pop('RENDERER', None)
-
-    def test_source_run_defaults_to_curses(self):
-        with mock.patch.object(sys, 'frozen', False, create=True):
-            self.assertEqual(main.default_renderer(), 'curses')
-
-    def test_frozen_build_defaults_to_pygame(self):
-        with mock.patch.object(sys, 'frozen', True, create=True):
-            self.assertEqual(main.default_renderer(), 'pygame')
-
-    def test_env_overrides_the_frozen_default(self):
-        os.environ['RENDERER'] = 'curses'
-        with mock.patch.object(sys, 'frozen', True, create=True):
-            self.assertEqual(main.default_renderer(), 'curses')
-
-    def test_tcod_is_no_longer_a_choice(self):
-        self.assertEqual(main.RENDERERS, ['curses', 'pygame'])
 
 
 # -- helpers -----------------------------------------------------------------
@@ -960,6 +1378,11 @@ def cell_pixels(renderer, rect, as_list=False):
         for x in range(rect.left, rect.right)
     ]
     return pixels if as_list else set(pixels)
+
+
+def area_bytes(surface, rect):
+    """The RGB bytes of `rect` on `surface`, to compare two frames' areas."""
+    return pygame.image.tobytes(surface.subsurface(rect).copy(), 'RGB')
 
 
 def lit_pixels(renderer, rect):

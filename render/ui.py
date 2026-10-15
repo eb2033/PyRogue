@@ -3,9 +3,8 @@
 `Layout` is the single source of truth for where things go (desktop_build_plan.md
 §5 WS-D task 2): the renderer asks it for cell sizes and positions rather than
 computing pixel offsets itself. `Canvas` draws text onto a surface in grid
-cells. `paint_panel` is the side panel: every item curses_render._draw_panel
-shows, on the same relative rows, plus a pixel HP bar and a longer, wrapped
-message log.
+cells. `paint_panel` is the side panel: the stats, gear, belt, boons, controls
+and a pixel HP bar, plus a wrapped message log as long as the rows allow.
 
 The panel sits right of the map, or under it when that gives the map bigger
 cells (a portrait or narrow window) -- `Layout.stacked`. Either way it is the
@@ -22,8 +21,9 @@ import textwrap
 
 import pygame
 
-from game.item import BELT_SLOTS, belt_slot_label
+from game.item import belt_capacity, belt_slot_label
 from game.paths import resource_path
+from game.shrine import BOON_COLOR, boons_text
 from render import noticeboard, palette
 
 # -- panel geometry -----------------------------------------------------------
@@ -40,9 +40,10 @@ PANEL_TEXT_COLS = PANEL_COLS - 2 * PANEL_PAD_X
 HP_ROW = 2
 GEAR_TOP = 6  # header; weapon name + stats, armor name + stats
 BELT_ROW = GEAR_TOP + 5  # the potion belt, under the armor
+BOONS_ROW = BELT_ROW + 1  # shrine boons; blank until the first is taken
 CONTROLS_TOP = GEAR_TOP + 7
-LOG_TOP = CONTROLS_TOP + 5  # the '-- log --' header; messages start below it
-MIN_LOG_LINES = 4  # the terminal's count: always room for this many
+LOG_TOP = CONTROLS_TOP + 4  # the '-- log --' header; messages start below it
+MIN_LOG_LINES = 4  # always room for this many
 LOG_LINES = 12  # shown when the window has the rows for them
 PANEL_ROWS = PANEL_PAD_TOP + LOG_TOP + 1 + MIN_LOG_LINES + PANEL_PAD_BOTTOM  # the minimum
 PANEL_MAX_ROWS = PANEL_PAD_TOP + LOG_TOP + 1 + LOG_LINES + PANEL_PAD_BOTTOM  # a full log
@@ -465,10 +466,9 @@ class Canvas:
 
 
 def paint_panel(canvas, state):
-    """The noticeboard, then every item of curses_render._draw_panel inked on
-    its page, in the same order (gear lines take two rows each here), clipped
-    to the page's width; plus an HP bar beside the HP text and a message log
-    as long as the rows allow."""
+    """The noticeboard, then the panel's items inked on its page (gear lines
+    take two rows each), clipped to the page's width; plus an HP bar beside
+    the HP text and a message log as long as the rows allow."""
     layout = canvas.layout
     if layout.panel_width() > 0:
         noticeboard.paint(canvas.surface, layout.panel_rect(), layout.page_rect())
@@ -495,15 +495,17 @@ def paint_panel(canvas, state):
         put(GEAR_TOP + 1 + 2 * row, name, color)
         if stats:
             put(GEAR_TOP + 2 + 2 * row, stats, color)
-    _paint_belt(canvas, x, top + BELT_ROW, width, state.belt)
+    _paint_belt(canvas, x, top + BELT_ROW, width, state.belt, player)
+    boons = boons_text(player)
+    if boons:
+        put(BOONS_ROW, boons, palette.ink(BOON_COLOR))
 
     if player.char_class == 'archer':
         put(CONTROLS_TOP, 'wasd move, arrows shoot')
     else:
         put(CONTROLS_TOP, 'wasd/arrows move')
     put(CONTROLS_TOP + 1, '.  wait   e  descend')
-    put(CONTROLS_TOP + 2, 'S  save   L  load')
-    put(CONTROLS_TOP + 3, 'h  drink  q  quit')
+    put(CONTROLS_TOP + 2, 'h  drink  q  quit')
 
     put(LOG_TOP, '-- log --', bold=True)
     for i, line in enumerate(log_rows(state.messages, width, layout.log_lines())):
@@ -527,16 +529,16 @@ def log_rows(messages, width, rows):
     return lines
 
 
-def _paint_belt(canvas, x, y, width, belt):
-    """'Belt: [+20] +35 ---' in text row `y`, like curses_render's
-    _draw_belt_line: the bracketed first slot is the one 'h' drinks; each
-    potion in its rarity's ink, empty slots in plain ink."""
+def _paint_belt(canvas, x, y, width, belt, player):
+    """'Belt: [+20] +35 ---' in text row `y`: the bracketed first slot is the one 'h' drinks; each
+    potion in its rarity's ink, empty slots in plain ink. One slot per
+    belt_capacity(player), each showing its heal after the player's boons."""
     label = 'Belt: '
     canvas.put_str(x, y, label[:width], palette.INK)
     col = len(label)
-    for i in range(BELT_SLOTS):
+    for i in range(belt_capacity(player)):
         item = belt[i] if i < len(belt) else None
-        text = belt_slot_label(item)
+        text = belt_slot_label(item, player)
         if i == 0:
             text = f'[{text}]'
         if col < width:

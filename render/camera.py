@@ -10,8 +10,11 @@ The camera is *staged*: `Director.plan(state)` turns what changed since the
 last frame into a list of beats, and the renderer plays them one after another
 before showing the frame. Today there are two kinds:
 
-  Impact(hit)        a blow landing -- played at the current view, so a
-                     killing blow is seen before the camera pulls back
+  Impact(hit, shake) a blow landing -- played at the current view, so a
+                     killing blow is seen before the camera pulls back. The
+                     map shakes for the length of the beat (`Shake`: harder
+                     and longer on a crit), and the beat always plays out:
+                     keys pressed meanwhile wait in the queue until it ends
   Pan(start, end)    the view moving: zooming in, out, or across to another
                      opponent
 
@@ -19,11 +22,13 @@ A new effect (a lunge, a screen shake, a death animation) is another beat type
 here plus a player for it in the renderer; the loop in main.py never changes.
 The renderer services the window during every beat and leaves key presses
 queued, so input typed during an animation is never lost -- and a queued key
-cuts the remaining animation short, so it never holds the player up.
+cuts the remaining animation short (except an Impact's shake, which is
+short and always finishes), so it never holds the player up for long.
 
 Pure geometry, no pygame: views are in map cells (floats while animating).
 """
 
+import random
 from collections import namedtuple
 
 MARGIN = 2  # squares of map shown around the fight
@@ -42,8 +47,69 @@ class View(namedtuple('View', 'left top width height')):
         return self.left + self.width / 2, self.top + self.height / 2
 
 
-Impact = namedtuple('Impact', 'hit')
+Impact = namedtuple('Impact', 'hit shake')
+Impact.__new__.__defaults__ = (None,)
 Pan = namedtuple('Pan', 'start end')
+
+# The hit shake: `ms` is how long the impact beat (and its shake) lasts,
+# `amplitude` the peak offset as a fraction of an unzoomed map cell, `seed`
+# makes the jitter repeatable (the hit's serial).
+Shake = namedtuple('Shake', 'ms amplitude seed')
+SHAKE_MS = 180
+CRIT_SHAKE_MS = 280
+SHAKE_AMPLITUDE = 0.12
+CRIT_SHAKE_AMPLITUDE = 0.25
+MIN_SHAKE_PX = 2  # so a shake is still felt on small cells
+SHAKE_STEP_MS = 30  # the jitter picks a new offset this often
+# The struck sprite's own shake, as a multiple of the map shake's amplitude,
+# applied to the sprite's cell at the current view: 0.09 of a cell for a
+# normal hit, 0.19 for a crit (4 / 8 px on a 40 px tile, 12 / 24 zoomed to 128).
+SPRITE_SHAKE_RATIO = 0.75
+
+
+def shake_for(hit):
+    """The shake a blow gets: a crit's is bigger and lasts longer."""
+    if getattr(hit, 'crit', False):
+        return Shake(CRIT_SHAKE_MS, CRIT_SHAKE_AMPLITUDE, hit.serial)
+    return Shake(SHAKE_MS, SHAKE_AMPLITUDE, hit.serial)
+
+
+def shake_peak(shake, cell):
+    """Peak offset in pixels for map cells `cell` px tall."""
+    return max(MIN_SHAKE_PX, round(cell * shake.amplitude))
+
+
+def shake_offset(shake, t, cell):
+    """(dx, dy) in pixels at t (0 -> 1 over the beat), for map cells `cell`
+    px tall. Each axis is a random jitter within the peak, held for
+    SHAKE_STEP_MS, under a (1 - t)^2 decay -- so it starts at full strength
+    and settles to exactly (0, 0) at t = 1. Deterministic for a given shake."""
+    return _jitter(shake, t, shake_peak(shake, cell), skip=0)
+
+
+def sprite_shake_offset(shake, t, cell):
+    """(dx, dy) in pixels at t for the struck sprite itself, in a cell
+    `cell` px tall at the current view (so it scales with the zoom). Same
+    timing, decay and per-hit random sequence as shake_offset -- the next two
+    draws of it, so the sprite doesn't just move in step with the map -- and
+    a peak of SPRITE_SHAKE_RATIO of its own cell: bigger for a crit, whose
+    shake.amplitude is. (0, 0) at t = 1, so the sprite ends back in its cell."""
+    return _jitter(shake, t, sprite_shake_peak(shake, cell), skip=2)
+
+
+def sprite_shake_peak(shake, cell):
+    """The struck sprite's peak offset in pixels, in a cell `cell` px tall."""
+    return max(MIN_SHAKE_PX, round(cell * shake.amplitude * SPRITE_SHAKE_RATIO))
+
+
+def _jitter(shake, t, peak, skip):
+    if not 0 <= t < 1:
+        return 0, 0
+    rng = random.Random(shake.seed * 7919 + int(t * shake.ms / SHAKE_STEP_MS))
+    for _ in range(skip):
+        rng.random()
+    peak *= (1 - t) ** 2
+    return round(rng.uniform(-1, 1) * peak), round(rng.uniform(-1, 1) * peak)
 
 
 def full_view(map_width, map_height):
@@ -137,7 +203,7 @@ class Director:
             if hit.serial > self._last_hit:
                 self._last_hit = hit.serial
                 if state.visible[hit.y][hit.x]:
-                    beats.append(Impact(hit))
+                    beats.append(Impact(hit, shake_for(hit)))
 
         self._track_turn(state)
         start = self.current(state)

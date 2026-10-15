@@ -27,6 +27,7 @@ os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
 
 import pygame
 
+from game.monster import Monster
 from game.paths import resource_path
 from render import camera, choice, input_map, palette, screens, ui
 from render.banner import render_banner
@@ -37,9 +38,12 @@ from render.tileset import Tileset
 ICON_FILE = 'icon.png'
 
 # Combat staging (render/camera.py). How long each beat plays; a key the
-# player has already pressed cuts the rest of a beat short.
+# player has already pressed cuts the rest of a pan or step short, but never
+# an impact's shake (it waits in the queue until the shake has finished).
+# IMPACT_MS is a normal hit's beat; a crit's runs longer in proportion
+# (camera.CRIT_SHAKE_MS / camera.SHAKE_MS).
 ZOOM_MS = 220
-IMPACT_MS = 160
+IMPACT_MS = camera.SHAKE_MS
 FRAME_MS = 16
 
 # Walking gait: an entity that just took a step leans this many degrees, the
@@ -52,6 +56,17 @@ IMPACT_FLASH_ALPHA = 170
 # assets/blood/ holds (blood_01.png ...).
 ARENA_STONE_ALPHA = 110
 BLOOD_SPRITES = 5
+
+# Enemy health bars: a dark track with a fill in proportion to hp / max_hp,
+# green above a half, amber down to a quarter, red below. Sizes are fractions
+# of the map cell being drawn, so they follow the tile size and the zoom.
+HEALTH_GREEN = (70, 200, 70)
+HEALTH_AMBER = (235, 165, 30)
+HEALTH_RED = (215, 40, 40)
+HEALTH_TRACK = (25, 20, 20)
+HEALTH_BAR_COLORS = frozenset({HEALTH_GREEN, HEALTH_AMBER, HEALTH_RED, HEALTH_TRACK})
+HEALTH_BAR_WIDTH = 0.7  # of the cell's width; a boss's spans the whole cell
+HEALTH_BAR_HEIGHT = 0.08  # of the cell's height, at least 2 px
 
 # Events after which the window contents may be stale: repaint the last frame.
 REPAINT_EVENTS = (
@@ -88,8 +103,9 @@ class PygameRenderer(Renderer):
         `font_path`: a TTF/OTF file for the grid text, handed to ui.Layout
         (None -> a system monospace font); a bundled font goes through here.
         `combat_zoom`: zoom the map in on melee fights (render/camera.py);
-        `zoom_ms` / `impact_ms`: how long a pan / an impact flash plays (0 =
-        no animation, the frame just changes)."""
+        `zoom_ms` / `impact_ms`: how long a pan / a normal hit's flash and
+        shake play -- a crit's in proportion longer (0 = no animation, the
+        frame just changes)."""
         pygame.display.init()
         pygame.display.set_caption('PyRogue')
         _set_window_icon()
@@ -132,6 +148,10 @@ class PygameRenderer(Renderer):
         self._gait = {}
         self._tilts = {}
         self._tilted_tiles = {}
+        # Hit shake on the struck sprite: (entity, (dx, dy)) for the frame
+        # being painted, and the offset of the sprite being painted right now.
+        self._jolt = None
+        self._sprite_offset = (0, 0)
         # Boss-arena blood: the sprites (loaded on first use), the decal
         # layout per arena, and scaled/rotated sprites.
         self._blood = None
@@ -304,9 +324,16 @@ class PygameRenderer(Renderer):
         tilts = self.track_steps(state.visible_entities())
         for beat in self.director.plan(state):
             if isinstance(beat, camera.Impact):
+                shake = beat.shake or camera.shake_for(beat.hit)
                 self._play(
-                    self.impact_ms,
-                    lambda t, hit=beat.hit: self._paint_game(state, impact=(hit, t)),
+                    self.impact_ms_for(shake),
+                    lambda t, hit=beat.hit, shake=shake: self._paint_game(
+                        state,
+                        impact=(hit, t),
+                        shake=self.shake_offset(shake, t),
+                        sprite_shake=shake,
+                    ),
+                    interruptible=False,
                 )
             elif isinstance(beat, camera.Pan):
                 self._play(self.zoom_ms, lambda t, pan=beat: self._paint_pan(state, pan, t))
@@ -337,21 +364,54 @@ class PygameRenderer(Renderer):
 
     # -- staged beats ---------------------------------------------------------
 
-    def _play(self, ms, paint):
+    def impact_ms_for(self, shake):
+        """How long an impact beat with `shake` plays: `impact_ms` for a
+        normal hit, scaled up for a crit's longer shake."""
+        return round(self.impact_ms * shake.ms / camera.SHAKE_MS)
+
+    def shake_offset(self, shake, t):
+        """The map's (dx, dy) in pixels at t. Sized off the unzoomed cell, so
+        a shake feels the same zoomed in or out."""
+        return camera.shake_offset(shake, t, self.layout.map_cell_size()[1])
+
+    def sprite_shake_offset(self, shake, t, hit):
+        """The struck sprite's own (dx, dy) in pixels at t, inside its cell:
+        sized off that cell at the view being painted, so it grows with the
+        zoom. (0, 0) once the beat is over."""
+        return camera.sprite_shake_offset(shake, t, self._map_cell_rect(hit.x, hit.y).height)
+
+    def _jolt_of(self, entity):
+        """`entity`'s sprite offset in the frame being painted: (0, 0) unless
+        it is the one being struck."""
+        if self._jolt is not None and self._jolt[0] is entity:
+            return self._jolt[1]
+        return (0, 0)
+
+    def _clip_to_map(self):
+        """Narrow the clip to the map's area (and any clip already set);
+        returns the clip to restore."""
+        surface = self.canvas.surface
+        old = surface.get_clip()
+        surface.set_clip(self.layout.map_rect().clip(old))
+        return old
+
+    def _play(self, ms, paint, interruptible=True):
         """Play one beat: `paint(t)` for t running 0 -> 1 over `ms`.
 
-        Like pause(), the window stays serviced and key presses stay queued
-        -- and a queued key (typed ahead, or held down) ends the beat early,
-        so animation never makes the player wait for their next move. The
-        beat's final frame isn't painted here: the next beat, or draw()'s own
-        frame, is that frame.
+        Like pause(), the window stays serviced and key presses stay queued.
+        If `interruptible`, a queued key (typed ahead, or held down) ends the
+        beat early, so animation never makes the player wait for their next
+        move; otherwise (an impact's shake) the beat always runs to the end
+        and the keys are read afterwards, in order, by get_action. A window
+        close still ends any beat at once. The beat's final frame isn't
+        painted here: the next beat, or draw()'s own frame, is that frame.
         """
         if ms <= 0:
             return
         self._animating = True
         try:
             start = pygame.time.get_ticks()
-            while not self._quit_requested and not self._key_waiting():
+            while not self._quit_requested and not (interruptible and self._key_waiting()):
                 t = (pygame.time.get_ticks() - start) / ms
                 if t >= 1:
                     break
@@ -371,9 +431,12 @@ class PygameRenderer(Renderer):
 
     # -- game frame -----------------------------------------------------------
 
-    def _paint_game(self, state, impact=None):
+    def _paint_game(self, state, impact=None, shake=(0, 0), sprite_shake=None):
         """The map at the current view, clipped to the map's area, then the
-        panel. `impact`: (Hit, t) to draw a blow landing, t running 0 -> 1."""
+        panel. `impact`: (Hit, t) to draw a blow landing, t running 0 -> 1.
+        `shake`: (dx, dy) pixels to shift the whole painted map by.
+        `sprite_shake`: the impact's Shake, to jolt the struck sprite (and its
+        health bar) inside its cell as well."""
         surface = self.canvas.surface
         map_rect = self.layout.map_rect()
         if self._view is None:
@@ -408,19 +471,96 @@ class PygameRenderer(Renderer):
                     if arena is not None and row[x] == '.':
                         self._paint_arena_floor(arena, decals, x, y, dim)
 
-            for entity in state.visible_entities():
+            if impact is not None and sprite_shake is not None:
+                hit, t = impact
+                self._jolt = (hit.defender, self.sprite_shake_offset(sprite_shake, t, hit))
+            entities = state.visible_entities()
+            if self._jolt is not None and any(e is self._jolt[0] for e in entities):
+                # The struck sprite last, so it shakes on top of a neighbour.
+                entities = [e for e in entities if e is not self._jolt[0]] + [self._jolt[0]]
+            for entity in entities:
                 self._paint_entity(entity)
+            for entity in entities:
+                if isinstance(entity, Monster) and entity is not state.player:
+                    self._paint_health_bar(entity, state.player, map_rect)
             if impact is not None:
                 self._paint_impact(*impact)
+            if shake != (0, 0):
+                self._shift_map(map_rect, shake)
         finally:
             surface.set_clip(None)
             self._proj = None
+            self._jolt = None
 
         ui.paint_panel(self.canvas, state)
         if state.is_choosing:
             screens.paint_choice(self.canvas, state)
         if state.game_over:
             screens.paint_game_over(self.canvas)
+
+    def _shift_map(self, map_rect, offset):
+        """Move what has been painted of the map by `offset` (the hit shake),
+        leaving background where it moved away from. Unzoomed, a margin
+        round the map moves too, for a damage number rising off the top row."""
+        surface = self.canvas.surface
+        area = map_rect
+        if self._proj is None:
+            cell_w, cell_h = self.layout.map_cell_size()
+            area = map_rect.inflate(2 * cell_w, 2 * cell_h)
+        area = area.clip(surface.get_rect())
+        if not area.width or not area.height:
+            return
+        snapshot = surface.subsurface(area).copy()
+        clip = surface.get_clip()
+        surface.set_clip(area)
+        surface.fill(palette.BACKGROUND, area)
+        surface.blit(snapshot, area.move(offset))
+        surface.set_clip(clip)
+
+    def health_bar_rect(self, monster, player, map_rect):
+        """Pixel rect of `monster`'s health bar: centred just above its cell,
+        or along the cell's own top edge when there is no room above (the
+        top of the map or of the zoomed view) or the player stands there."""
+        rect = self._map_cell_rect(monster.x, monster.y)
+        boss = getattr(monster, 'is_boss', False)
+        width = rect.width if boss else max(4, round(rect.width * HEALTH_BAR_WIDTH))
+        height = max(2, round(rect.height * HEALTH_BAR_HEIGHT)) + (1 if boss else 0)
+        gap = max(1, rect.height // 20)
+        top = rect.top - gap - height
+        if top < map_rect.top or (player.x, player.y) == (monster.x, monster.y - 1):
+            top = rect.top + gap
+        bar = pygame.Rect(rect.centerx - width // 2, top, width, height)
+        return bar.move(self._jolt_of(monster))  # stays on a sprite that shakes
+
+    @staticmethod
+    def health_bar_color(fraction):
+        if fraction > 0.5:
+            return HEALTH_GREEN
+        if fraction >= 0.25:
+            return HEALTH_AMBER
+        return HEALTH_RED
+
+    def _paint_health_bar(self, monster, player, map_rect):
+        """The bar's track, then the fill in proportion to hp / max_hp. No
+        numbers: the length and colour are the whole message."""
+        max_hp = getattr(monster, 'max_hp', 0) or 0
+        if max_hp <= 0:
+            return
+        fraction = min(1.0, max(0.0, monster.hp / max_hp))
+        bar = self.health_bar_rect(monster, player, map_rect)
+        surface = self.canvas.surface
+        clip = self._clip_to_map()
+        try:
+            surface.fill(HEALTH_TRACK, bar)
+            fill = round(bar.width * fraction)
+            if monster.hp > 0:
+                fill = max(1, fill)
+            if fill:
+                surface.fill(
+                    self.health_bar_color(fraction), (bar.left, bar.top, fill, bar.height)
+                )
+        finally:
+            surface.set_clip(clip)
 
     # -- boss arena -----------------------------------------------------------
 
@@ -491,17 +631,29 @@ class PygameRenderer(Renderer):
                 self.canvas.surface.blit(sprite, sprite.get_rect(center=rect.center))
 
     def _paint_entity(self, entity):
+        """The entity's tile or glyph in its cell -- leaning if it just
+        stepped, and offset inside the cell (clipped to the map) if it is the
+        one being struck. Its floor was painted first and stays put."""
         angle = self._tilts.get(id(entity), 0)
+        offset = self._jolt_of(entity)
         rgb = palette.color(entity.color, palette.VISIBLE)
-        if self._proj is not None and not self.layout.tile:
-            # Zoomed glyphs are big enough that the floor dot under them shows.
+        if (self._proj is not None or offset != (0, 0)) and not self.layout.tile:
+            # Zoomed glyphs are big enough that the floor dot under them shows;
+            # a shaking glyph would show it too, beside itself.
             self.canvas.surface.fill(palette.BACKGROUND, self._map_cell_rect(entity.x, entity.y))
-        if getattr(entity, 'is_boss', False):
-            self._paint_boss(
-                entity.x, entity.y, entity.char, palette.brighten(rgb), entity.color, angle
-            )
-        else:
-            self._paint_cell(entity.x, entity.y, entity.char, rgb, entity.color, angle=angle)
+        clip = self._clip_to_map() if offset != (0, 0) else None
+        self._sprite_offset = offset
+        try:
+            if getattr(entity, 'is_boss', False):
+                self._paint_boss(
+                    entity.x, entity.y, entity.char, palette.brighten(rgb), entity.color, angle
+                )
+            else:
+                self._paint_cell(entity.x, entity.y, entity.char, rgb, entity.color, angle=angle)
+        finally:
+            self._sprite_offset = (0, 0)
+            if clip is not None:
+                self.canvas.surface.set_clip(clip)
 
     def _paint_impact(self, hit, t):
         """A blow landing on `hit.defender`: its cell flashes red and fades,
@@ -548,8 +700,8 @@ class PygameRenderer(Renderer):
     def _paint_cell(self, x, y, char, rgb, color_index=0, dim=False, angle=0):
         if self._paint_tile(x, y, char, color_index, dim, angle):
             return
-        if self.layout.tile or self._proj is not None or angle:
-            # No tile for this char (or a zoomed or leaning glyph): centred.
+        if self.layout.tile or self._proj is not None or angle or self._sprite_offset != (0, 0):
+            # No tile for this char (or a zoomed, leaning or shaking glyph): centred.
             self._blit_centred(self._rotated(self._glyph(char, rgb), angle), x, y)
         else:
             self.canvas.put(x, y, char, rgb)
@@ -572,7 +724,7 @@ class PygameRenderer(Renderer):
                     self._tilted_tiles[key] = leaning
             tile = leaning
             rect = tile.get_rect(center=rect.center)
-        self.canvas.surface.blit(tile, rect.topleft)
+        self.canvas.surface.blit(tile, rect.move(self._sprite_offset).topleft)
         return True
 
     @staticmethod
@@ -614,17 +766,17 @@ class PygameRenderer(Renderer):
         return glyph
 
     def _blit_centred(self, surface, x, y):
-        centre = self._map_cell_rect(x, y).center
+        centre = self._map_cell_rect(x, y).move(self._sprite_offset).center
         self.canvas.surface.blit(surface, surface.get_rect(center=centre))
 
     def _paint_boss(self, x, y, char, rgb, color_index, angle=0):
-        """curses draws a boss A_BOLD | A_UNDERLINE in its pair's colour; here
-        that is a brightened colour, a bold face, and an underline. In tile
+        """A boss in glyph mode: a brightened colour, a bold face, and an
+        underline. In tile
         mode the boss's own tile (tiles.json gives bosses extra armour) is the
         distinction."""
         if self._paint_tile(x, y, char, color_index, angle=angle):
             return
-        if self.layout.tile or self._proj is not None or angle:
+        if self.layout.tile or self._proj is not None or angle or self._sprite_offset != (0, 0):
             self._blit_centred(
                 self._rotated(self._glyph(char, rgb, bold=True, underline=True), angle), x, y
             )

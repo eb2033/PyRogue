@@ -21,8 +21,11 @@ except ImportError:  # pragma: no cover - terminal-only checkout
     pygame = None
 
 
-def run_main(*args, **env):
-    full_env = {k: v for k, v in os.environ.items() if k not in ('RENDERER', 'PYROGUE_CONFIG')}
+def run_main(*args, drop=(), **env):
+    """main.py as a subprocess: this environment minus PYROGUE_CONFIG and
+    any name in `drop`, plus `env`."""
+    skip = {'PYROGUE_CONFIG', *drop}
+    full_env = {k: v for k, v in os.environ.items() if k not in skip}
     full_env.update(env)
     return subprocess.run(
         [sys.executable, str(ROOT / 'main.py'), *args],
@@ -45,8 +48,6 @@ class MainProcessTest(unittest.TestCase):
     def test_crash_is_logged_and_still_reported(self):
         # A display that can't open is a real-world crash for the windowed build.
         result = run_main(
-            '--renderer',
-            'pygame',
             PYROGUE_DATA_DIR=str(self.data),
             SDL_VIDEODRIVER='no-such-driver',
             PYGAME_HIDE_SUPPORT_PROMPT='1',
@@ -58,16 +59,21 @@ class MainProcessTest(unittest.TestCase):
         self.assertIn('pygame', log)
         self.assertEqual(log.count('====='), 2, 'logged exactly once (one header)')
 
-    def test_config_file_is_loaded_before_renderer_is_chosen(self):
-        # RENDERER from PYROGUE_CONFIG must reach the renderer choice. An
-        # unknown name is rejected by make_renderer (argparse doesn't check a
-        # default against `choices`) -- proof the file was read in time.
+    @unittest.skipUnless(pygame, 'pygame-ce not installed')
+    def test_config_file_is_loaded_before_the_window_opens(self):
+        # SDL_VIDEODRIVER from PYROGUE_CONFIG must reach pygame's display
+        # init: a driver that doesn't exist makes it fail -- proof the file
+        # was read before the window was made.
         config = self.data / 'pyrogue.env'
-        config.write_text('RENDERER=from-config-file\n', encoding='utf-8')
-        result = run_main(PYROGUE_DATA_DIR=str(self.data), PYROGUE_CONFIG=str(config))
-        self.assertEqual(result.returncode, 1)
-        self.assertIn('unknown renderer: from-config-file', result.stderr)
-        self.assertFalse((self.data / 'crash.log').exists(), 'a usage error is not a crash')
+        config.write_text('SDL_VIDEODRIVER=from-config-file\n', encoding='utf-8')
+        result = run_main(
+            drop=('SDL_VIDEODRIVER',),
+            PYROGUE_DATA_DIR=str(self.data),
+            PYROGUE_CONFIG=str(config),
+            PYGAME_HIDE_SUPPORT_PROMPT='1',
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('from-config-file', result.stderr)
 
 
 if __name__ == '__main__':

@@ -6,6 +6,12 @@ GitHub Release notes.
 
 ## [Unreleased]
 
+### Removed
+- The terminal (curses) version. PyRogue is now the window only; `--renderer` and the `RENDERER`
+  setting are gone, and `windows-curses` is no longer needed anywhere.
+- Save and load (`Shift+S` / `Shift+L`). A run is meant to be played in one sitting; an old
+  `savegame.json` is simply ignored. `crash.log` still goes to the user data folder.
+
 ### Fixed
 - A corridor could turn through the corner of one room's wall into the room next to it, leaving
   two doors side by side where one should have been flanked by wall.
