@@ -70,6 +70,8 @@ SHOOT_DELTAS = {
 HOP_DISTANCE = 2
 HOP_TRIGGER_RANGE = 3
 HOP_COOLDOWN = 4
+# The warrior's parry (Q): turns from arming one before the next can be armed.
+PARRY_COOLDOWN = 4
 
 # Keys 1-3 on a chest's choice screen -> index into pending_choice.
 CHOOSE_INDEX = {
@@ -143,6 +145,14 @@ class GameState:
         self.turn = 0
         # GameState.turn when the archer last hopped (None: never). Not saved.
         self.last_hop_turn: int | None = None
+        # True after a successful hop until the archer's next shot, which
+        # always crits (archery.shoot spends it, hit or miss). Not saved.
+        self.hop_crit = False
+        # The warrior's parry (Q): armed until the next monster melee hit that
+        # lands on the player (see _riposte); last_parry_turn is
+        # GameState.turn when Q armed it (None: never). Neither is saved.
+        self.parry_armed = False
+        self.last_parry_turn: int | None = None
         # Items an opened gear chest is offering, or the Boons a shrine is
         # (game/shrine.py), or None. While set, the player must choose() one
         # before anything else happens. Typed Any, not Item | Boon: a choice
@@ -247,17 +257,24 @@ class GameState:
 
         if action == 'ability':
             # On the death screen ('press q to quit') it is the quit key.
-            # Mid-game only the archer has an ability (the hop); a warrior's
-            # is a no-op.
+            # Mid-game it is the class's ability: the archer's hop, or (any
+            # other class, i.e. the warrior) the parry.
             if self.game_over:
                 self.running = False
                 return False
-            if self.is_choosing or self.player.char_class != 'archer':
+            if self.is_choosing:
                 return False
-            if not self.hop():
-                return False
-            self._spend_turn()
-            self.last_hop_turn = self.turn
+            if self.player.char_class == 'archer':
+                if not self.hop():
+                    return False
+                self._spend_turn()
+                self.last_hop_turn = self.turn
+                self.hop_crit = True
+            else:
+                if not self.arm_parry():
+                    return False
+                self._spend_turn()
+                self.last_parry_turn = self.turn
             self.end_player_phase()
             return True
 
@@ -368,6 +385,36 @@ class GameState:
             self.log('Nowhere to hop.')
             return False
         return True
+
+    def arm_parry(self):
+        """The warrior's parry: ready it for the next monster melee hit that
+        lands (see _riposte). Returns False, with a log line and nothing
+        armed, if it is refused -- one is already armed, or PARRY_COOLDOWN
+        turns haven't passed since the last one was armed; the caller spends
+        the turn."""
+        if self.parry_armed:
+            self.log('Your parry is already ready.')
+            return False
+        if self.last_parry_turn is not None:
+            left = PARRY_COOLDOWN - (self.turn - self.last_parry_turn)
+            if left > 0:
+                self.log(f'Parry recovering ({left} turns).')
+                return False
+        self.parry_armed = True
+        self.log('You ready a parry.')
+        return True
+
+    def _riposte(self, monster):
+        """An armed parry answering `monster`'s melee hit, which has already
+        landed in full: the monster takes the player's crit damage (raw power
+        x CRIT_MULTIPLIER, with no crit roll of its own) through attack(), so
+        its defence reduces it and a Hit is recorded. A dead player doesn't
+        riposte (the parry stays armed, but the game is over)."""
+        if not self.parry_armed or self.player.hp <= 0:
+            return
+        self.parry_armed = False
+        self.log(f'Your parry returns the blow to the {monster.name}!')
+        self.attack(self.player, monster, CRIT_MULTIPLIER, crit=False)
 
     def _spend_turn(self, shot=False):
         """A turn-taking player action happened: count it (GameState.turn),
@@ -731,15 +778,18 @@ class GameState:
         self._hit_serial += 1
         return self._hit_serial
 
-    def attack(self, attacker, defender, factor=1.0):
+    def attack(self, attacker, defender, factor=1.0, crit=None):
         """One blow. `factor` scales the attacker's raw power before crits
-        and defence (a volley's extra arrows, the hunter's mark)."""
+        and defence (a volley's extra arrows, the hunter's mark, a parry).
+        `crit` None rolls for a crit as usual; True or False forces it (the
+        shot after a hop always crits; a parry's riposte never rolls)."""
         if defender is self.player and self._dodged(attacker):
             return
         defense = getattr(defender, 'defense', 0)
         raw = attacker.power * factor
         # Only the player crits (monsters never do); arrows are player hits too.
-        crit = attacker is self.player and random.random() < crit_chance(attacker)
+        if crit is None:
+            crit = attacker is self.player and random.random() < crit_chance(attacker)
         if crit:
             raw = raw * CRIT_MULTIPLIER
         damage = round_damage(mitigate(raw, defense))
@@ -863,7 +913,11 @@ class GameState:
                 sees_player=was_seen,
             )
             if result == 'attack':
+                first_event = len(self.combat_events)
                 self.attack(monster, self.player)
+                # A Hit means the blow landed (not dodged): a parry answers.
+                if len(self.combat_events) > first_event:
+                    self._riposte(monster)
             elif result == 'shoot':
                 self._monster_shot(monster)
             self.update_fov()

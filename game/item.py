@@ -175,9 +175,13 @@ GEAR_STATS.update(
 # The kinds a gear-chest (or boss-chest) drop can be. The plain 'weapon' is
 # not among them: it is the warrior's starting weapon (STARTING_WEAPON, see
 # GameState), so it never drops. Armor's share of drops is ARMOR_DROP_CHANCE,
-# split evenly between ARMOR_KINDS; the rest are weapons, split evenly across
-# the player's class's CLASS_WEAPONS (roll_gear_kind).
+# split evenly between the class's CLASS_ARMOR (both ARMOR_KINDS for a
+# warrior; leather only for an archer); the rest are weapons, split evenly
+# across the player's class's CLASS_WEAPONS (roll_gear_kind).
 GEAR_DROP_KINDS = ARMOR_KINDS + WEAPON_TYPES
+# The armor kinds each class can find. An archer only ever finds leather (the
+# evasion armour); any other class -- the warrior -- finds both.
+CLASS_ARMOR = {'archer': ['leather']}
 # The starting weapon, by class: the warrior starts with the plain 'weapon'
 # (it never drops), the archer with a common longbow. A class not listed gets
 # the plain one.
@@ -316,12 +320,19 @@ def class_weapons(char_class):
     return CLASS_WEAPONS.get(char_class, WARRIOR_WEAPONS)
 
 
+def class_armor(char_class):
+    """The armor kinds `char_class` can find (CLASS_ARMOR): leather only for
+    an archer, both ARMOR_KINDS for anyone else."""
+    return CLASS_ARMOR.get(char_class, ARMOR_KINDS)
+
+
 def roll_gear_kind(armor_chance, rng: Rng = random, char_class='warrior'):
-    """An armor kind (heavy or leather, evenly) with probability
+    """An armor kind of `char_class`'s (class_armor: heavy or leather evenly
+    for a warrior, always leather for an archer) with probability
     armor_chance, otherwise one of `char_class`'s weapon types picked
     evenly: an archer never finds a warrior's weapon, nor the reverse."""
     if rng.random() < armor_chance:
-        return rng.choice(ARMOR_KINDS)
+        return rng.choice(class_armor(char_class))
     return rng.choice(class_weapons(char_class))
 
 

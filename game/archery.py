@@ -16,7 +16,13 @@ all defaulted for any other weapon) change the shot:
   first two in the lanes either side of the aim line (starting diagonally
   forward of the player, then straight on), a third down the aim line itself.
   Extras spend no arrow and leave no pile. They leave with the aim arrow, on
-  the same turn, as part of the same Shot.
+  the same turn, as part of the same Shot. Point blank -- the aim arrow's
+  first monster is orthogonally adjacent -- every extra hits that monster
+  too, at the same factor (_point_blank).
+
+The shot after a successful hop (GameState.hop_crit) always crits: every hit
+of its aim arrow is a forced crit, and the flag is spent by that shot, hit or
+miss.
 - knockback (sling): a hit monster is pushed up to `knockback` tiles straight
   away from the player, a tile at a time, stopping at a wall, a monster or
   the player. A move, not a Hit.
@@ -64,10 +70,18 @@ def shoot(state: 'GameState', dx, dy):
 
     serial = state.next_event_serial()  # before any arrow flies: sorts first
     pierce = weapon.pierce if weapon is not None else 1
-    stop, aim = _fly(state, player.x, player.y, dx, dy, pierce, 1.0, loud=True)
+    # The shot after a hop always crits: the aim arrow's hits are forced
+    # crits. Spent here, whether the arrow hits anything or not.
+    crit = True if state.hop_crit else None
+    state.hop_crit = False
+    # Point blank: the aim arrow's first monster is the adjacent one.
+    point_blank = state.monster_at(player.x + dx, player.y + dy)
+    stop, aim = _fly(state, player.x, player.y, dx, dy, pierce, 1.0, loud=True, crit=crit)
     arrows = [aim]
     _drop_arrow(state, *stop)
-    if weapon is not None and weapon.spread:
+    if weapon is not None and weapon.spread and point_blank is not None:
+        arrows.extend(_point_blank(state, point_blank, weapon.spread, weapon.spread_factor))
+    elif weapon is not None and weapon.spread:
         for start in _volley_starts(state, dx, dy, weapon.spread):
             if start is not None:
                 sx, sy = start
@@ -95,12 +109,33 @@ def shoot(state: 'GameState', dx, dy):
     return True
 
 
-def _fly(state: 'GameState', x, y, dx, dy, pierce, factor, loud, origin=None):
+def _point_blank(state: 'GameState', target: 'Monster', spread, factor):
+    """A volley at an adjacent `target`: every extra arrow (both side arrows,
+    and a rare/epic volley's third) flies straight into it, each a hit at the
+    volley's `factor` -- so it takes the whole volley -- instead of flying its
+    own lane; the lane's walls don't matter at this range. Returns the
+    extras' Arrows, each path (player, target). If the target is already
+    dead (the aim arrow, or an earlier extra, killed it), the remaining
+    arrows land on its tile without hitting it again: no overkill hits."""
+    player = state.player
+    path = ((player.x, player.y), (target.x, target.y))
+    dx, dy = target.x - player.x, target.y - player.y
+    arrows = []
+    for _ in range(spread):
+        first_event = len(state.combat_events)
+        if target.alive:
+            _hit(state, target, factor, dx, dy)
+        arrows.append(Arrow(path, tuple(state.combat_events[first_event:])))
+    return arrows
+
+
+def _fly(state: 'GameState', x, y, dx, dy, pierce, factor, loud, origin=None, crit=None):
     """Fly from (x, y), not including it, until a wall or the `pierce`-th
     monster hit. Returns (the tile the arrow stopped on, its Arrow). `loud`
     logs a wall hit when nothing was struck (the aim line; volley extras stay
     quiet). The Arrow's path starts at `origin` (default (x, y)): the
-    shooter's cell, which a volley's side arrow doesn't start on."""
+    shooter's cell, which a volley's side arrow doesn't start on. `crit`
+    is passed to each hit's attack() (True: the post-hop guaranteed crit)."""
     path = [origin if origin is not None else (x, y)]
     first_event = len(state.combat_events)
     hits = 0
@@ -114,7 +149,7 @@ def _fly(state: 'GameState', x, y, dx, dy, pierce, factor, loud, origin=None):
         path.append((x, y))
         monster = state.monster_at(x, y)
         if monster is not None:
-            _hit(state, monster, factor, dx, dy)
+            _hit(state, monster, factor, dx, dy, crit)
             hits += 1
             if hits >= pierce:
                 break
@@ -146,14 +181,14 @@ def _volley_starts(state: 'GameState', dx, dy, spread):
     return starts
 
 
-def _hit(state: 'GameState', monster: 'Monster', factor, dx, dy):
+def _hit(state: 'GameState', monster: 'Monster', factor, dx, dy, crit=None):
     """One arrow striking `monster`, with the hunter's mark and the sling's
-    knockback."""
+    knockback. `crit` goes to attack() (None: roll as usual)."""
     weapon = state.player.weapon
     mark_bonus = weapon.mark_bonus if weapon is not None else 0.0
     if mark_bonus and state.marked is monster:
         factor *= 1 + mark_bonus
-    state.attack(state.player, monster, factor)
+    state.attack(state.player, monster, factor, crit=crit)
     if not monster.alive:
         return
     if mark_bonus and state.marked is not monster:

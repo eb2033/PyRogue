@@ -971,12 +971,13 @@ class GameStateIntegrationTests(unittest.TestCase):
         self.assertFalse(handled)
         self.assertEqual(state.depth, 1)
 
-    def test_ability_key_does_nothing_in_play_and_quits_on_game_over(self):
+    def test_ability_key_parries_in_play_and_quits_on_game_over(self):
         random.seed(13)
         state = GameState(50, 20)
         turn = state.turn
-        self.assertFalse(state.handle_action('ability'))
-        self.assertEqual(state.turn, turn)
+        self.assertTrue(state.handle_action('ability'))  # a warrior's Q: parry
+        self.assertTrue(state.parry_armed)
+        self.assertEqual(state.turn, turn + 1)
         self.assertTrue(state.running)
         state.game_over = True
         self.assertFalse(state.handle_action('ability'))
@@ -1215,12 +1216,65 @@ class ArcherHopTests(unittest.TestCase):
         self.assertTrue(state.handle_action('ability'))
         self.assertEqual(state.player.x, px + 2)
 
-    def test_warrior_q_does_nothing(self):
+    def test_warrior_q_parries_instead_of_hopping(self):
         state, _ = self._arena()
         state.player.char_class = 'warrior'
-        turn, n = state.turn, len(state.messages)
+        turn = state.turn
+        self.assertTrue(state.handle_action('ability'))
+        self.assertEqual((state.turn, state.player.x), (turn + 1, 10))
+        self.assertTrue(state.parry_armed)
+        self.assertFalse(state.hop_crit)
+
+    def test_successful_hop_arms_a_crit_for_the_next_shot_only(self):
+        state, mon = self._arena()
+        mon.hp = mon.max_hp = 1000
+        mon.defense = 0
+        with mock.patch('game.state.BASE_CRIT_CHANCE', 0.0):
+            self.assertTrue(state.handle_action('ability'))
+            self.assertTrue(state.hop_crit)
+            state.cancel_monster_phase()
+            power = state.player.power
+            self.assertTrue(state.handle_action('shoot_w'))
+            (hit,) = state.combat_events
+            self.assertTrue(hit.crit)
+            self.assertEqual(hit.damage, round_damage(mitigate(power * CRIT_MULTIPLIER, 0)))
+            self.assertIn('Critical hit!', state.messages)
+            self.assertFalse(state.hop_crit)
+            state.cancel_monster_phase()
+            state.handle_action('shoot_w')  # the one after: no crit
+            (hit,) = state.combat_events
+            self.assertFalse(hit.crit)
+
+    def test_hop_crit_is_spent_by_a_missed_shot(self):
+        state, mon = self._arena()
+        mon.hp = mon.max_hp = 1000
+        with mock.patch('game.state.BASE_CRIT_CHANCE', 0.0):
+            state.handle_action('ability')
+            state.cancel_monster_phase()
+            state.handle_action('shoot_n')  # into the wall: nothing hit
+            self.assertEqual(state.combat_events, [])
+            self.assertFalse(state.hop_crit)
+            state.cancel_monster_phase()
+            state.handle_action('shoot_w')
+            (hit,) = state.combat_events
+            self.assertFalse(hit.crit)
+
+    def test_refused_hop_does_not_arm_the_crit(self):
+        state, _ = self._arena(-5, 0)  # nothing to hop from
         self.assertFalse(state.handle_action('ability'))
-        self.assertEqual((state.turn, len(state.messages), state.player.x), (turn, n, 10))
+        self.assertFalse(state.hop_crit)
+        state, _ = self._arena()
+        state.game_map[10][11] = WALL  # nowhere to hop
+        self.assertFalse(state.handle_action('ability'))
+        self.assertFalse(state.hop_crit)
+        state, mon = self._arena()
+        state.handle_action('ability')
+        state.cancel_monster_phase()
+        state.handle_action('shoot_w')  # spends it
+        state.cancel_monster_phase()
+        mon.x, mon.y = state.player.x - 2, state.player.y
+        self.assertFalse(state.handle_action('ability'))  # on cooldown
+        self.assertFalse(state.hop_crit)
 
     def test_nowhere_to_hop_refuses(self):
         state, _ = self._arena()
@@ -1236,6 +1290,129 @@ class ArcherHopTests(unittest.TestCase):
         state.pending_choice = [Item(0, 0, 'weapon', 'common')]
         self.assertFalse(state.handle_action('ability'))
         self.assertEqual(state.player.x, 10)
+
+
+class WarriorParryTests(unittest.TestCase):
+    """A warrior at (10, 10) in an open arena, with an adjacent goblin to the
+    west unless a test says otherwise."""
+
+    def _arena(self, monster=True):
+        state = GameState(20, 20, char_class='warrior')
+        state.game_map = make_empty_map(20, 20, WALL)
+        for y in range(1, 19):
+            for x in range(1, 19):
+                state.game_map[y][x] = FLOOR
+        p = state.player
+        p.x, p.y = 10, 10
+        p.hp = p.max_hp = 1000
+        p.defense = 0
+        state.entities = [p]
+        mon = None
+        if monster:
+            mon = Monster(9, 10, 'goblin')
+            mon.hp = mon.max_hp = 1000
+            mon.power = 5
+            mon.defense = 2
+            state.entities.append(mon)
+        state.update_fov()
+        return state, mon
+
+    def run_monsters(self, state):
+        while state.step_monster_phase():
+            pass
+
+    def test_q_arms_a_parry_and_takes_a_turn(self):
+        state, _ = self._arena(monster=False)
+        self.assertTrue(state.handle_action('ability'))
+        self.assertTrue(state.parry_armed)
+        self.assertEqual(state.turn, 1)
+        self.assertEqual(state.messages[-1], 'You ready a parry.')
+
+    def test_second_q_while_armed_is_refused_and_takes_no_turn(self):
+        state, _ = self._arena(monster=False)
+        state.handle_action('ability')
+        turn = state.turn
+        self.assertFalse(state.handle_action('ability'))
+        self.assertEqual(state.turn, turn)
+        self.assertEqual(state.messages[-1], 'Your parry is already ready.')
+        self.assertFalse(state.monster_phase_pending())
+
+    def test_next_monster_hit_returns_crit_damage_and_still_lands(self):
+        state, mon = self._arena()
+        assert mon is not None
+        p = state.player
+        state.handle_action('ability')
+        self.run_monsters(state)
+        self.assertFalse(state.parry_armed)
+        incoming, riposte = state.combat_events
+        # The warrior takes the goblin's hit in full ...
+        self.assertIs(incoming.defender, p)
+        self.assertEqual(incoming.damage, round_damage(mitigate(5, 0)))
+        self.assertEqual(p.hp, 1000 - incoming.damage)
+        # ... and the goblin takes raw power x CRIT_MULTIPLIER, less its defence.
+        self.assertIs(riposte.attacker, p)
+        self.assertIs(riposte.defender, mon)
+        expected = round_damage(mitigate(p.power * CRIT_MULTIPLIER, 2))
+        self.assertEqual(riposte.damage, expected)
+        self.assertEqual(mon.hp, 1000 - expected)
+        self.assertIn('Your parry returns the blow to the goblin!', state.messages)
+        # Spent: the next hit is not answered.
+        state.handle_action('wait')
+        self.run_monsters(state)
+        self.assertEqual([h.defender for h in state.combat_events], [p])
+
+    def test_parry_is_not_triggered_by_the_warriors_own_attack(self):
+        state, mon = self._arena()
+        assert mon is not None
+        state.handle_action('ability')
+        state.cancel_monster_phase()
+        state.handle_action('move_w')  # bump the goblin
+        state.cancel_monster_phase()
+        self.assertEqual([h.defender for h in state.combat_events], [mon])
+        self.assertTrue(state.parry_armed)
+
+    def test_a_dodged_hit_does_not_trigger_it(self):
+        state, mon = self._arena()
+        assert mon is not None
+        state.player.armor = Item(0, 0, 'leather', 'epic')
+        state.handle_action('ability')
+        with mock.patch('game.state.random.random', return_value=0.0):
+            self.run_monsters(state)
+        self.assertEqual(state.combat_events, [])
+        self.assertEqual(mon.hp, 1000)
+        self.assertTrue(state.parry_armed)
+
+    def test_an_untriggered_parry_stays_armed(self):
+        state, _ = self._arena(monster=False)
+        state.handle_action('ability')
+        for _ in range(10):
+            state.handle_action('wait')
+            self.run_monsters(state)
+        self.assertTrue(state.parry_armed)
+
+    def test_cooldown_four_turns(self):
+        state, _ = self._arena(monster=False)
+        state.handle_action('ability')
+        state.parry_armed = False  # as if a monster's hit had spent it
+        for left in (4, 3, 2, 1):
+            turn = state.turn
+            self.assertFalse(state.handle_action('ability'))
+            self.assertEqual(state.messages[-1], f'Parry recovering ({left} turns).')
+            self.assertEqual(state.turn, turn)
+            state.handle_action('wait')
+        self.assertTrue(state.handle_action('ability'))
+        self.assertTrue(state.parry_armed)
+
+    def test_pending_choice_and_game_over_block_it(self):
+        state, _ = self._arena(monster=False)
+        state.pending_choice = [Item(0, 0, 'weapon', 'common')]
+        self.assertFalse(state.handle_action('ability'))
+        self.assertFalse(state.parry_armed)
+        state.pending_choice = None
+        state.game_over = True
+        self.assertFalse(state.handle_action('ability'))
+        self.assertFalse(state.parry_armed)
+        self.assertFalse(state.running)  # Q quits on the death screen
 
 
 class GearTests(unittest.TestCase):
@@ -3111,6 +3288,31 @@ class DodgeAndArmorKindTests(unittest.TestCase):
         self.assertEqual(set(ARMOR_KINDS), {'armor', 'leather'})
         self.assertIn('leather', GEAR_DROP_KINDS)
 
+    def test_warriors_find_both_armor_kinds(self):
+        rng = random.Random(12)
+        n = 20000
+        drops = [roll_gear_drop(1, rng, char_class='warrior') for _ in range(n)]
+        boss = [roll_boss_drop(rng, char_class='warrior') for _ in range(n)]
+        for found in (drops, boss):
+            kinds = {d.kind for d in found if d.kind in ARMOR_KINDS}
+            self.assertEqual(kinds, {'armor', 'leather'})
+
+    def test_archers_only_find_leather_at_the_same_armor_share(self):
+        rng = random.Random(13)
+        n = 40000
+        drops = [roll_gear_drop(1, rng, char_class='archer') for _ in range(n)]
+        self.assertFalse(any(d.kind == 'armor' for d in drops))
+        leather = sum(1 for d in drops if d.kind == 'leather') / n
+        self.assertAlmostEqual(leather, ARMOR_DROP_CHANCE, delta=0.01)
+        boss = [roll_boss_drop(rng, char_class='archer') for _ in range(n)]
+        self.assertFalse(any(d.kind == 'armor' for d in boss))
+        leather = sum(1 for d in boss if d.kind == 'leather') / n
+        self.assertAlmostEqual(leather, ARMOR_DROP_CHANCE, delta=0.01)
+        chest = Chest(0, 0, kind='gear')
+        for _ in range(500):
+            for item in chest.open(5, rng, char_class='archer'):
+                self.assertNotEqual(item.kind, 'armor')
+
 
 class ArcherArena(unittest.TestCase):
     """An archer in an open arena: floor inside the border, player at
@@ -3304,6 +3506,47 @@ class ArcherWeaponTests(ArcherArena):
         self.assertEqual(state.player.quiver, QUIVER_CAPACITY - 1)  # one arrow spent
         self.assertEqual(state.turn, 1)  # all of it on the same turn
 
+    def test_point_blank_volley_puts_every_arrow_into_the_adjacent_target(self):
+        self.equip('volley_bow', 'common', power=10)  # 2 extras at 50%
+        target = self.monster(11, 10)
+        left, right = self.monster(11, 9), self.monster(11, 11)  # the side lanes
+        state = self.state
+        self.assertTrue(state.handle_action('shoot_e'))
+        self.assertEqual([h.defender for h in state.combat_events], [target] * 3)
+        self.assertEqual([h.damage for h in state.combat_events], [10, 5, 5])
+        self.assertEqual(target.hp, 1000 - 20)
+        self.assertEqual((left.hp, right.hp), (1000, 1000))
+        (shot,) = state.shots
+        self.assertEqual(len(shot.arrows), 3)
+        for arrow in shot.arrows:
+            self.assertEqual(arrow.path, ((10, 10), (11, 10)))
+            self.assertEqual([h.defender for h in arrow.hits], [target])
+        self.assertEqual(state.player.quiver, QUIVER_CAPACITY - 1)  # one arrow spent
+        self.assertEqual(self.piles(), {(11, 10): 1})
+
+    def test_point_blank_rare_volley_lands_all_four_arrows(self):
+        self.equip('volley_bow', 'rare', power=10)  # 3 extras at 60%
+        target = self.monster(11, 10)
+        self.state.shoot_arrow(1, 0)
+        self.assertEqual([h.damage for h in self.state.combat_events], [10, 6, 6, 6])
+        self.assertEqual(target.hp, 1000 - 28)
+
+    def test_point_blank_volley_does_not_overkill(self):
+        self.equip('volley_bow', 'common', power=10)
+        target = self.monster(11, 10, hp=5)
+        self.state.shoot_arrow(1, 0)
+        self.assertEqual([h.defender for h in self.state.combat_events], [target])
+        self.assertFalse(target.alive)
+        (shot,) = self.state.shots
+        self.assertEqual([len(a.hits) for a in shot.arrows], [1, 0, 0])
+
+    def test_volley_two_tiles_away_is_not_point_blank(self):
+        self.equip('volley_bow', 'common', power=10)
+        target = self.monster(12, 10)
+        self.state.shoot_arrow(1, 0)
+        self.assertEqual([h.defender for h in self.state.combat_events], [target])
+        self.assertEqual(target.hp, 990)
+
     def test_a_single_arrow_bow_records_a_one_arrow_shot(self):
         self.equip('longbow', 'common', power=6)
         first, second = self.monster(12, 10), self.monster(14, 10)
@@ -3412,16 +3655,16 @@ class ArcherWeaponTests(ArcherArena):
 
     def test_weapons_drop_only_to_their_own_class(self):
         rng = random.Random(121)
-        for char_class, own, other in (
-            ('archer', ARCHER_WEAPONS, WARRIOR_WEAPONS),
-            ('warrior', WARRIOR_WEAPONS, ARCHER_WEAPONS),
+        for char_class, own, other, armor in (
+            ('archer', ARCHER_WEAPONS, WARRIOR_WEAPONS, {'leather'}),
+            ('warrior', WARRIOR_WEAPONS, ARCHER_WEAPONS, set(ARMOR_KINDS)),
         ):
             drops = [roll_gear_drop(1, rng, char_class) for _ in range(3000)]
             drops += [roll_boss_drop(rng, char_class) for _ in range(3000)]
             kinds = {d.kind for d in drops}
             self.assertFalse(kinds & set(other), char_class)
             self.assertTrue(set(own) <= kinds, char_class)
-            self.assertTrue(set(ARMOR_KINDS) <= kinds, char_class)
+            self.assertEqual(kinds & set(ARMOR_KINDS), armor, char_class)
 
     def test_chests_opened_in_game_follow_the_class(self):
         for char_class, other in (('archer', WARRIOR_WEAPONS), ('warrior', ARCHER_WEAPONS)):
