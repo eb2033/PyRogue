@@ -85,12 +85,12 @@ WEAPON_DAMAGE_OFFSET = {
     'sword_shield': 0,
     'dagger': -1,
     'spear': 0,
-    'longbow': -2,
-    'heavy_crossbow': 1,
-    'volley_bow': -3,
-    'sling': -2,
-    'hunters_bow': -2,
-    'quickdraw': -1,
+    'longbow': -1,
+    'heavy_crossbow': 2,
+    'volley_bow': -2,
+    'sling': -1,
+    'hunters_bow': -1,
+    'quickdraw': 0,
 }
 AXE_MAX_HP = {'common': 3, 'uncommon': 6, 'rare': 9, 'epic': 15}
 # The requested 1/2/3 shield defense, x3 for the ARMOR_DEFENSE rescale, with

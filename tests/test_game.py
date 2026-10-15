@@ -3063,12 +3063,12 @@ class ArcherArena(unittest.TestCase):
 
 class ArcherWeaponTests(ArcherArena):
     EXPECTED_BONUS = {
-        'longbow': {'common': -1, 'uncommon': 0, 'rare': 2, 'epic': 5},
-        'heavy_crossbow': {'common': 2, 'uncommon': 3, 'rare': 5, 'epic': 8},
-        'volley_bow': {'common': -2, 'uncommon': -1, 'rare': 1, 'epic': 4},
-        'sling': {'common': -1, 'uncommon': 0, 'rare': 2, 'epic': 5},
-        'hunters_bow': {'common': -1, 'uncommon': 0, 'rare': 2, 'epic': 5},
-        'quickdraw': {'common': 0, 'uncommon': 1, 'rare': 3, 'epic': 6},
+        'longbow': {'common': 0, 'uncommon': 1, 'rare': 3, 'epic': 6},
+        'heavy_crossbow': {'common': 3, 'uncommon': 4, 'rare': 6, 'epic': 9},
+        'volley_bow': {'common': -1, 'uncommon': 0, 'rare': 2, 'epic': 5},
+        'sling': {'common': 0, 'uncommon': 1, 'rare': 3, 'epic': 6},
+        'hunters_bow': {'common': 0, 'uncommon': 1, 'rare': 3, 'epic': 6},
+        'quickdraw': {'common': 1, 'uncommon': 2, 'rare': 4, 'epic': 7},
     }
     EXPECTED_EFFECT = {
         'longbow': ('pierce', (2, 2, 3, 4)),
@@ -3354,8 +3354,8 @@ class StartingWeaponTests(unittest.TestCase):
         archer = GameState(50, 20, char_class='archer').player
         self.assertEqual((archer.weapon.kind, archer.weapon.rarity), ('longbow', 'common'))
         self.assertEqual(archer.weapon.pierce, 2)
-        # base 3 + common bonus 1 + longbow offset -2 = 2 (above MIN_POWER).
-        self.assertEqual(archer.power, 2)
+        # base 3 + common bonus 1 + longbow offset -1 = 3 (above MIN_POWER).
+        self.assertEqual(archer.power, 3)
         warrior = GameState(50, 20, char_class='warrior').player
         self.assertEqual((warrior.weapon.kind, warrior.weapon.rarity), ('weapon', 'common'))
 
