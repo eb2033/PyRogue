@@ -784,7 +784,7 @@ class HitShakeAndHealthBarTest(unittest.TestCase):
         for hp in (20, 10, 3):
             goblin.hp = hp
             rect = self.bar(state, goblin)
-            self.assertTrue(cell_pixels(self.renderer, rect) <= HEALTH_BAR_COLORS)
+            self.assertTrue(set(cell_pixels(self.renderer, rect)) <= HEALTH_BAR_COLORS)
 
     def test_bar_sits_above_the_cell_and_never_on_the_player(self):
         state, goblin = self.fight()
