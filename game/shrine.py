@@ -16,7 +16,7 @@ are recomputed from Player.boons wherever those stats are derived
 (item.gear_power, item.gear_defense, state.crit_chance, item.belt_capacity,
 item.potion_heal), so a boon can never apply twice. Max HP, like a War Axe's
 bonus, is a running total: a boon's max_hp is added once, when it is taken
-(GameState.take_boon), and saved as part of max_hp.
+(GameState.take_boon), and from then on is part of max_hp.
 """
 
 import math

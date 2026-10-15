@@ -39,8 +39,8 @@ RARITY_WEIGHTS_SHALLOW = [0.60, 0.25, 0.12, 0.03]
 RARITY_WEIGHTS_DEEP = [0.10, 0.25, 0.35, 0.30]
 MAX_SCALING_DEPTH = 20
 
-# Rarity -> curses color-pair number. Pairs 4-7 are reserved for this in
-# render/curses_render.py's COLOR_PAIRS table.
+# Rarity -> Entity.color number. 4-7 are reserved for this in
+# render/palette.py's COLORS table.
 RARITY_COLOR = {'common': 7, 'uncommon': 4, 'rare': 5, 'epic': 6}
 
 POTION_HEAL = {'common': 20, 'uncommon': 35, 'rare': 55, 'epic': 88}
@@ -57,7 +57,7 @@ ARMOR_DEFENSE = {'common': 3, 'uncommon': 6, 'rare': 12, 'epic': 21}
 # The six weapon types (each fills the weapon slot). Their damage bonus is the
 # GEAR_BONUS table plus a per-kind offset; their special effect is data in
 # WEAPON_EFFECTS below. The plain 'weapon' kind is the original sword line
-# with no effect (old saves hold it, and it still drops).
+# with no effect (it still drops).
 WEAPON_TYPES = ['war_axe', 'rapier', 'great_sword', 'sword_shield', 'dagger', 'spear']
 WEAPON_DAMAGE_OFFSET = {
     'war_axe': -1,
@@ -82,7 +82,7 @@ MIN_POWER = 1
 # these attributes (EFFECT_DEFAULTS for anything not listed), so code reads
 # player.weapon.reach and friends directly. A value is either a constant or a
 # rarity table. Effects come from (kind, rarity) when the Item is built, so
-# a save only needs the kind and rarity.
+# the kind and rarity are all an Item needs.
 EFFECT_DEFAULTS = {
     'max_hp_bonus': 0,
     'strikes': 1,
@@ -184,7 +184,7 @@ ARMOR_DROP_CHANCE = 0.20
 
 CHEST_CHAR = '='
 CHEST_COLOR = 3  # gear chests: reuses the cyan pair the old flat "item" color used
-POTION_CHEST_COLOR = 8  # potion chests: pink (pair 8 in render/curses_render.py)
+POTION_CHEST_COLOR = 8  # potion chests: pink (8 in render/palette.py)
 CHEST_KINDS = ['potion', 'gear']
 # How many items a gear chest (and a boss chest) offers to choose from.
 GEAR_CHEST_DROPS = 3
@@ -214,8 +214,8 @@ def roll_rarity(depth=1, rng: Rng = random):
 
 
 def roll_kind(rng: Rng = random):
-    """Potion or gear, 50/50. Only used for a chest loaded from a save that
-    predates chest kinds; new chests get their kind from spawn_chests."""
+    """Potion or gear, 50/50: the kind of a Chest built without one. Chests
+    on the map get their kind from spawn_chests."""
     return rng.choice(CHEST_KINDS)
 
 
@@ -383,8 +383,6 @@ class Chest(Entity):
     def __init__(self, x, y, guaranteed_min_rarity=None, kind=None, rng: Rng = random):
         if kind is None:
             kind = 'gear' if guaranteed_min_rarity else roll_kind(rng)
-        elif kind in GEAR_SLOTS:
-            kind = 'gear'  # a save from when gear chests were 'weapon'/'armor'
         color = POTION_CHEST_COLOR if kind == 'potion' else CHEST_COLOR
         super().__init__(x, y, CHEST_CHAR, color=color, name='chest')
         self.guaranteed_min_rarity = guaranteed_min_rarity

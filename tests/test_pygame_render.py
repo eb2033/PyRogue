@@ -7,7 +7,6 @@ queue a real window feeds -- so these exercise the actual blocking wait.
 
 import collections
 import os
-import sys
 import unittest
 from typing import Any, cast
 from unittest import mock
@@ -94,15 +93,15 @@ class PygameRendererTest(unittest.TestCase):
         self.assertEqual(play.call_args[0][0], 110)
         self.assertEqual(self.renderer._tilts, {})
 
-    def test_get_action_maps_keys_like_curses(self):
+    def test_get_action_maps_keys(self):
         self.post(
             key(pygame.K_w, 'w'),
-            key(pygame.K_s, 'S', shift=True),
+            key(pygame.K_e, 'e'),
             key(pygame.K_UP),
             key(pygame.K_PERIOD, '.'),
         )
         self.assertEqual(self.renderer.get_action(), Action.MOVE_N)
-        self.assertEqual(self.renderer.get_action(), Action.SAVE)
+        self.assertEqual(self.renderer.get_action(), Action.DESCEND)
         self.assertEqual(self.renderer.get_action(), Action.SHOOT_N)
         self.assertEqual(self.renderer.get_action(), Action.WAIT)
 
@@ -263,7 +262,7 @@ class PygameRendererTest(unittest.TestCase):
         self.renderer.draw(GameState(WIDTH, HEIGHT))
 
     def test_make_renderer_uses_the_bundled_font(self):
-        renderer = cast(PygameRenderer, main.make_renderer('pygame', WIDTH, HEIGHT))
+        renderer = cast(PygameRenderer, main.make_renderer(WIDTH, HEIGHT))
         try:
             font_path = cast(str, renderer.layout.font_path)
             self.assertTrue(font_path.endswith(main.BUNDLED_FONT))
@@ -604,7 +603,7 @@ class TileModeTest(unittest.TestCase):
 
     def test_tiles_env_zero_keeps_glyph_mode(self):
         with mock.patch.dict(os.environ, {'TILES': '0'}):
-            renderer = cast(PygameRenderer, main.make_renderer('pygame', WIDTH, HEIGHT))
+            renderer = cast(PygameRenderer, main.make_renderer(WIDTH, HEIGHT))
         try:
             self.assertFalse(renderer.layout.tiles)
         finally:
@@ -613,7 +612,7 @@ class TileModeTest(unittest.TestCase):
     def test_make_renderer_uses_the_bundled_tiles_by_default(self):
         with mock.patch.dict(os.environ):
             os.environ.pop('TILES', None)
-            renderer = cast(PygameRenderer, main.make_renderer('pygame', WIDTH, HEIGHT))
+            renderer = cast(PygameRenderer, main.make_renderer(WIDTH, HEIGHT))
         try:
             self.assertTrue(renderer.layout.tiles)
         finally:
@@ -1263,34 +1262,7 @@ class ChoiceCardTextTest(unittest.TestCase):
         self.assertEqual(
             choice.card_lines(1, item), ['[1]', item.name, 'rare', '+3 damage, +15% crit']
         )
-        self.assertIn('+15% crit', choice.tight_line(1, item))
         self.assertIn('+15% crit', choice.compact_lines(1, item)[1])
-
-
-class DefaultRendererTest(unittest.TestCase):
-    """main.default_renderer: a frozen (--windowed) exe has no terminal."""
-
-    def setUp(self):
-        patcher = mock.patch.dict(os.environ)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        os.environ.pop('RENDERER', None)
-
-    def test_source_run_defaults_to_curses(self):
-        with mock.patch.object(sys, 'frozen', False, create=True):
-            self.assertEqual(main.default_renderer(), 'curses')
-
-    def test_frozen_build_defaults_to_pygame(self):
-        with mock.patch.object(sys, 'frozen', True, create=True):
-            self.assertEqual(main.default_renderer(), 'pygame')
-
-    def test_env_overrides_the_frozen_default(self):
-        os.environ['RENDERER'] = 'curses'
-        with mock.patch.object(sys, 'frozen', True, create=True):
-            self.assertEqual(main.default_renderer(), 'curses')
-
-    def test_tcod_is_no_longer_a_choice(self):
-        self.assertEqual(main.RENDERERS, ['curses', 'pygame'])
 
 
 # -- helpers -----------------------------------------------------------------

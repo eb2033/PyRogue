@@ -2,8 +2,8 @@
 
 main.resolve_monster_phase is what makes the monster half of a round
 *visible*: it draws the world before each monster acts and holds the frame
-afterwards. That is pure logic once the renderer is a stand-in, so unlike the
-curses renderer itself (see CLAUDE.md) it can be tested headlessly.
+afterwards. That is pure logic once the renderer is a stand-in, so it can be
+tested without a window.
 """
 
 import os

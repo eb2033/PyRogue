@@ -10,7 +10,6 @@ environment), never at import time, so tests can fake any of it.
 """
 
 import os
-import shutil
 import sys
 from pathlib import Path
 
@@ -19,7 +18,6 @@ APP_NAME = 'PyRogue'
 XDG_APP_NAME = 'pyrogue'
 # Escape hatch: an explicit data directory (portable installs, tests, CI).
 DATA_DIR_ENV = 'PYROGUE_DATA_DIR'
-SAVE_FILENAME = 'savegame.json'
 LOG_FILENAME = 'crash.log'
 # The repo root: game/paths.py -> game/ -> root.
 SOURCE_ROOT = Path(__file__).resolve().parent.parent
@@ -79,37 +77,6 @@ def user_data_dir():
     return path
 
 
-def save_path():
-    """user_data_dir()/savegame.json."""
-    return user_data_dir() / SAVE_FILENAME
-
-
 def log_path():
     """user_data_dir()/crash.log."""
     return user_data_dir() / LOG_FILENAME
-
-
-def legacy_save_path():
-    """Where saves went before WS-B: savegame.json in the current directory."""
-    return Path.cwd() / SAVE_FILENAME
-
-
-def migrate_legacy_save(target=None, legacy=None):
-    """One-time copy of a pre-WS-B ./savegame.json into the user data dir.
-
-    Copies only if the legacy file exists and `target` (default save_path())
-    does not; never deletes the original. Returns True if a copy was made.
-    Never raises -- a failed migration just means starting without that save.
-    """
-    try:
-        target = Path(target) if target is not None else save_path()
-        legacy = Path(legacy) if legacy is not None else legacy_save_path()
-        if target.exists() or not legacy.is_file():
-            return False
-        if legacy.resolve() == target.resolve():
-            return False
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(legacy, target)
-        return True
-    except OSError:
-        return False

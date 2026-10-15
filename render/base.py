@@ -1,7 +1,7 @@
 """The renderer interface. Three methods is enough.
 
 get_action() returns a *semantic* action string, never a keycode — that is what
-keeps the game loop identical across curses and SDL.
+keeps keys and windows out of the game loop and GameState.
 """
 
 
@@ -22,8 +22,6 @@ class Action:
     SHOOT_E = 'shoot_e'
     WAIT = 'wait'
     DESCEND = 'descend'
-    SAVE = 'save'
-    LOAD = 'load'
     QUIT = 'quit'
     # Keys 1-3: take that card of an opened chest's choice (GameState.choose).
     # Outside a choice they do nothing.
@@ -61,5 +59,5 @@ class Renderer:
         raise NotImplementedError
 
     def close(self):
-        """Restore the terminal / tear down the window."""
+        """Tear down the window."""
         raise NotImplementedError

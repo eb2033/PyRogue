@@ -65,7 +65,7 @@ def visible_windows_of(pid):
 
 def clean_env(scratch):
     """os.environ minus anything that could let the frozen app find this
-    checkout's Python, with per-user dirs pointed into `scratch` so a save or
+    checkout's Python, with per-user dirs pointed into `scratch` so a
     crash.log can't land in the real profile."""
     env = dict(os.environ)
     for name in (
@@ -83,7 +83,6 @@ def clean_env(scratch):
     )
     env.update(
         {
-            'RENDERER': 'pygame',  # until WS-A makes it the frozen default
             'SDL_VIDEODRIVER': 'dummy',
             'SDL_AUDIODRIVER': 'dummy',
             'APPDATA': str(scratch),  # Windows user_data_dir

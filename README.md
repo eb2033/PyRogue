@@ -2,7 +2,7 @@
 
 A turn-based roguelike dungeon crawler, written in Python. Pick a class, fight your way down
 procedurally generated floors, open chests for better gear, and survive the boss every eighth floor.
-It plays in its own window with pixel-art tiles, or in a plain terminal.
+It plays in its own window with pixel-art tiles.
 
 ![PyRogue in its window: a lit room with the player, a goblin, an orc and two chests, explored rooms dimmed around it, and the stats on a page pinned to a wooden noticeboard](docs/screenshot.png)
 
@@ -20,18 +20,12 @@ lists `SHA256SUMS` to check your download against.
 
 ## Run from source
 
-The terminal version needs nothing but Python 3.12+ (on Windows, also `pip install windows-curses`):
-
-```bash
-python3 main.py
-```
-
-The window version needs [pygame-ce](https://pyga.me):
+Needs Python 3.12+ and [pygame-ce](https://pyga.me):
 
 ```bash
 python -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/python main.py --renderer pygame
+.venv/bin/python main.py
 ```
 
 ## How to play
@@ -42,11 +36,10 @@ python -m venv .venv
 | Arrow keys | **Warrior:** move. **Archer:** shoot an arrow that way. |
 | `.` | Wait a turn |
 | `e` | Go down the stairs (`>`) when you're standing on them |
-| `S` / `L` | Save / load (Shift+S, Shift+L) |
 | `q` | Quit |
-| `F11` | Fullscreen (window version) |
+| `F11` | Fullscreen |
 
-Menus also take the mouse in the window version.
+Menus also take the mouse.
 
 - **Classes.** The **Warrior** fights in melee. The **Archer** has less health but shoots arrows
   along a straight line, hitting the first monster in the way.
@@ -55,7 +48,7 @@ Menus also take the mouse in the window version.
 - **Chests.** Walk onto one to open it. **Pink** chests hold a healing potion, **cyan** ones a
   weapon or armour. Gear comes in four rarities (common, uncommon, rare, epic) and is equipped
   automatically if it's better than what you're wearing. Loot gets better the deeper you go.
-- **Combat zoom.** In the window, a melee fight zooms the map in on you and your opponent, blows
+- **Combat zoom.** A melee fight zooms the map in on you and your opponent, blows
   flash with the damage, and it zooms back out when the fight ends (Warrior only for now). Any key
   skips the animation.
 - **Monsters** get tougher every three floors. Every eighth floor has a **boss**, which drops a
@@ -71,11 +64,11 @@ per line:
 | `MAP_WIDTH`, `MAP_HEIGHT` | 50, 20 | Map size in tiles (a source checkout's `.env` sets 40x20) |
 | `FOV_RADIUS` | 6 | How far you can see |
 | `TURN_DELAY_MS` | 110 | Pause between monster moves; `0` makes them instant |
-| `TILES` | 1 | `0` draws letters instead of tiles in the window |
+| `TILES` | 1 | `0` draws letters instead of tiles |
 | `COMBAT_ZOOM` | 1 | `0` keeps the whole map in view during melee fights |
-| `RENDERER` | `curses` from source, `pygame` in the download | `curses` or `pygame` |
 
-Saves and `crash.log` go to your user data folder: `%APPDATA%\PyRogue` on Windows,
+There is no save/load: a run is meant to be played in one sitting. `crash.log` goes to your user
+data folder: `%APPDATA%\PyRogue` on Windows,
 `~/.local/share/pyrogue` on Linux, `~/Library/Application Support/PyRogue` on macOS.
 
 ## Development

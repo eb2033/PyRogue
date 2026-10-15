@@ -770,8 +770,8 @@ class PygameRenderer(Renderer):
         self.canvas.surface.blit(surface, surface.get_rect(center=centre))
 
     def _paint_boss(self, x, y, char, rgb, color_index, angle=0):
-        """curses draws a boss A_BOLD | A_UNDERLINE in its pair's colour; here
-        that is a brightened colour, a bold face, and an underline. In tile
+        """A boss in glyph mode: a brightened colour, a bold face, and an
+        underline. In tile
         mode the boss's own tile (tiles.json gives bosses extra armour) is the
         distinction."""
         if self._paint_tile(x, y, char, color_index, angle=angle):

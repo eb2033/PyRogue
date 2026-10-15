@@ -38,7 +38,7 @@ def _option_text(option, selected):
 
 def paint_menu(canvas, menu, banner_lines, descriptions=None):
     """A banner, the menu's options (selected one highlighted), and the
-    selected option's description, laid out like the curses menu."""
+    selected option's description, centred in the text grid."""
     rows = canvas.layout.rows
     options = menu.options
     top, options_top = _menu_geometry(canvas.layout, options, banner_lines)

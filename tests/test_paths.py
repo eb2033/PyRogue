@@ -1,4 +1,4 @@
-"""game/paths.py and the save-location wiring in game/state.py (WS-B), plus
+"""game/paths.py (WS-B), plus
 game/version.py (WS-F). Settings and crash logging have their own files:
 tests/test_settings.py, tests/test_crashlog.py.
 
@@ -8,9 +8,7 @@ or $PYROGUE_DATA_DIR.
 """
 
 import os
-import random
 import re
-import stat
 import sys
 import tempfile
 import unittest
@@ -18,8 +16,6 @@ from pathlib import Path
 from unittest import mock
 
 from game import crashlog, paths, settings
-from game import state as state_module
-from game.state import GameState
 from game.version import __version__
 
 # Variables that steer user_data_dir(); each test starts with none of them set.
@@ -154,118 +150,15 @@ class UserDataDirTest(_TempDirTest):
             with mock.patch.object(sys, 'platform', platform):
                 self.assertEqual(paths.user_data_dir(), override)
 
-    def test_save_and_log_live_in_the_data_dir(self):
+    def test_log_lives_in_the_data_dir(self):
         os.environ['PYROGUE_DATA_DIR'] = str(self.tmp)
-        self.assertEqual(paths.save_path(), self.tmp / 'savegame.json')
         self.assertEqual(paths.log_path(), self.tmp / 'crash.log')
 
     def test_resolved_at_call_time_not_import_time(self):
         os.environ['PYROGUE_DATA_DIR'] = str(self.tmp / 'a')
-        first = paths.save_path()
+        first = paths.log_path()
         os.environ['PYROGUE_DATA_DIR'] = str(self.tmp / 'b')
-        self.assertNotEqual(first, paths.save_path())
-
-
-class MigrationTest(_TempDirTest):
-    def test_copies_legacy_save_when_target_missing(self):
-        legacy = self.tmp / 'old' / 'savegame.json'
-        legacy.parent.mkdir()
-        legacy.write_text('{"legacy": true}')
-        target = self.tmp / 'data' / 'savegame.json'
-        self.assertTrue(paths.migrate_legacy_save(target, legacy))
-        self.assertEqual(target.read_text(), '{"legacy": true}')
-        self.assertTrue(legacy.exists(), 'the original is never deleted')
-
-    def test_never_overwrites_an_existing_save(self):
-        legacy = self.tmp / 'legacy.json'
-        legacy.write_text('old')
-        target = self.tmp / 'savegame.json'
-        target.write_text('new')
-        self.assertFalse(paths.migrate_legacy_save(target, legacy))
-        self.assertEqual(target.read_text(), 'new')
-
-    def test_nothing_to_migrate(self):
-        target = self.tmp / 'savegame.json'
-        self.assertFalse(paths.migrate_legacy_save(target, self.tmp / 'missing.json'))
-        self.assertFalse(target.exists())
-
-
-class SaveLocationTest(_TempDirTest):
-    """GameState's 'save'/'load' actions go through paths.save_path()."""
-
-    def setUp(self):
-        super().setUp()
-        self.data = self.tmp / 'data'
-        os.environ['PYROGUE_DATA_DIR'] = str(self.data)
-        self.work = self.tmp / 'cwd'
-        self.work.mkdir()
-        old_cwd = os.getcwd()
-        os.chdir(self.work)
-        self.addCleanup(os.chdir, old_cwd)
-        random.seed(7)
-        self.state = GameState(40, 20)
-
-    def test_save_goes_to_user_data_dir_not_cwd(self):
-        self.state.handle_action('save')
-        self.assertTrue((self.data / 'savegame.json').is_file())
-        self.assertFalse((self.work / 'savegame.json').exists())
-        self.assertEqual(self.state.messages[-1], 'Game saved.')
-
-    def test_round_trip(self):
-        self.state.handle_action('save')
-        hp = self.state.player.hp
-        self.state.player.hp = 1
-        self.state.handle_action('load')
-        self.assertEqual(self.state.player.hp, hp)
-        self.assertEqual(self.state.messages[-1], 'Game loaded.')
-
-    def test_legacy_cwd_save_is_migrated_on_load(self):
-        self.state.player.hp = 3
-        from game.save import save_game
-
-        save_game(self.state, self.work / 'savegame.json')  # a pre-WS-B save
-        self.state.player.hp = 20
-        self.state.handle_action('load')
-        self.assertEqual(self.state.player.hp, 3)
-        self.assertTrue((self.data / 'savegame.json').is_file())
-
-    def test_explicit_save_path_seam(self):
-        explicit = self.tmp / 'elsewhere.json'
-        with mock.patch.object(state_module, 'SAVE_PATH', str(explicit)):
-            self.state.handle_action('save')
-        self.assertTrue(explicit.is_file())
-        self.assertFalse((self.data / 'savegame.json').exists())
-
-    @unittest.skipIf(
-        sys.platform.startswith('win'), 'Windows ignores POSIX directory permission bits'
-    )
-    @unittest.skipIf(
-        hasattr(os, 'geteuid') and os.geteuid() == 0, 'root ignores directory permissions'
-    )
-    def test_save_load_with_read_only_cwd(self):
-        os.chmod(self.work, stat.S_IRUSR | stat.S_IXUSR)
-        self.addCleanup(os.chmod, self.work, stat.S_IRWXU)
-        with self.assertRaises(OSError):
-            (self.work / 'probe').write_text('x')  # really is read-only
-        self.state.handle_action('save')
-        self.assertEqual(self.state.messages[-1], 'Game saved.')
-        self.state.player.hp = 1
-        self.state.handle_action('load')
-        self.assertEqual(self.state.messages[-1], 'Game loaded.')
-        self.assertGreater(self.state.player.hp, 1)
-
-    def test_unwritable_save_location_logs_instead_of_crashing(self):
-        blocker = self.tmp / 'file-not-dir'
-        blocker.write_text('')
-        with mock.patch.object(state_module, 'SAVE_PATH', str(blocker / 'savegame.json')):
-            self.state.handle_action('save')
-        self.assertTrue(self.state.messages[-1].startswith('Save failed'))
-
-    def test_corrupt_save_logs_instead_of_crashing(self):
-        self.data.mkdir(parents=True, exist_ok=True)
-        (self.data / 'savegame.json').write_text('{not json')
-        self.state.handle_action('load')
-        self.assertTrue(self.state.messages[-1].startswith('Load failed'))
+        self.assertNotEqual(first, paths.log_path())
 
 
 class ContractTest(unittest.TestCase):
@@ -274,7 +167,6 @@ class ContractTest(unittest.TestCase):
     def test_platform_functions_exist(self):
         for fn in (
             paths.user_data_dir,
-            paths.save_path,
             paths.log_path,
             settings.find_config,
             settings.load,

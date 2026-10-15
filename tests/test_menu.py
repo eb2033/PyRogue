@@ -1,4 +1,4 @@
-"""Headless tests for the menu/banner UI primitives (no curses needed --
+"""Headless tests for the menu/banner UI primitives (no window needed --
 these are the pure pieces the renderer draws, kept separate on purpose).
 """
 

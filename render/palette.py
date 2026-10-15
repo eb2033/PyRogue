@@ -1,7 +1,6 @@
 """RGB colours for the pygame front end. Owned by WS-A (desktop_build_plan.md §5).
 
-Mirrors curses_render.COLOR_PAIRS: the keys are the same Entity.color ints the
-game stores (pair 1 player, 2 red, 3 gear chest, 4-7 the gear-rarity ladder
+The keys are the Entity.color ints the game stores (pair 1 player, 2 red, 3 gear chest, 4-7 the gear-rarity ladder
 from game/item.py's RARITY_COLOR, 8 potion chest), so game/ never needs to know about RGB.
 No pygame import -- plain tuples, usable from any module.
 """
@@ -20,8 +19,8 @@ PLAYER = COLORS[1]
 DANGER = COLORS[2]
 
 TEXT = (200, 200, 200)
-VISIBLE = (235, 235, 235)  # curses A_BOLD
-SEEN = (90, 90, 90)  # curses A_DIM -- remembered, not currently in view
+VISIBLE = (235, 235, 235)  # in view
+SEEN = (90, 90, 90)  # remembered, not currently in view
 BACKGROUND = (0, 0, 0)
 
 
@@ -55,6 +54,6 @@ def color(index: int, default: tuple[int, int, int] = TEXT) -> tuple[int, int, i
 
 
 def brighten(rgb, amount=0.35):
-    """`rgb` moved `amount` of the way toward white -- the boss highlight,
-    standing in for curses' A_BOLD on top of the pair's colour."""
+    """`rgb` moved `amount` of the way toward white -- the boss highlight
+    on top of its own colour."""
     return tuple(round(c + (255 - c) * amount) for c in rgb)

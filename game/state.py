@@ -1,8 +1,8 @@
 """The whole world in one object, plus turn resolution.
 
-GameState knows nothing about curses, pygame, or keys. It takes semantic actions
-(see render.base.Action) and advances the world. That is what lets one game loop
-drive either renderer.
+GameState knows nothing about pygame or keys. It takes semantic actions (see
+render.base.Action) and advances the world, so the game loop never sees a
+keycode.
 
 A round has two halves. handle_action() resolves the player's half and then
 *queues* the monsters rather than running them, so the caller can draw the
@@ -16,7 +16,6 @@ for callers that don't care about the split (tests, headless use).
 import random
 from typing import Any
 
-from game import paths
 from game.combat import Hit
 from game.damage import mitigate, round_damage
 from game.dungeon import generate_dungeon, place_stairs
@@ -33,26 +32,9 @@ from game.item import (
     spawn_chests,
 )
 from game.monster import Monster, is_boss_level, tier_for_depth
-from game.save import apply_dict, load_game, save_game
 from game.shrine import Boon, Shrine, boon_total, place_shrine, roll_boons
 from game.spawn import spawn_level
 from game.tiles import DOOR, FLOOR, STAIRS_DOWN, is_walkable
-
-# None means "use paths.save_path()" (the per-user data dir), resolved at
-# save/load time rather than import time. Tests -- or anything else that wants
-# saves somewhere specific -- may set this to an explicit path instead.
-SAVE_PATH = None
-
-
-def current_save_path():
-    """Where 's'/'l' write and read the save, migrating a legacy
-    ./savegame.json into the user data dir on first use."""
-    if SAVE_PATH is not None:
-        return SAVE_PATH
-    target = paths.save_path()
-    paths.migrate_legacy_save(target)
-    return target
-
 
 # Semantic action -> (dx, dy) in game coordinates. y grows downward.
 MOVE_DELTAS = {
@@ -211,28 +193,6 @@ class GameState:
 
         if action == 'quit':
             self.running = False
-            return False
-
-        if action == 'save':
-            try:
-                save_game(self, current_save_path())
-            except OSError as exc:
-                self.log(f'Save failed: {exc.strerror or exc}')
-            else:
-                self.log('Game saved.')
-            return False
-
-        if action == 'load':
-            try:
-                data = load_game(current_save_path())
-            except (OSError, ValueError) as exc:
-                self.log(f'Load failed: {getattr(exc, "strerror", None) or exc}')
-                return False
-            if data is None:
-                self.log('No save file found.')
-            else:
-                apply_dict(self, data)
-                self.log('Game loaded.')
             return False
 
         if self.game_over:
@@ -639,7 +599,7 @@ class GameState:
 
     def cancel_monster_phase(self):
         """Drop any queued monsters — used when the level they belong to is
-        thrown away underneath them (descending, loading a save)."""
+        thrown away underneath them (descending to the next floor)."""
         self._pending_monsters = []
 
     def step_monster_phase(self):

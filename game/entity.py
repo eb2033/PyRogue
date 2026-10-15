@@ -50,10 +50,10 @@ class Entity:
 
 
 class Player(Entity):
-    """The player: an Entity plus the stats GameState and save.py fill in.
+    """The player: an Entity plus the stats GameState fills in.
 
     The defaults here are placeholders; GameState sets them from CLASS_STATS
-    straight after construction, and apply_dict overwrites them on load.
+    straight after construction.
     """
 
     def __init__(self, x, y, char='@', color=1, name='you'):

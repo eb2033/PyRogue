@@ -1,4 +1,4 @@
-"""Headless tests for game/ logic (no curses — this exercises GameState
+"""Headless tests for game/ logic (no window — this exercises GameState
 and its collaborators directly, the same way the renderer would).
 
 Run with:
@@ -8,7 +8,6 @@ Run with:
 import os
 import random
 import sys
-import tempfile
 import unittest
 from typing import cast
 from unittest import mock
@@ -64,7 +63,6 @@ from game.monster import (
     tier_for_depth,
 )
 from game.rect import Rect
-from game.save import apply_dict, load_game, save_game, state_to_dict
 from game.shrine import (
     BOONS,
     BOONS_OFFERED,
@@ -995,16 +993,6 @@ class TurnPhaseTests(unittest.TestCase):
         state.handle_action('descend')
         self.assertFalse(state.monster_phase_pending())
 
-    def test_loading_cancels_a_queued_monster_phase(self):
-        random.seed(35)
-        state = GameState(50, 20)
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, 'save.json')
-            save_game(state, path)
-            state.end_player_phase()
-            apply_dict(state, load_game(path))
-        self.assertFalse(state.monster_phase_pending())
-
 
 class ClassAndArcherTests(unittest.TestCase):
     def test_default_class_is_warrior(self):
@@ -1057,16 +1045,6 @@ class ClassAndArcherTests(unittest.TestCase):
         px, py = state.player.x, state.player.y
         state.handle_action('shoot_n')
         self.assertEqual((state.player.x, state.player.y), (px, py))
-
-    def test_char_class_round_trips_through_save_load(self):
-        random.seed(27)
-        state = GameState(50, 20, char_class='archer')
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, 'save.json')
-            save_game(state, path)
-            fresh = GameState(50, 20, char_class='warrior')
-            apply_dict(fresh, load_game(path))
-            self.assertEqual(fresh.player.char_class, 'archer')
 
 
 class GearTests(unittest.TestCase):
@@ -1279,13 +1257,6 @@ class ChestTests(unittest.TestCase):
             self.assertEqual([i.kind for i in potions], ['potion'])
             for item in gear.open(depth, rng=rng):
                 self.assertIn(item.kind, [JUNK] + GEAR_KINDS)
-
-    def test_old_weapon_and_armor_chest_kinds_become_gear(self):
-        # Saves from before gear chests were merged stored 'weapon'/'armor'.
-        for kind in ('weapon', 'armor'):
-            chest = Chest(0, 0, kind=kind)
-            self.assertEqual(chest.kind, 'gear')
-            self.assertEqual(chest.color, CHEST_COLOR)
 
     def test_gear_chest_opens_to_three_choices(self):
         rng = random.Random(57)
@@ -1548,38 +1519,6 @@ class PotionBeltTests(unittest.TestCase):
         self.assertEqual(len(state.belt), 1)
         self.assertEqual(state.turn, turn)
 
-    def round_trip(self, state):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, 'save.json')
-            save_game(state, path)
-            fresh = GameState(50, 20)
-            fresh.belt.append(Item(0, 0, 'potion', 'epic'))  # must be replaced
-            apply_dict(fresh, load_game(path))
-            return fresh
-
-    def test_full_belt_round_trips_in_order(self):
-        self.full_belt()
-        fresh = self.round_trip(self.state)
-        self.assertEqual(
-            [(i.kind, i.rarity) for i in fresh.belt],
-            [('potion', 'common'), ('potion', 'rare'), ('potion', 'uncommon')],
-        )
-        self.assertEqual(
-            state_to_dict(self.state)['belt'],
-            [{'kind': 'potion', 'rarity': r} for r in ('common', 'rare', 'uncommon')],
-        )
-
-    def test_empty_belt_round_trips(self):
-        self.assertEqual(self.round_trip(self.state).belt, [])
-
-    def test_old_save_without_a_belt_loads_empty(self):
-        data = state_to_dict(self.state)
-        del data['belt']
-        fresh = GameState(50, 20)
-        fresh.belt.append(Item(0, 0, 'potion', 'epic'))
-        apply_dict(fresh, data)
-        self.assertEqual(fresh.belt, [])
-
 
 class ChestChoiceTests(unittest.TestCase):
     """A gear chest offers three items; the player must choose() one."""
@@ -1712,24 +1651,6 @@ class ChestChoiceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             state.choose(2)  # direct callers still get the error
 
-    def test_save_and_load_still_work_while_choosing(self):
-        import tempfile
-
-        from game import state as state_module
-
-        with tempfile.TemporaryDirectory() as tmp:
-            old = state_module.SAVE_PATH
-            state_module.SAVE_PATH = os.path.join(tmp, 'save.json')
-            try:
-                state = self.state_with_choice([Item(0, 0, JUNK)] * 3)
-                state.handle_action('save')
-                self.assertEqual(state.messages[-1], 'Game saved.')
-                state.handle_action('load')
-                self.assertEqual(state.messages[-1], 'Game loaded.')
-                self.assertTrue(state.is_choosing)
-            finally:
-                state_module.SAVE_PATH = old
-
     def test_boss_chest_in_play_offers_rare_or_epic_without_junk(self):
         random.seed(64)
         state = GameState(50, 20)
@@ -1740,198 +1661,6 @@ class ChestChoiceTests(unittest.TestCase):
         for item in state.pending_choice:
             self.assertIn(item.kind, GEAR_KINDS)
             self.assertIn(item.rarity, ('rare', 'epic'))
-
-
-class SaveLoadTests(unittest.TestCase):
-    def test_round_trip_preserves_state(self):
-        random.seed(14)
-        state = GameState(50, 20)
-        state.player.hp = 7
-        state.player.inventory.append('potion of healing')
-        state.log('hello')
-
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, 'save.json')
-            save_game(state, path)
-
-            fresh = GameState(50, 20)
-            data = load_game(path)
-            self.assertIsNotNone(data)
-            apply_dict(fresh, data)
-
-            self.assertEqual(fresh.player.hp, 7)
-            self.assertEqual(fresh.player.inventory, ['potion of healing'])
-            self.assertEqual(fresh.depth, state.depth)
-            self.assertEqual(fresh.game_map, state.game_map)
-            self.assertEqual(fresh.messages[-1], 'hello')
-
-    def test_load_missing_file_returns_none(self):
-        self.assertIsNone(load_game('/nonexistent/path/save.json'))
-
-    def test_equipped_gear_round_trips(self):
-        random.seed(48)
-        state = GameState(50, 20)
-        weapon = Item(state.player.x, state.player.y, 'weapon', 'rare')
-        weapon.apply(state.player, state.log)
-        armor = Item(state.player.x, state.player.y, 'armor', 'uncommon')
-        armor.apply(state.player, state.log)
-
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, 'save.json')
-            save_game(state, path)
-            fresh = GameState(50, 20)
-            apply_dict(fresh, load_game(path))
-
-        self.assertEqual(fresh.player.weapon.rarity, 'rare')
-        self.assertEqual(fresh.player.armor.rarity, 'uncommon')
-        self.assertEqual(fresh.player.power, fresh.player.base_power + cast(int, weapon.bonus))
-        self.assertEqual(fresh.player.defense, armor.bonus)
-
-    def test_chest_on_the_map_round_trips(self):
-        random.seed(49)
-        state = GameState(50, 20)
-        chest = Chest(
-            state.player.x + 1, state.player.y, guaranteed_min_rarity='rare', kind='potion'
-        )
-        state.entities = [state.player, chest]
-
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, 'save.json')
-            save_game(state, path)
-            fresh = GameState(50, 20)
-            apply_dict(fresh, load_game(path))
-
-        loaded_chests = [e for e in fresh.entities if isinstance(e, Chest)]
-        self.assertEqual(len(loaded_chests), 1)
-        self.assertEqual(loaded_chests[0].guaranteed_min_rarity, 'rare')
-        self.assertEqual(loaded_chests[0].kind, 'potion')
-        self.assertEqual(loaded_chests[0].color, POTION_CHEST_COLOR)
-        self.assertEqual((loaded_chests[0].x, loaded_chests[0].y), (chest.x, chest.y))
-
-    def test_pending_choice_round_trips(self):
-        random.seed(65)
-        state = GameState(50, 20)
-        state.pending_choice = [
-            Item(0, 0, 'weapon', 'rare'),
-            Item(0, 0, JUNK),
-            Item(0, 0, 'armor', 'epic'),
-        ]
-
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, 'save.json')
-            save_game(state, path)
-            fresh = GameState(50, 20)
-            apply_dict(fresh, load_game(path))
-
-        self.assertTrue(fresh.is_choosing)
-        self.assertEqual(
-            [(i.kind, i.rarity) for i in fresh.pending_choice],
-            [('weapon', 'rare'), (JUNK, None), ('armor', 'epic')],
-        )
-        fresh.choose(2)
-        self.assertEqual(fresh.player.defense, ARMOR_DEFENSE['epic'])
-
-    def test_boss_arena_round_trips_and_old_saves_have_none(self):
-        from game.rect import Rect
-
-        random.seed(70)
-        state = GameState(50, 20)
-        state.boss_arena = Rect(10, 5, 8, 7)
-        data = state_to_dict(state)
-        fresh = GameState(50, 20)
-        apply_dict(fresh, data)
-        self.assertEqual(
-            (fresh.boss_arena.x1, fresh.boss_arena.y1, fresh.boss_arena.x2, fresh.boss_arena.y2),
-            (10, 5, 18, 12),
-        )
-        self.assertEqual(fresh.boss_arena.center(), Rect(10, 5, 8, 7).center())
-        # A save from before boss arenas has no field: no arena.
-        del data['boss_arena']
-        fresh.boss_arena = Rect(0, 0, 4, 4)  # must be cleared by the load
-        apply_dict(fresh, data)
-        self.assertIsNone(fresh.boss_arena)
-
-    def test_no_pending_choice_saves_as_none(self):
-        random.seed(66)
-        state = GameState(50, 20)
-        self.assertIsNone(state_to_dict(state)['pending_choice'])
-
-    def test_old_save_without_pending_choice_loads(self):
-        random.seed(67)
-        state = GameState(50, 20)
-        data = state_to_dict(state)
-        del data['pending_choice']
-        # An old save also stored armor defense from the old GEAR_BONUS
-        # table, and gear chests as 'weapon'/'armor'.
-        data['player']['armor'] = {'kind': 'armor', 'rarity': 'rare'}
-        data['player']['defense'] = 4
-        data['entities'] = [
-            {
-                'type': 'chest',
-                'x': state.player.x + 1,
-                'y': state.player.y,
-                'char': '=',
-                'color': CHEST_COLOR,
-                'name': 'chest',
-                'guaranteed_min_rarity': None,
-                'kind': 'weapon',
-            }
-        ]
-        fresh = GameState(50, 20)
-        fresh.pending_choice = [Item(0, 0, JUNK)] * 3  # must be cleared by the load
-        apply_dict(fresh, data)
-        self.assertIsNone(fresh.pending_choice)
-        self.assertFalse(fresh.is_choosing)
-        self.assertEqual(fresh.player.defense, ARMOR_DEFENSE['rare'])
-        chests = [e for e in fresh.entities if isinstance(e, Chest)]
-        self.assertEqual(chests[0].kind, 'gear')
-
-    def test_monster_chase_state_round_trips(self):
-        state = open_floor_state(68)
-        m = Monster(20, 10, 'orc')
-        m.chasing, m.lost_sight = True, 2
-        state.entities.append(m)
-
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, 'save.json')
-            save_game(state, path)
-            fresh = GameState(50, 20)
-            apply_dict(fresh, load_game(path))
-
-        loaded = [e for e in fresh.entities if isinstance(e, Monster)]
-        self.assertEqual(len(loaded), 1)
-        self.assertTrue(loaded[0].chasing)
-        self.assertEqual(loaded[0].lost_sight, 2)
-
-    def test_monster_from_an_old_save_loads_idle(self):
-        """Saves from before chase tracking have no chasing/lost_sight keys."""
-        random.seed(69)
-        state = GameState(50, 20)
-        data = state_to_dict(state)
-        for e in data['entities']:
-            e.pop('chasing', None)
-            e.pop('lost_sight', None)
-        data['entities'].append(
-            {
-                'type': 'monster',
-                'x': 20,
-                'y': 10,
-                'char': 'g',
-                'color': 2,
-                'name': 'goblin',
-                'kind': 'goblin',
-                'hp': 5,
-                'max_hp': 5,
-                'power': 2,
-                'alive': True,
-            }
-        )
-        apply_dict(state, data)
-        monsters = [e for e in state.entities if isinstance(e, Monster)]
-        self.assertTrue(monsters)
-        for m in monsters:
-            self.assertFalse(m.chasing)
-            self.assertEqual(m.lost_sight, 0)
 
 
 class CombatEventTests(unittest.TestCase):
@@ -2445,75 +2174,6 @@ class WeaponTypeTests(unittest.TestCase):
         self.assertEqual(far.hp, 1000)
         self.assertEqual(self.state.player.x, 11)
 
-    # -- save/load -----------------------------------------------------------
-
-    def round_trip(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, 'save.json')
-            save_game(self.state, path)
-            fresh = GameState(50, 20)
-            apply_dict(fresh, load_game(path))
-        return fresh
-
-    def test_each_new_kind_round_trips(self):
-        p = self.state.player
-        self.equip('armor', 'uncommon')
-        for kind in WEAPON_TYPES:
-            for rarity in ('common', 'epic'):
-                p.hp, p.max_hp = 30, 30
-                p.weapon = None
-                weapon = self.equip(kind, rarity)
-                fresh = self.round_trip()
-                fp = fresh.player
-                self.assertEqual((fp.weapon.kind, fp.weapon.rarity), (kind, rarity))
-                self.assertEqual(
-                    (fp.power, fp.defense, fp.hp, fp.max_hp),
-                    (p.power, p.defense, p.hp, p.max_hp),
-                    kind,
-                )
-                self.assertEqual(crit_chance(fp), crit_chance(p))
-                for attr in (
-                    'max_hp_bonus',
-                    'strikes',
-                    'cleave',
-                    'defense_bonus',
-                    'crit_bonus',
-                    'reach',
-                ):
-                    self.assertEqual(getattr(fp.weapon, attr), getattr(weapon, attr))
-                # Replacing the loaded axe takes off exactly what it gave.
-                Item(0, 0, 'weapon', 'common').apply(fp, fresh.log)
-                self.assertEqual(fp.max_hp, 30)
-
-    def test_new_kinds_round_trip_in_a_pending_choice(self):
-        self.state.pending_choice = [
-            Item(0, 0, 'rapier', 'rare'),
-            Item(0, 0, 'spear', 'epic'),
-            Item(0, 0, 'sword_shield', 'common'),
-        ]
-        fresh = self.round_trip()
-        self.assertEqual(
-            [(i.kind, i.rarity) for i in fresh.pending_choice],
-            [('rapier', 'rare'), ('spear', 'epic'), ('sword_shield', 'common')],
-        )
-        fresh.choose(2)
-        self.assertEqual(fresh.player.defense, 3)
-
-    def test_old_save_with_the_old_weapon_kind_loads(self):
-        data = state_to_dict(self.state)
-        del data['pending_choice']
-        data['player']['weapon'] = {'kind': 'weapon', 'rarity': 'rare'}
-        data['player']['power'] = data['player']['base_power'] + 4
-        data['player']['defense'] = 0
-        fresh = GameState(50, 20)
-        apply_dict(fresh, data)
-        fp = fresh.player
-        self.assertEqual((fp.weapon.kind, fp.weapon.bonus), ('weapon', 4))
-        self.assertEqual(fp.power, fp.base_power + 4)
-        self.assertEqual(fp.defense, 0)
-        self.assertEqual(crit_chance(fp), BASE_CRIT_CHANCE)
-        self.assertEqual((fp.weapon.strikes, fp.weapon.reach, fp.weapon.cleave), (1, 1, False))
-
 
 class BossEnrageTests(unittest.TestCase):
     def _arena(self, depth=8):
@@ -2584,20 +2244,6 @@ class BossEnrageTests(unittest.TestCase):
         state.attack(state.player, boss)
         self.assertTrue(boss.enraged)
         self.assertEqual(self._goblins(state), [])
-
-    def test_enraged_round_trips_and_old_save_defaults_false(self):
-        state, boss = self._arena()
-        boss.enraged = True
-        data = state_to_dict(state)
-        fresh = GameState(20, 20)
-        apply_dict(fresh, data)
-        loaded = next(e for e in fresh.entities if isinstance(e, Monster) and e.is_boss)
-        self.assertTrue(loaded.enraged)
-        for e in data['entities']:
-            e.pop('enraged', None)
-        apply_dict(fresh, data)
-        loaded = next(e for e in fresh.entities if isinstance(e, Monster) and e.is_boss)
-        self.assertFalse(loaded.enraged)
 
 
 class SlingerTests(unittest.TestCase):
@@ -2978,49 +2624,6 @@ class ShrineBoonTests(unittest.TestCase):
         state.pending_choice = [Item(0, 0, JUNK)] * 3
         self.assertFalse(state.handle_action('move_e'))
         self.assertEqual((state.player.x, state.player.y), self.start)
-
-    def round_trip(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, 'save.json')
-            save_game(self.state, path)
-            fresh = GameState(50, 20)
-            fresh.player.boons = ['stone_heart']  # must be replaced
-            apply_dict(fresh, load_game(path))
-            return fresh
-
-    def test_boons_survive_save_and_load(self):
-        self.take('blood_pact')
-        self.take('iron_skin')
-        self.state.player.hp = 7
-        fresh = self.round_trip()
-        self.assertEqual(fresh.player.boons, ['blood_pact', 'iron_skin'])
-        self.assertEqual(fresh.player.power, self.state.player.power)
-        self.assertEqual(fresh.player.defense, self.state.player.defense)
-        self.assertEqual(fresh.player.max_hp, self.state.player.max_hp)
-        self.assertEqual(fresh.player.hp, 7)
-        self.assertAlmostEqual(heal_multiplier(fresh.player), 0.75)
-
-    def test_pending_boon_choice_and_shrine_survive_save_and_load(self):
-        shrine = self.shrine_east()
-        self.offer('keen_eye', 'quick_hands', 'stone_heart')
-        fresh = self.round_trip()
-        self.assertEqual(
-            [b.key for b in cast(list[Boon], fresh.pending_choice)],
-            ['keen_eye', 'quick_hands', 'stone_heart'],
-        )
-        shrines = [e for e in fresh.entities if isinstance(e, Shrine)]
-        self.assertEqual([(s.x, s.y) for s in shrines], [(shrine.x, shrine.y)])
-        fresh.choose(1)
-        self.assertEqual(fresh.player.boons, ['quick_hands'])
-
-    def test_old_save_loads_with_no_boons(self):
-        data = state_to_dict(self.state)
-        del data['player']['boons']
-        fresh = GameState(50, 20)
-        fresh.player.boons = ['blood_pact']
-        apply_dict(fresh, data)
-        self.assertEqual(fresh.player.boons, [])
-        self.assertEqual(fresh.player.defense, 0)
 
 
 if __name__ == '__main__':

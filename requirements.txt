@@ -1,3 +1,3 @@
-# Runtime dependencies. game/ and render/curses_render.py need none of these
+# Runtime dependencies. game/ needs none of these
 # (stdlib only); see CLAUDE.md "Constraints" and desktop_build_plan.md §0.1.
 pygame-ce==2.5.8       # render/pygame_render.py, ui.py, screens.py, input_map.py

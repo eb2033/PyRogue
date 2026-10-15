@@ -60,10 +60,8 @@ excludes = [
     'tkinter', '_tkinter',
     'numpy',
     'unittest', 'test', 'pydoc', 'doctest',
-    # The exe is the pygame build. The terminal renderer stays a from-source
-    # thing; if it is ever shipped frozen, it needs its own spec (plan §5 WS-E).
+    # The game is pygame-only (the curses renderer is deleted); never bundle curses.
     'curses', '_curses', '_curses_panel',
-    'render.curses_render',
     # tcod was evaluated and dropped (render/tcod_render.py is deleted); never bundle it.
     'tcod',
     # pygame's bundled test suite and examples are dead weight in a release.

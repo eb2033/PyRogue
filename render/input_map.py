@@ -1,8 +1,8 @@
-"""pygame key -> semantic Action table. Mirrors curses_render.KEY_ACTIONS.
+"""pygame key -> semantic Action table.
 
-Printable keys are matched on the *character* the key produced (so `S` save and
-`s` move-south stay distinct, exactly as curses sees them); arrows are matched
-on the keycode, since they produce no character.
+Printable keys are matched on the *character* the key produced (so a shifted
+letter is a different key from the plain one); arrows are matched on the
+keycode, since they produce no character.
 """
 
 import pygame
@@ -16,8 +16,6 @@ CHAR_ACTIONS = {
     'd': Action.MOVE_E,
     '.': Action.WAIT,
     'e': Action.DESCEND,
-    'S': Action.SAVE,
-    'L': Action.LOAD,
     'q': Action.QUIT,
     'h': Action.DRINK,
     # A chest's choice cards. The numpad's digits produce the same characters.
@@ -35,7 +33,7 @@ KEY_ACTIONS = {
 }
 
 # Handled inside the renderer (fullscreen toggle), never turned into an Action --
-# curses has no equivalent, and GameState has no business knowing about windows.
+# GameState has no business knowing about windows.
 FULLSCREEN_KEYS = (pygame.K_F11,)
 
 CONFIRM_KEYS = (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE)
