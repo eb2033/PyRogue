@@ -100,7 +100,14 @@ from game.spawn import (
     pick_tiles,
     spawn_level,
 )
-from game.state import BASE_CRIT_CHANCE, CRIT_MULTIPLIER, PARRY_COOLDOWN, GameState, crit_chance
+from game.state import (
+    BASE_CRIT_CHANCE,
+    CRIT_MULTIPLIER,
+    DESCENT_HEAL_FRACTION,
+    PARRY_COOLDOWN,
+    GameState,
+    crit_chance,
+)
 from game.tiles import DOOR, FLOOR, STAIRS_DOWN, WALL, is_walkable
 
 
@@ -3864,6 +3871,57 @@ class QuiverTests(ArcherArena):
         self.assertEqual(state.restock_progress, 0)
         self.assertFalse(any(isinstance(e, ArrowPile) for e in state.entities))
         self.assertNotIn('You loose an arrow.', state.messages)
+
+
+class DescentHealTests(unittest.TestCase):
+    def _on_stairs(self):
+        random.seed(11)
+        state = GameState(50, 20)
+        state.player.x, state.player.y = state.rooms[-1].center()
+        return state
+
+    @staticmethod
+    def _line(n):
+        return f'You descend the stairs and rest for a while, restoring {n} HP.'
+
+    def test_full_hp_restores_nothing(self):
+        state = self._on_stairs()
+        top = state.player.max_hp
+        self.assertTrue(state.try_descend())
+        self.assertEqual(state.player.hp, top)
+        self.assertIn(self._line(0), state.messages)
+
+    def test_half_hp_restores_twenty_percent(self):
+        state = self._on_stairs()
+        state.player.hp = state.player.max_hp // 2
+        before = state.player.hp
+        expected = int(state.player.max_hp * DESCENT_HEAL_FRACTION)
+        state.try_descend()
+        self.assertEqual(state.player.hp, before + expected)
+        self.assertIn(self._line(expected), state.messages)
+
+    def test_near_max_caps_and_logs_capped_amount(self):
+        state = self._on_stairs()
+        state.player.hp = state.player.max_hp - 1
+        state.try_descend()
+        self.assertEqual(state.player.hp, state.player.max_hp)
+        self.assertIn(self._line(1), state.messages)
+
+    def test_refused_descent_heals_nothing(self):
+        state = self._on_stairs()
+        state.player.x, state.player.y = state.rooms[0].center()
+        state.player.hp = 1
+        self.assertFalse(state.try_descend())
+        self.assertEqual(state.player.hp, 1)
+        self.assertEqual(state.depth, 1)
+
+    def test_game_over_descent_heals_nothing(self):
+        state = self._on_stairs()
+        state.player.hp = 0
+        state.game_over = True
+        self.assertFalse(state.try_descend())
+        self.assertEqual(state.player.hp, 0)
+        self.assertEqual(state.depth, 1)
 
 
 if __name__ == '__main__':

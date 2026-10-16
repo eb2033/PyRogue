@@ -107,6 +107,8 @@ BASE_CRIT_CHANCE = 0.10
 # A crit multiplies raw damage by this BEFORE defense reduction.
 CRIT_MULTIPLIER = 1.5
 MAX_CRIT_CHANCE = 1.0
+# Taking the stairs down restores this fraction of the player's max HP.
+DESCENT_HEAL_FRACTION = 0.2
 
 
 def crit_chance(attacker):
@@ -769,6 +771,8 @@ class GameState:
         return archery.shoot(self, dx, dy)
 
     def try_descend(self):
+        if self.game_over or not self.player.alive:
+            return False
         if self.game_map[self.player.y][self.player.x] != STAIRS_DOWN:
             self.log('There are no stairs here.')
             return False
@@ -791,7 +795,17 @@ class GameState:
             self.log(f'You descend to level {self.depth}. Something powerful lurks here...')
         else:
             self.log(f'You descend to level {self.depth}.')
+        healed = self._descent_heal()
+        self.log(f'You descend the stairs and rest for a while, restoring {healed} HP.')
         self.update_fov()
+
+    def _descent_heal(self):
+        """Heal DESCENT_HEAL_FRACTION of max HP, capped at max; returns the
+        HP actually restored."""
+        player = self.player
+        before = player.hp
+        player.hp = min(player.max_hp, before + int(player.max_hp * DESCENT_HEAL_FRACTION))
+        return player.hp - before
 
     def _build_map(self):
         """This floor's map, rooms, stairs and empty FOV/fog grids, at this
