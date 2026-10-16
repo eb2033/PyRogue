@@ -315,6 +315,13 @@ class GameState:
                 self.choose(index)
             return False
 
+        if action == 'skip':
+            # Key 4 (or Space, on the choice screen): leave every offer.
+            # Only means something on a choice screen; never takes a turn.
+            if self.pending_choice is not None:
+                self.skip_choice()
+            return False
+
         if self.is_choosing:
             return False  # a chest's choice must be made first: see choose()
 
@@ -744,8 +751,8 @@ class GameState:
         discarding) what was there -- the player chose it, so there is no
         "only if better" check. Junk only logs a line. From a shrine: the
         boon is taken for the rest of the run (take_boon). The other offers
-        are lost. There is no cancel: a choice stays pending until one is
-        taken. Takes no turn.
+        are lost. A choice stays pending until one is taken or the whole
+        choice is skipped (skip_choice). Takes no turn.
         Raises ValueError if nothing is pending or `index` is out of range.
         """
         if self.pending_choice is None:
@@ -759,6 +766,20 @@ class GameState:
             return
         offer.x, offer.y = self.player.x, self.player.y
         offer.apply(self.player, self.log)
+
+    def skip_choice(self):
+        """Leave every offer of the pending choice: the chest (or shrine) is
+        already used up, so this ends the choice with no item, no boon and
+        nothing else changed. Takes no turn.
+        Raises ValueError if nothing is pending."""
+        if self.pending_choice is None:
+            raise ValueError('no chest choice is pending')
+        offers, self.pending_choice = self.pending_choice, None
+        if offers and isinstance(offers[0], Boon):
+            self.log('You leave the shrine without a boon.')
+            self.log('The shrine crumbles to dust.')
+        else:
+            self.log('You leave the chest untouched.')
 
     def take_boon(self, boon):
         """Add `boon` to the player's boons and bring the stats up to date.

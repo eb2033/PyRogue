@@ -35,6 +35,9 @@ class Action:
     CHOOSE_1 = 'choose_1'
     CHOOSE_2 = 'choose_2'
     CHOOSE_3 = 'choose_3'
+    # Key 4 (and Space, but only while a choice is on screen): leave the
+    # chest's or shrine's offers and take nothing (GameState.skip_choice).
+    SKIP = 'skip'
     # 'h': drink the first potion on the belt (GameState.drink_from_belt).
     DRINK = 'drink'
 

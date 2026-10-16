@@ -25,6 +25,13 @@ CHAR_ACTIONS = {
     '1': Action.CHOOSE_1,
     '2': Action.CHOOSE_2,
     '3': Action.CHOOSE_3,
+    '4': Action.SKIP,
+}
+
+# Overrides of CHAR_ACTIONS while a chest's or shrine's choice is on screen:
+# Space skips it there (it waits everywhere else, and confirms in menus).
+CHOICE_CHAR_ACTIONS = {
+    ' ': Action.SKIP,
 }
 
 # Arrows are SHOOT_*, not MOVE_* -- GameState decides what that means per class.
@@ -56,8 +63,12 @@ def event_char(event):
     return ''
 
 
-def lookup(event):
-    """Map a KEYDOWN event to an Action, or None for an unmapped key."""
+def lookup(event, choosing=False):
+    """Map a KEYDOWN event to an Action, or None for an unmapped key.
+    `choosing`: a choice is on screen, so CHOICE_CHAR_ACTIONS apply."""
     if event.key in KEY_ACTIONS:
         return KEY_ACTIONS[event.key]
-    return CHAR_ACTIONS.get(event_char(event))
+    char = event_char(event)
+    if choosing and char in CHOICE_CHAR_ACTIONS:
+        return CHOICE_CHAR_ACTIONS[char]
+    return CHAR_ACTIONS.get(char)

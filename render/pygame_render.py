@@ -1366,7 +1366,8 @@ class PygameRenderer(Renderer):
     def get_action(self):
         """The next key's Action. Gameplay is keyboard-only; the exception is
         a chest's choice on screen, where a left click on a card is that
-        card's CHOOSE_* (a click anywhere else, or a motion, is ignored)."""
+        card's CHOOSE_* and one on the skip line is SKIP (a click anywhere
+        else, or a motion, is ignored). Space skips a choice on screen."""
         while True:
             state = self._state
             choosing = state is not None and state.is_choosing
@@ -1374,7 +1375,7 @@ class PygameRenderer(Renderer):
             if event is None:
                 return Action.QUIT
             if event.type == pygame.KEYDOWN:
-                action = input_map.lookup(event)
+                action = input_map.lookup(event, choosing=choosing)
                 if (
                     self._last_was_repeat
                     and action in REPEAT_BLOCKED_ACTIONS
@@ -1389,6 +1390,8 @@ class PygameRenderer(Renderer):
                 hit = screens.choice_card_at(self.layout, state, event.pos)
                 if hit is not None and hit < len(choice.CHOOSE_ACTIONS):
                     return choice.CHOOSE_ACTIONS[hit]
+                if screens.choice_skip_at(self.layout, state, event.pos):
+                    return choice.SKIP_ACTION
 
     def pause(self, ms):
         """Hold the frame for `ms` while keeping the window serviced.

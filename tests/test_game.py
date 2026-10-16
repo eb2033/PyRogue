@@ -2322,6 +2322,43 @@ class ChestChoiceTests(unittest.TestCase):
         state.handle_action('choose_1')
         self.assertIs(state.player.armor, items[0])
 
+    def test_skip_leaves_the_chest_with_no_item_and_takes_no_turn(self):
+        random.seed(66)
+        state = GameState(50, 20)
+        good = Item(0, 0, 'weapon', 'epic')
+        good.apply(state.player, state.log)
+        power, armor = state.player.power, state.player.armor
+        chest = Chest(state.player.x, state.player.y, kind='gear')
+        state.entities = [state.player, chest]
+        state.open_chest(chest)
+        self.assertTrue(state.is_choosing)
+        turn = state.turn
+        self.assertFalse(state.handle_action('skip'))  # takes no turn
+        self.assertEqual(state.turn, turn)
+        self.assertFalse(state.monster_phase_pending())
+        self.assertFalse(state.is_choosing)
+        self.assertNotIn(chest, state.entities)  # used up all the same
+        self.assertIs(state.player.weapon, good)  # the good weapon is kept
+        self.assertEqual((state.player.power, state.player.armor), (power, armor))
+        self.assertEqual(state.messages[-1], 'You leave the chest untouched.')
+
+    def test_skip_while_not_choosing_does_nothing(self):
+        random.seed(67)
+        state = GameState(50, 20)
+        n = len(state.messages)
+        self.assertFalse(state.handle_action('skip'))
+        self.assertEqual(len(state.messages), n)
+        with self.assertRaises(ValueError):
+            state.skip_choice()
+
+    def test_digits_still_choose_after_skip_was_added(self):
+        items = [Item(0, 0, 'armor', 'rare'), Item(0, 0, 'weapon', 'epic'), Item(0, 0, JUNK)]
+        state = self.state_with_choice(list(items))
+        state.handle_action('choose_3')
+        self.assertFalse(state.is_choosing)
+        self.assertIsNone(state.player.armor)
+        self.assertIsNot(state.player.weapon, items[1])
+
     def test_digit_while_not_choosing_does_nothing(self):
         random.seed(65)
         state = GameState(50, 20)
@@ -3382,6 +3419,22 @@ class ShrineBoonTests(unittest.TestCase):
         # A later digit does nothing: there is no choice any more.
         self.assertFalse(state.handle_action('choose_1'))
         self.assertEqual(state.player.boons, [offers[1].key])
+
+    def test_a_shrine_choice_can_be_skipped_with_no_boon(self):
+        state = self.state
+        shrine = self.shrine_east()
+        state.handle_action('move_e')
+        state.end_turn()
+        player = state.player
+        before = (player.power, player.defense, player.max_hp, player.hp)
+        turn = state.turn
+        self.assertFalse(state.handle_action('skip'))
+        self.assertEqual(state.turn, turn)
+        self.assertIsNone(state.pending_choice)
+        self.assertEqual(player.boons, [])
+        self.assertEqual((player.power, player.defense, player.max_hp, player.hp), before)
+        self.assertNotIn(shrine, state.entities)  # gone, as when a boon is taken
+        self.assertIn('without a boon', ' '.join(state.messages[-2:]))
 
     def test_blood_pact_power_up_max_hp_down_and_hp_clamped(self):
         player = self.state.player
