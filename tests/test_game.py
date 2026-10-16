@@ -1266,7 +1266,12 @@ class ArcherHopTests(unittest.TestCase):
         state, mon = self._arena()
         mon.hp = mon.max_hp = 1000
         mon.defense = 0
-        with mock.patch('game.state.BASE_CRIT_CHANCE', 0.0):
+        # round_damage rounds a fractional hit up or down at random, in the game
+        # and again in the expectation below: pin random() so both round alike.
+        with (
+            mock.patch('game.state.BASE_CRIT_CHANCE', 0.0),
+            mock.patch('random.random', return_value=0.0),
+        ):
             self.assertTrue(state.handle_action('ability'))
             self.assertTrue(state.hop_crit)
             state.cancel_monster_phase()
@@ -1374,7 +1379,10 @@ class WarriorParryTests(unittest.TestCase):
         self.assertEqual(state.messages[-1], 'Your parry is already ready.')
         self.assertFalse(state.monster_phase_pending())
 
-    def test_next_monster_hit_is_nullified_and_returns_crit_damage(self):
+    # The riposte's fractional damage is rounded at random, in the game and again
+    # in the expectation below: pin random() so both round the same way.
+    @mock.patch('random.random', return_value=0.0)
+    def test_next_monster_hit_is_nullified_and_returns_crit_damage(self, _rng):
         state, mon = self._arena()
         assert mon is not None
         p = state.player
