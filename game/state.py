@@ -149,7 +149,8 @@ class GameState:
         # always crits (archery.shoot spends it, hit or miss). Not saved.
         self.hop_crit = False
         # The warrior's parry (Q): armed until the next monster melee hit that
-        # lands on the player (see _riposte); last_parry_turn is
+        # would land on the player, which it nullifies (see _monster_melee);
+        # parry_progress() is its recharge for the bar. last_parry_turn is
         # GameState.turn when Q armed it (None: never). Neither is saved.
         self.parry_armed = False
         self.last_parry_turn: int | None = None
@@ -388,7 +389,7 @@ class GameState:
 
     def arm_parry(self):
         """The warrior's parry: ready it for the next monster melee hit that
-        lands (see _riposte). Returns False, with a log line and nothing
+        would land, which it nullifies (see _monster_melee). Returns False, with a log line and nothing
         armed, if it is refused -- one is already armed, or PARRY_COOLDOWN
         turns haven't passed since the last one was armed; the caller spends
         the turn."""
@@ -404,15 +405,36 @@ class GameState:
         self.log('You ready a parry.')
         return True
 
-    def _riposte(self, monster):
-        """An armed parry answering `monster`'s melee hit, which has already
-        landed in full: the monster takes the player's crit damage (raw power
-        x CRIT_MULTIPLIER, with no crit roll of its own) through attack(), so
-        its defence reduces it and a Hit is recorded. A dead player doesn't
-        riposte (the parry stays armed, but the game is over)."""
+    def parry_progress(self):
+        """How far the warrior's parry has recharged, 0..PARRY_COOLDOWN, for
+        the renderer's bar: turns since Q last armed it, capped. Full when it
+        is ready (never used, or the cooldown is over) and while it is armed,
+        so a full bar means "a parry is available or armed"."""
+        if self.parry_armed or self.last_parry_turn is None:
+            return PARRY_COOLDOWN
+        return max(0, min(PARRY_COOLDOWN, self.turn - self.last_parry_turn))
+
+    def _monster_melee(self, monster):
+        """`monster`'s melee blow at the player. With a parry armed, the
+        dodge is rolled first (a dodged blow does nothing and leaves the
+        parry armed); a blow that would land is parried instead: no damage,
+        no Hit, and the monster takes the riposte (_riposte). Unarmed, it is
+        an ordinary attack()."""
         if not self.parry_armed or self.player.hp <= 0:
+            self.attack(monster, self.player)
             return
+        if self._dodged(monster):
+            return
+        self._riposte(monster)
+
+    def _riposte(self, monster):
+        """An armed parry spent on `monster`'s melee blow, which is nullified
+        (the caller rolled the dodge already): the monster takes the player's
+        crit damage (raw power x CRIT_MULTIPLIER, with no crit roll of its
+        own) through attack(), so its defence reduces it and a Hit is
+        recorded for the riposte only."""
         self.parry_armed = False
+        self.log(f"You parry the {monster.name}'s attack!")
         self.log(f'Your parry returns the blow to the {monster.name}!')
         self.attack(self.player, monster, CRIT_MULTIPLIER, crit=False)
 
@@ -913,11 +935,7 @@ class GameState:
                 sees_player=was_seen,
             )
             if result == 'attack':
-                first_event = len(self.combat_events)
-                self.attack(monster, self.player)
-                # A Hit means the blow landed (not dodged): a parry answers.
-                if len(self.combat_events) > first_event:
-                    self._riposte(monster)
+                self._monster_melee(monster)
             elif result == 'shoot':
                 self._monster_shot(monster)
             self.update_fov()

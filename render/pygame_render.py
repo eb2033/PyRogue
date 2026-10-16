@@ -35,6 +35,7 @@ import pygame
 from game.monster import Monster
 from game.paths import resource_path
 from game.quiver import RESTOCK_TURNS
+from game.state import PARRY_COOLDOWN
 from render import camera, choice, input_map, palette, screens, ui
 from render.banner import render_banner
 from render.base import Action, Renderer
@@ -601,6 +602,8 @@ class PygameRenderer(Renderer):
                     self._paint_health_bar(entity, state.player, map_rect)
             if getattr(state.player, 'quiver', None) is not None:
                 self._paint_restock_bar(state, map_rect)
+            elif hasattr(state, 'parry_progress'):
+                self._paint_parry_bar(state, map_rect)
             if swing is not None:
                 self._paint_swing(*swing)
             if flight is not None:
@@ -699,15 +702,34 @@ class PygameRenderer(Renderer):
         """Filled pixels of a restock bar `width` wide: progress / RESTOCK_TURNS."""
         return round(width * min(1.0, max(0.0, progress / RESTOCK_TURNS)))
 
+    @staticmethod
+    def parry_fill(width, progress):
+        """Filled pixels of the warrior's parry bar `width` wide: progress /
+        PARRY_COOLDOWN (GameState.parry_progress, full when ready or armed)."""
+        return round(width * min(1.0, max(0.0, progress / PARRY_COOLDOWN)))
+
     def _paint_restock_bar(self, state, map_rect):
         """The track, then the light grey fill: how near the next free arrow is."""
+        fill = self.restock_fill(
+            self.restock_bar_rect(state.player).width, getattr(state, 'restock_progress', 0)
+        )
+        self._paint_player_bar(state, map_rect, fill)
+
+    def _paint_parry_bar(self, state, map_rect):
+        """The warrior's parry recharge, drawn exactly like the restock bar."""
+        progress = state.parry_progress()
+        fill = self.parry_fill(self.restock_bar_rect(state.player).width, progress)
+        self._paint_player_bar(state, map_rect, fill)
+
+    def _paint_player_bar(self, state, map_rect, fill):
+        """The bar under the player (restock_bar_rect): its dark track, then
+        `fill` pixels of light grey from the left."""
         bar = self.restock_bar_rect(state.player)
         surface = self.canvas.surface
         clip = surface.get_clip()
         surface.set_clip(map_rect.clip(clip))
         try:
             surface.fill(RESTOCK_TRACK, bar.inflate(2, 2))
-            fill = self.restock_fill(bar.width, getattr(state, 'restock_progress', 0))
             if fill:
                 surface.fill(RESTOCK_FILL, (bar.left, bar.top, fill, bar.height))
         finally:

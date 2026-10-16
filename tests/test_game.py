@@ -100,7 +100,7 @@ from game.spawn import (
     pick_tiles,
     spawn_level,
 )
-from game.state import BASE_CRIT_CHANCE, CRIT_MULTIPLIER, GameState, crit_chance
+from game.state import BASE_CRIT_CHANCE, CRIT_MULTIPLIER, PARRY_COOLDOWN, GameState, crit_chance
 from game.tiles import DOOR, FLOOR, STAIRS_DOWN, WALL, is_walkable
 
 
@@ -1337,29 +1337,84 @@ class WarriorParryTests(unittest.TestCase):
         self.assertEqual(state.messages[-1], 'Your parry is already ready.')
         self.assertFalse(state.monster_phase_pending())
 
-    def test_next_monster_hit_returns_crit_damage_and_still_lands(self):
+    def test_next_monster_hit_is_nullified_and_returns_crit_damage(self):
         state, mon = self._arena()
         assert mon is not None
         p = state.player
         state.handle_action('ability')
         self.run_monsters(state)
         self.assertFalse(state.parry_armed)
-        incoming, riposte = state.combat_events
-        # The warrior takes the goblin's hit in full ...
-        self.assertIs(incoming.defender, p)
-        self.assertEqual(incoming.damage, round_damage(mitigate(5, 0)))
-        self.assertEqual(p.hp, 1000 - incoming.damage)
+        # The goblin's blow is nullified: no damage, no Hit for it ...
+        self.assertEqual(p.hp, 1000)
+        (riposte,) = state.combat_events
         # ... and the goblin takes raw power x CRIT_MULTIPLIER, less its defence.
         self.assertIs(riposte.attacker, p)
         self.assertIs(riposte.defender, mon)
+        self.assertFalse(riposte.crit)
         expected = round_damage(mitigate(p.power * CRIT_MULTIPLIER, 2))
         self.assertEqual(riposte.damage, expected)
         self.assertEqual(mon.hp, 1000 - expected)
-        self.assertIn('Your parry returns the blow to the goblin!', state.messages)
-        # Spent: the next hit is not answered.
+        parried = state.messages.index("You parry the goblin's attack!")
+        returned = state.messages.index('Your parry returns the blow to the goblin!')
+        self.assertEqual(returned, parried + 1)
+        self.assertEqual(state.messages[returned + 1], f'You hit goblin for {expected}.')
+        self.assertNotIn('Goblin hits you', ' '.join(state.messages))
+        # Spent: the next hit lands in full and is not answered.
         state.handle_action('wait')
         self.run_monsters(state)
         self.assertEqual([h.defender for h in state.combat_events], [p])
+        self.assertEqual(p.hp, 1000 - round_damage(mitigate(5, 0)))
+
+    def test_a_parry_absorbs_a_blow_that_would_kill(self):
+        state, mon = self._arena()
+        assert mon is not None
+        state.player.hp = 1
+        state.handle_action('ability')
+        self.run_monsters(state)
+        self.assertEqual(state.player.hp, 1)
+        self.assertFalse(state.game_over)
+        self.assertEqual([h.defender for h in state.combat_events], [mon])
+
+    def test_only_the_first_of_two_blows_is_parried(self):
+        state, mon = self._arena()
+        assert mon is not None
+        p = state.player
+        other = Monster(11, 10, 'goblin')
+        other.hp = other.max_hp = 1000
+        other.power = 5
+        state.entities.append(other)
+        state.update_fov()
+        state.handle_action('ability')
+        self.run_monsters(state)
+        self.assertEqual(
+            [(h.attacker, h.defender) for h in state.combat_events], [(p, mon), (other, p)]
+        )
+        self.assertEqual(other.hp, 1000)
+        self.assertEqual(p.hp, 1000 - round_damage(mitigate(5, 0)))
+
+    def test_parry_progress_fills_over_the_cooldown(self):
+        state, _ = self._arena(monster=False)
+        self.assertEqual(state.parry_progress(), PARRY_COOLDOWN)  # never used: ready
+        state.handle_action('ability')
+        self.assertEqual(state.parry_progress(), PARRY_COOLDOWN)  # armed: full
+        state.parry_armed = False  # as if a monster's hit had spent it
+        seen = [state.parry_progress()]
+        for _ in range(PARRY_COOLDOWN + 2):
+            state.handle_action('wait')
+            seen.append(state.parry_progress())
+        self.assertEqual(seen, [0, 1, 2, 3, 4, 4, 4])
+
+    def test_parry_progress_is_empty_when_spent_on_the_turn_it_was_armed(self):
+        state, _ = self._arena()
+        state.handle_action('ability')
+        self.run_monsters(state)  # the adjacent goblin swings at once
+        self.assertFalse(state.parry_armed)
+        self.assertEqual(state.parry_progress(), 0)
+        for expected in (1, 2, 3, 4):
+            state.handle_action('wait')
+            state.cancel_monster_phase()
+            self.assertEqual(state.parry_progress(), expected)
+        self.assertTrue(state.handle_action('ability'))
 
     def test_parry_is_not_triggered_by_the_warriors_own_attack(self):
         state, mon = self._arena()

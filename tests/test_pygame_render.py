@@ -781,12 +781,17 @@ class HitShakeAndHealthBarTest(unittest.TestCase):
         try:
             struck = r._map_cell_rect(hit.x, hit.y)
             other = r._map_cell_rect(attacker.x, attacker.y)
+            bar = r.restock_bar_rect(state.player)
         finally:
             r._proj = None
         # The struck sprite may spill a few pixels over the edge it shares
         # with the attacker; the rest of the attacker's cell is its own
         # sprite, which must not jitter.
         spill = camera.sprite_shake_peak(camera.shake_for(hit), struck.height)
+        if hit.defender is state.player:
+            # The bar under the player (a warrior's parry bar, an archer's
+            # restock bar) overhangs its cell, rim included, and shakes with it.
+            spill += (bar.width - struck.width + 1) // 2 + 1
         dx, dy = attacker.x - hit.x, attacker.y - hit.y
         own = pygame.Rect(other)
         if dx:
@@ -1766,7 +1771,10 @@ class ArcherVisualsTest(unittest.TestCase):
             r.draw(warrior)
         self.assertEqual(painted, [])
         self.assertTrue(paint.called)
-        warrior.restock_progress = 2  # never set for a warrior, but even so
+        # The bar a warrior does get is the parry's: restock_progress (never
+        # set for a warrior) doesn't fill it, parry_progress() does.
+        warrior.restock_progress = 2
+        warrior.last_parry_turn = warrior.turn  # just spent: parry_progress() 0
         r.draw(warrior)
         bar = r.restock_bar_rect(warrior.player)
         self.assertEqual(self.fill_pixels(bar), 0)
@@ -1800,6 +1808,102 @@ class ArcherVisualsTest(unittest.TestCase):
         r.canvas.clear()
         r._paint_game(self.state)  # painted through the projection
         self.assertEqual(self.fill_pixels(bar), round(bar.width * 2 / 3))
+        r._view = None
+
+    # -- the warrior's parry bar ----------------------------------------------
+
+    def warrior(self):
+        state = self.arena('warrior')
+        state.last_parry_turn = state.turn  # Q pressed and the parry spent
+        return state
+
+    def test_parry_bar_fills_over_the_cooldown_one_turn_at_a_time(self):
+        from game.state import PARRY_COOLDOWN
+
+        r = self.renderer
+        state = self.warrior()
+        bar = r.restock_bar_rect(state.player)
+        fills = []
+        for _ in range(PARRY_COOLDOWN + 1):
+            r.draw(state)
+            fills.append(self.fill_pixels(bar))
+            state.handle_action('wait')
+            state.cancel_monster_phase()
+        self.assertEqual(fills, [round(bar.width * n / PARRY_COOLDOWN) for n in range(5)])
+        self.assertEqual(fills[0], 0)
+        self.assertEqual(fills[-1], bar.width)
+        self.assertEqual(r.parry_fill(bar.width, 2), round(bar.width / 2))
+
+    def test_parry_bar_is_drawn_like_the_restock_bar(self):
+        from render.pygame_render import RESTOCK_FILL, RESTOCK_TRACK
+
+        r = self.renderer
+        state = self.warrior()
+        state.turn += 2  # mid-cooldown
+        r.canvas.clear()
+        r._paint_game(state)
+        bar = r.restock_bar_rect(state.player)
+        cell = r._map_cell_rect(state.player.x, state.player.y)
+        self.assertTrue(cell.centery < bar.top and bar.bottom < cell.bottom)
+        self.assertEqual(bar.width, round(cell.width * 1.05))
+        self.assertEqual(bar.height, max(3, round(cell.height * 0.15)))
+        screen = r.canvas.surface
+        self.assertEqual(tuple(screen.get_at((bar.left - 1, bar.centery)))[:3], RESTOCK_TRACK)
+        self.assertEqual(tuple(screen.get_at((bar.centerx, bar.top - 1)))[:3], RESTOCK_TRACK)
+        self.assertEqual(tuple(screen.get_at((bar.left, bar.centery)))[:3], RESTOCK_FILL)
+        self.assertEqual(tuple(screen.get_at((bar.right - 1, bar.centery)))[:3], RESTOCK_TRACK)
+        self.assertEqual(self.fill_pixels(bar), round(bar.width / 2))
+
+    def test_parry_bar_is_full_when_ready_and_when_armed(self):
+        r = self.renderer
+        state = self.arena('warrior')  # never used: ready
+        bar = r.restock_bar_rect(state.player)
+        r.draw(state)
+        self.assertEqual(self.fill_pixels(bar), bar.width)
+        self.assertTrue(state.handle_action('ability'))  # armed, on this very turn
+        state.cancel_monster_phase()
+        self.assertTrue(state.parry_armed)
+        r.draw(state)
+        self.assertEqual(self.fill_pixels(bar), bar.width)
+
+    def test_no_parry_bar_for_the_archer(self):
+        r = self.renderer
+        painted = []
+        with mock.patch.object(r, '_paint_parry_bar', side_effect=lambda *a: painted.append(1)):
+            r.draw(self.state)
+            self.assertEqual(painted, [])
+            r.draw(self.warrior())
+        self.assertEqual(painted, [1])
+
+    def test_parry_bar_stays_inside_the_map_and_follows_the_zoom(self):
+        r = self.renderer
+        map_rect = r.layout.map_rect()
+        state = self.warrior()
+        player = state.player
+        screen = r.canvas.surface
+        from render.pygame_render import RESTOCK_TRACK
+
+        for x, y in ((0, 0), (5, 0), (WIDTH - 1, 0), (0, HEIGHT - 1), (WIDTH - 1, HEIGHT - 1)):
+            player.x, player.y = x, y
+            r.canvas.clear()
+            r._paint_game(state)
+            bar = r.restock_bar_rect(player)
+            self.assertTrue(map_rect.contains(bar.inflate(2, 2)), (x, y))
+            self.assertEqual(tuple(screen.get_at((bar.left - 1, bar.centery)))[:3], RESTOCK_TRACK)
+        player.x, player.y = 10, 10
+        state.turn += 3
+        r._view = camera.combat_view(player, collections.namedtuple('P', 'x y')(11, 10))
+        r._proj = camera.project(r._view, map_rect, r.layout.map_cell_size())
+        try:
+            bar = r.restock_bar_rect(player)
+            cell = r._map_cell_rect(player.x, player.y)
+        finally:
+            r._proj = None
+        self.assertTrue(map_rect.contains(bar.inflate(2, 2)))
+        self.assertEqual(bar.width, round(cell.width * 1.05))
+        r.canvas.clear()
+        r._paint_game(state)  # painted through the projection
+        self.assertEqual(self.fill_pixels(bar), round(bar.width * 3 / 4))
         r._view = None
 
     # -- arrow piles ----------------------------------------------------------
