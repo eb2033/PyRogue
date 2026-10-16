@@ -90,25 +90,37 @@ def run(renderer, state, delay_ms=DEFAULT_TURN_DELAY_MS):
         resolve_monster_phase(renderer, state, delay_ms)
 
 
+def play(renderer, width, height, fov_radius=DEFAULT_FOV_RADIUS, delay_ms=DEFAULT_TURN_DELAY_MS):
+    """Title screen, class select, a run -- and again for as long as each
+    run ends in 'press r to restart'. Every run gets a GameState built fresh
+    after its class is chosen, so nothing of a dead run carries over. Quit on
+    the title, q on the death screen, or closing the window ends it."""
+    while renderer.show_title_screen():
+        state = GameState(width, height, fov_radius=fov_radius, char_class=renderer.choose_class())
+        run(renderer, state, delay_ms)
+        if not state.restart_requested:
+            return
+
+
 def main():
     # Before anything reads the environment.
     settings.load()
 
+    # The base map size: each floor's map grows from it with depth
+    # (game/dungeon.py map_size), and the window's view is sized from it
+    # (render/camera.py view_size).
     width = env_int('MAP_WIDTH', DEFAULT_WIDTH)
     height = env_int('MAP_HEIGHT', DEFAULT_HEIGHT)
 
     renderer = make_renderer(width, height)
     try:
-        if not renderer.show_title_screen():
-            return  # player chose Quit
-        char_class = renderer.choose_class()
-        state = GameState(
+        play(
+            renderer,
             width,
             height,
             fov_radius=env_int('FOV_RADIUS', DEFAULT_FOV_RADIUS),
-            char_class=char_class,
+            delay_ms=env_int('TURN_DELAY_MS', DEFAULT_TURN_DELAY_MS),
         )
-        run(renderer, state, env_int('TURN_DELAY_MS', DEFAULT_TURN_DELAY_MS))
     finally:
         renderer.close()
 

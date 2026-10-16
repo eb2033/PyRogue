@@ -15,10 +15,11 @@ the player and every other living monster, and a step into one is skipped.
 A chasing monster that goes GIVE_UP_AFTER (3) turns in a row without seeing
 the player gives up and wanders until it sees the player again.
 
-The goblin slinger (kind 'slinger', RANGED_KINDS) keeps its distance: while
-it sees the player it backs off when the player is within KEEP_AWAY (2)
+The goblin archer (kind 'goblin_archer', RANGED_KINDS) keeps its distance:
+while it sees the player it backs off when the player is within KEEP_AWAY (2)
 tiles and otherwise shoots along a clear row or column up to SHOOT_RANGE (5)
-tiles, returning 'attack' so GameState.attack resolves the shot. It never
+tiles, returning 'shoot' so GameState resolves the shot (through
+GameState.attack, like any blow) and records its arrow. It never
 shoots through a wall or a closed door. Out of sight it chases like a goblin.
 
 Difficulty: every 3 floors (a "tier") regular monsters get 1.2x hp and +1
@@ -41,11 +42,11 @@ from game.tiles import is_transparent, is_walkable
 MONSTER_TYPES = {
     'goblin': ('g', 2, 11, 2),
     'orc': ('o', 2, 27, 4),
-    # Ranged: keeps its distance and shoots (see Monster._slinger_turn).
-    'slinger': ('s', 2, 7, 1),
+    # Ranged: keeps its distance and shoots (see Monster._ranged_turn).
+    'goblin_archer': ('s', 2, 7, 1),
 }
 
-RANGED_KINDS = frozenset({'slinger'})
+RANGED_KINDS = frozenset({'goblin_archer'})
 SHOOT_RANGE = 5  # Chebyshev; the shot itself must be along a row or column
 KEEP_AWAY = 2  # a ranged monster backs off when the player is this close
 
@@ -60,6 +61,12 @@ GIVE_UP_AFTER = 3  # blind chasing turns before a monster gives up
 TIER_SIZE = 3  # floors per difficulty tier
 TIER_HP_MULT = 1.2
 TIER_POWER_BONUS = 1
+
+# Early-game ease: regular orcs (never the boss, never goblins) have 20% less
+# HP on floors 1..EARLY_ORC_MAX_DEPTH, applied after the tier scaling. From the
+# next floor on they scale normally.
+EARLY_ORC_HP_MULT = 0.8
+EARLY_ORC_MAX_DEPTH = 8
 
 BOSS_LEVEL_INTERVAL = 8
 BOSS_REFERENCE_KIND = 'orc'  # the toughest regular kind; boss stats scale off it
@@ -89,12 +96,15 @@ class Monster(Entity):
     def __init__(self, x, y, kind='goblin', depth=1, is_boss=False):
         char, color, base_hp, base_power = MONSTER_TYPES[kind]
         hp, power = scale_stats(base_hp, base_power, depth)
+        if kind == 'orc' and not is_boss and depth <= EARLY_ORC_MAX_DEPTH:
+            hp = max(1, round(hp * EARLY_ORC_HP_MULT))
         if is_boss:
             hp = max(1, round(hp * BOSS_HP_MULT))
             power = max(1, round(power * BOSS_POWER_MULT))
             char = char.upper()
 
-        name = f'boss {kind}' if is_boss else kind
+        display = kind.replace('_', ' ')  # 'goblin_archer' -> 'goblin archer'
+        name = f'boss {display}' if is_boss else display
         super().__init__(x, y, char, color=color, name=name)
         self.kind = kind
         self.max_hp = hp
@@ -108,7 +118,8 @@ class Monster(Entity):
 
     def take_turn(self, player, game_map, occupied=(), sees_player=True):
         """Chase or wander. Returns 'attack' when standing orthogonally
-        adjacent to the player, else None after (maybe) taking one step.
+        adjacent to the player, 'shoot' when a ranged monster looses an
+        arrow at it, else None after (maybe) taking one step.
 
         `occupied` is the set of (x, y) tiles this monster may not step onto
         because something else stands there -- other living monsters and the
@@ -133,7 +144,7 @@ class Monster(Entity):
         the monster was already adjacent and had returned 'attack'.
         """
         if self.kind in RANGED_KINDS and not self.is_boss:
-            ranged = self._slinger_turn(player, game_map, occupied, sees_player)
+            ranged = self._ranged_turn(player, game_map, occupied, sees_player)
             if ranged is not None:
                 return ranged or None  # '' = stepped away, nothing to resolve
 
@@ -179,11 +190,12 @@ class Monster(Entity):
             x, y = x + sx, y + sy
         return True
 
-    def _slinger_turn(self, player, game_map, occupied, sees_player):
+    def _ranged_turn(self, player, game_map, occupied, sees_player):
         """A ranged monster's turn while it can see the player.
 
-        Returns 'attack' to shoot (GameState.attack resolves it, the same
-        path as a melee blow or the archer's arrow), '' after stepping away,
+        Returns 'shoot' to shoot (GameState resolves the damage through
+        attack, the same path as a melee blow or the archer's arrow, and
+        records the arrow's flight as a Shot), '' after stepping away,
         or None to fall back to the ordinary chase -- which is what happens
         whenever the player is out of sight or out of a clear line.
 
@@ -202,7 +214,7 @@ class Monster(Entity):
                 self.move(step[0], step[1], game_map)
                 return ''
         if self.clear_shot(player, game_map, occupied):
-            return 'attack'
+            return 'shoot'
         return None
 
     def _retreat_step(self, player, game_map, occupied=()):

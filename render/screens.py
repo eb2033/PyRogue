@@ -22,6 +22,9 @@ CLASS_DESCRIPTIONS = {
 MENU_HINT = 'up/down or w/s to choose, enter to select, q to quit'
 GAME_OVER_TITLE = 'YOU DIED'
 GAME_OVER_HINT = 'press q to quit'
+GAME_OVER_RESTART_HINT = 'press r to restart'
+# The hint lines under the title, top to bottom.
+GAME_OVER_HINTS = (GAME_OVER_HINT, GAME_OVER_RESTART_HINT)
 GAME_OVER_SCALE = 4  # the title is this many times the map's font
 
 
@@ -105,10 +108,13 @@ def game_over_fonts(layout):
 
 def game_over_rect(layout):
     """Pixel rect of the game-over banner: a box centred across the top of
-    the map, holding the big title and the hint under it."""
+    the map, holding the big title and the hint lines under it."""
     title_font, hint_font = game_over_fonts(layout)
-    text_w = max(title_font.size(GAME_OVER_TITLE)[0], hint_font.size(GAME_OVER_HINT)[0])
-    text_h = title_font.get_linesize() + hint_font.get_linesize()
+    text_w = max(
+        title_font.size(GAME_OVER_TITLE)[0],
+        *(hint_font.size(hint)[0] for hint in GAME_OVER_HINTS),
+    )
+    text_h = title_font.get_linesize() + len(GAME_OVER_HINTS) * hint_font.get_linesize()
     box = pygame.Rect(0, 0, text_w + 2 * layout.cell_w, text_h + layout.cell_h)
     area = layout.map_rect()
     box.centerx = area.centerx
@@ -117,19 +123,21 @@ def game_over_rect(layout):
 
 
 def paint_game_over(canvas):
-    """Overlay drawn on top of the final game frame: the title and hint in a
-    framed box placed by game_over_rect."""
+    """Overlay drawn on top of the final game frame: the title and the hint
+    lines in a framed box placed by game_over_rect."""
     layout = canvas.layout
     box = game_over_rect(layout)
     canvas.surface.fill(palette.BACKGROUND, box)
     pygame.draw.rect(canvas.surface, palette.DANGER, box, max(1, layout.cell_h // 12))
     title_font, hint_font = game_over_fonts(layout)
     title = title_font.render(GAME_OVER_TITLE, True, palette.DANGER)
-    hint = hint_font.render(GAME_OVER_HINT, True, palette.DANGER)
     top = box.top + layout.cell_h // 2
     canvas.surface.blit(title, title.get_rect(centerx=box.centerx, top=top))
     top += title_font.get_linesize()
-    canvas.surface.blit(hint, hint.get_rect(centerx=box.centerx, top=top))
+    for line in GAME_OVER_HINTS:
+        hint = hint_font.render(line, True, palette.DANGER)
+        canvas.surface.blit(hint, hint.get_rect(centerx=box.centerx, top=top))
+        top += hint_font.get_linesize()
 
 
 def _choice_text_w(layout, lines):

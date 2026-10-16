@@ -21,8 +21,9 @@ import textwrap
 
 import pygame
 
-from game.item import belt_capacity, belt_slot_label
+from game.item import belt_capacity, belt_slot_label, dodge_chance
 from game.paths import resource_path
+from game.quiver import QUIVER_CAPACITY
 from game.shrine import BOON_COLOR, boons_text
 from render import noticeboard, palette
 
@@ -99,6 +100,10 @@ class Layout:
     In both modes the panel goes right of the map, or -- `stacked` -- under
     it, whichever gives the map bigger cells (in tile mode, a tie goes to the
     bigger panel font; otherwise to side by side).
+
+    `map_width` x `map_height` is the map *area* in cells -- the renderer
+    passes camera.view_size, the exploring view, not the current floor's map
+    (which grows with depth and is panned under that view).
     """
 
     def __init__(self, map_width, map_height, font_path=None, tiles=False):
@@ -484,8 +489,8 @@ def paint_panel(canvas, state):
     danger = player.hp <= player.max_hp // 3
     put(HP_ROW, f'HP: {player.hp}/{player.max_hp}', palette.INK_DANGER if danger else palette.INK)
     _paint_hp_bar(canvas, x, top + HP_ROW, width, player.hp, player.max_hp, danger)
-    put(3, f'ATK {player.power}   DEF {player.defense}')
-    put(4, f'Items: {len(player.inventory)}')
+    put(3, stats_text(player))
+    put(4, items_text(player))
 
     put(GEAR_TOP, '-- gear --', bold=True)
     for row, (label, item, stat) in enumerate(
@@ -504,12 +509,29 @@ def paint_panel(canvas, state):
         put(CONTROLS_TOP, 'wasd move, arrows shoot')
     else:
         put(CONTROLS_TOP, 'wasd/arrows move')
-    put(CONTROLS_TOP + 1, '.  wait   e  descend')
-    put(CONTROLS_TOP + 2, 'h  drink  q  quit')
+    put(CONTROLS_TOP + 1, 'space  wait   e  descend')
+    put(CONTROLS_TOP + 2, 'h  drink  q  ability')
 
     put(LOG_TOP, '-- log --', bold=True)
     for i, line in enumerate(log_rows(state.messages, width, layout.log_lines())):
         put(LOG_TOP + 1 + i, line)
+
+
+def stats_text(player):
+    """The panel's stats row: 'ATK n   DEF n', plus '   DODGE n%' when the
+    worn armor gives any dodge (game.item.dodge_chance)."""
+    text = f'ATK {player.power}   DEF {player.defense}'
+    dodge = dodge_chance(player)
+    return f'{text}   DODGE {dodge}%' if dodge else text
+
+
+def items_text(player):
+    """The panel's item row: 'Items: n', plus '   Arrows n/12' for a player
+    with a quiver (the archer; game/quiver.py)."""
+    text = f'Items: {len(player.inventory)}'
+    if player.quiver is None:
+        return text
+    return f'{text}   Arrows {player.quiver}/{QUIVER_CAPACITY}'
 
 
 def log_rows(messages, width, rows):

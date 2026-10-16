@@ -26,7 +26,7 @@ from game.state import GameState
 from render.base import Action
 
 if pygame is not None:
-    from render import camera, screens
+    from render import camera, palette, screens
     from render.palette import BACKGROUND
     from render.pygame_render import PygameRenderer
 
@@ -54,7 +54,9 @@ class PygameRendererTest(unittest.TestCase):
     def test_draw_paints_the_player_cell(self):
         state = GameState(WIDTH, HEIGHT)
         self.renderer.draw(state)
-        cell = self.renderer.layout.cell_rect(state.player.x, state.player.y)
+        # The camera follows the player over a map bigger than the view, so
+        # the cell is wherever the current view puts it.
+        cell = self.renderer._map_cell_rect(state.player.x, state.player.y)
         screen = self.renderer.canvas.surface
         pixels = {
             tuple(screen.get_at((x, y)))[:3]
@@ -154,7 +156,8 @@ class PygameRendererTest(unittest.TestCase):
             key(pygame.K_w, 'w'),
             key(pygame.K_RIGHT),
             key(pygame.K_PERIOD, '.'),
-            key(pygame.K_q, 'q'),
+            key(pygame.K_q, 'q'),  # the ability key: does nothing mid-game
+            pygame.event.Event(pygame.QUIT),
         )
         self.assertTrue(self.renderer.show_title_screen())
         char_class = self.renderer.choose_class()
@@ -188,7 +191,7 @@ class PygameRendererTest(unittest.TestCase):
         state = GameState(WIDTH, HEIGHT)
         self.renderer.draw(state)
         self.renderer.toggle_fullscreen()
-        cell = self.renderer.layout.cell_rect(state.player.x, state.player.y)
+        cell = self.renderer._map_cell_rect(state.player.x, state.player.y)
         self.assertTrue(
             set(cell_pixels(self.renderer, cell)) - {BACKGROUND},
             'frame not repainted after going fullscreen',
@@ -233,11 +236,11 @@ class PygameRendererTest(unittest.TestCase):
         x, y = open_neighbour(state)
         boss = Monster(x, y, 'goblin', is_boss=True)
         state.entities.append(boss)
-        cell = self.renderer.layout.cell_rect(x, y)
         # The boss stands next to the player; this compares the unzoomed cell.
         self.renderer.director.zoom = False
 
         self.renderer.draw(state)
+        cell = self.renderer._map_cell_rect(x, y)  # where the camera put it
         boss_pixels = lit_pixels(self.renderer, cell)
         boss.is_boss = False
         self.renderer.draw(state)
@@ -366,6 +369,155 @@ class PygameRendererTest(unittest.TestCase):
         self.assertTrue(state.game_over)
         self.assertFalse(state.running)
 
+    def test_r_mid_game_is_ignored(self):
+        state = GameState(WIDTH, HEIGHT)
+        self.renderer.draw(state)
+        self.post(key(pygame.K_r, 'r'), key(pygame.K_PERIOD, '.'))
+        self.assertIsNone(self.renderer.get_action())
+        self.assertEqual(self.renderer.get_action(), Action.WAIT)
+
+    def test_r_on_the_game_over_screen_is_restart(self):
+        state = GameState(WIDTH, HEIGHT)
+        state.game_over = True
+        self.renderer.draw(state)
+        self.post(key(pygame.K_r, 'r'))
+        self.assertEqual(self.renderer.get_action(), Action.RESTART)
+
+    def test_r_on_the_title_screen_does_nothing(self):
+        # 'r' neither picks an option nor moves the highlight: enter still
+        # takes Start.
+        self.post(key(pygame.K_r, 'r'), key(pygame.K_RETURN, '\r'))
+        self.assertTrue(self.renderer.show_title_screen())
+
+    def play_with_a_death(self, *events, second_run=()):
+        """main.play with `events` queued and the first run's player one
+        blow from death, carrying what a run collects (a belt potion, a boon,
+        hop and parry cooldowns). `second_run` is posted once a second class
+        select returns -- a window close queued from the start would be seen
+        by the first run's pauses. Returns (states built, [states built when
+        each title screen opened], [... when each class select opened])."""
+        from game.item import Item
+
+        real_state = GameState
+        states, at_title, at_class = [], [], []
+
+        def build(*args, **kwargs):
+            state = real_state(*args, **kwargs)
+            if not states:
+                kill_player_next_turn(state)
+                state.belt = [Item(0, 0, 'potion', 'common')]
+                state.player.boons = ['iron_skin']
+                state.last_hop_turn = state.last_parry_turn = 0
+            states.append(state)
+            return state
+
+        real_title, real_class = self.renderer.show_title_screen, self.renderer.choose_class
+
+        def title():
+            at_title.append(len(states))
+            return real_title()
+
+        def choose():
+            at_class.append(len(states))
+            char_class = real_class()
+            if len(at_class) == 2:
+                self.post(*second_run)
+            return char_class
+
+        self.renderer.show_title_screen = title
+        self.renderer.choose_class = choose
+        self.post(*events)
+        with mock.patch.object(main, 'GameState', side_effect=build):
+            main.play(self.renderer, WIDTH, HEIGHT, delay_ms=1)
+        return states, at_title, at_class
+
+    def test_r_on_the_death_screen_goes_back_to_the_title_and_a_fresh_run(self):
+        enter = key(pygame.K_RETURN, '\r')
+        states, at_title, at_class = self.play_with_a_death(
+            enter,  # title: Start
+            enter,  # class: Warrior
+            key(pygame.K_PERIOD, '.'),  # the goblin kills us
+            key(pygame.K_r, 'r'),  # death screen: restart
+            enter,  # title again: Start
+            key(pygame.K_s, 's'),
+            enter,  # class: Archer
+            second_run=[pygame.event.Event(pygame.QUIT)],
+        )
+        self.assertEqual(len(states), 2)
+        dead, fresh = states
+        self.assertTrue(dead.game_over)
+        self.assertTrue(dead.restart_requested)
+        # The title opened twice; the second run's GameState was built only
+        # after its class was chosen.
+        self.assertEqual(at_title, [0, 1])
+        self.assertEqual(at_class, [0, 1])
+        self.assertIsNot(fresh, dead)
+        self.assertEqual(fresh.player.char_class, 'archer')
+        self.assertFalse(fresh.game_over)
+        self.assertFalse(fresh.restart_requested)
+        self.assertEqual(fresh.depth, 1)
+        self.assertEqual(fresh.turn, 0)
+        self.assertEqual(fresh.player.hp, fresh.player.max_hp)
+        self.assertEqual(fresh.belt, [])
+        self.assertEqual(fresh.player.boons, [])
+        self.assertFalse(fresh.parry_armed)
+        self.assertIsNone(fresh.last_parry_turn)
+        self.assertIsNone(fresh.last_hop_turn)
+        self.assertFalse(fresh.hop_crit)
+        from game.quiver import QUIVER_CAPACITY
+
+        self.assertEqual(fresh.player.quiver, QUIVER_CAPACITY)
+        # The renderer forgot the dead run too: its Director would otherwise
+        # skip the new run's hits (their serials start again from zero).
+        self.assertEqual(self.renderer.director._last_hit, 0)
+
+    def test_q_on_the_death_screen_still_quits_from_play(self):
+        enter = key(pygame.K_RETURN, '\r')
+        states, at_title, _ = self.play_with_a_death(
+            enter, enter, key(pygame.K_PERIOD, '.'), key(pygame.K_q, 'q')
+        )
+        self.assertEqual(len(states), 1)
+        self.assertEqual(at_title, [0])  # never back to the title
+        self.assertTrue(states[0].game_over)
+        self.assertFalse(states[0].restart_requested)
+
+    def test_window_close_on_the_death_screen_still_quits_from_play(self):
+        enter = key(pygame.K_RETURN, '\r')
+        states, at_title, _ = self.play_with_a_death(
+            enter, enter, key(pygame.K_PERIOD, '.'), pygame.event.Event(pygame.QUIT)
+        )
+        self.assertEqual(len(states), 1)
+        self.assertEqual(at_title, [0])
+
+    def test_death_screen_shows_both_hints(self):
+        self.assertEqual(screens.GAME_OVER_HINTS, ('press q to quit', 'press r to restart'))
+        state = GameState(WIDTH, HEIGHT)
+        state.game_over = True
+        self.renderer.draw(state)
+        layout = self.renderer.layout
+        box = screens.game_over_rect(layout)
+        title_font, hint_font = screens.game_over_fonts(layout)
+        self.assertGreaterEqual(
+            box.height,
+            title_font.get_linesize() + 2 * hint_font.get_linesize(),
+        )
+        self.assertGreaterEqual(box.width, hint_font.size('press r to restart')[0])
+        self.assertTrue(layout.map_rect().contains(box))
+        # Each hint's line inside the box has red ink on it.
+        screen = self.renderer.canvas.surface
+        top = box.top + layout.cell_h // 2 + title_font.get_linesize()
+        for i in range(2):
+            # Inset half a cell, clear of the box's red frame.
+            line = pygame.Rect(
+                box.left + layout.cell_w // 2,
+                top + i * hint_font.get_linesize(),
+                box.width - layout.cell_w,
+                hint_font.get_height(),
+            )
+            pixels = pygame.image.tobytes(screen.subsurface(line), 'RGB')
+            colours = {pixels[j : j + 3] for j in range(0, len(pixels), 3)}
+            self.assertIn(bytes(palette.DANGER), colours, f'hint line {i}')
+
     def test_complete_run_title_class_descend_death_quit(self):
         """Plan WS-A acceptance: a complete run, in-window, through main.run.
 
@@ -448,14 +600,27 @@ class TileModeTest(unittest.TestCase):
         state = GameState(WIDTH, HEIGHT)
         self.renderer.draw(state)
         layout = self.renderer.layout
-        rect = pygame.Rect(
-            layout.map_cell_to_pixel(state.player.x, state.player.y), layout.map_cell_size()
-        )
+        rect = self.renderer._map_cell_rect(state.player.x, state.player.y)
         drawn = pygame.display.get_surface().subsurface(rect)
         expected = self.renderer.tileset.glyph('.', 0, layout.tile).copy()
         expected.blit(self.renderer.tileset.glyph('@', state.player.color, layout.tile), (0, 0))
         for point in [(layout.tile // 2, layout.tile // 2), (1, 1), (layout.tile // 3, 2)]:
             self.assertEqual(drawn.get_at(point)[:3], expected.get_at(point)[:3])
+
+    def test_archer_is_drawn_with_its_own_tile(self):
+        state = GameState(WIDTH, HEIGHT, char_class='archer')
+        self.renderer.draw(state)
+        layout = self.renderer.layout
+        rect = self.renderer._map_cell_rect(state.player.x, state.player.y)
+        drawn = pygame.display.get_surface().subsurface(rect)
+        expected = self.renderer.tileset.glyph('.', 0, layout.tile).copy()
+        expected.blit(self.renderer.tileset.glyph('&', state.player.color, layout.tile), (0, 0))
+        point = (layout.tile // 2, layout.tile // 2)
+        self.assertEqual(drawn.get_at(point)[:3], expected.get_at(point)[:3])
+        self.assertIsNot(
+            self.renderer.tileset.glyph('&', 0, layout.tile),
+            self.renderer.tileset.glyph('@', 0, layout.tile),
+        )
 
     def fight(self):
         state = GameState(WIDTH, HEIGHT)
@@ -515,7 +680,9 @@ class TileModeTest(unittest.TestCase):
         goblin.hp = 1
         state.attack(state.player, goblin)
         self.renderer.draw(state)
-        self.assertIsNone(self.renderer._view)
+        # Back to the exploring view that follows the player.
+        self.assertIsNone(self.renderer.director.view)
+        self.assertEqual(self.renderer._view, self.renderer.director.explore_view(state))
 
     def test_beats_animate_and_a_queued_key_cuts_them_short(self):
         self.renderer.zoom_ms = 2000
@@ -664,7 +831,8 @@ class HitShakeAndHealthBarTest(unittest.TestCase):
     def test_a_hit_plays_an_uninterruptible_shake_and_a_crit_plays_longer(self):
         state, goblin = self.fight()
         state.attack(goblin, state.player)
-        normal = self.played(state)
+        swing, *normal = self.played(state)  # the monster's swing, then the hit
+        self.assertEqual(swing, (camera.SWING_MS, False))
         self.assertEqual(len(normal), 1)
         normal_ms, interruptible = normal[0]
         self.assertFalse(interruptible)
@@ -674,7 +842,7 @@ class HitShakeAndHealthBarTest(unittest.TestCase):
         with mock.patch('game.state.BASE_CRIT_CHANCE', 1.0):
             state.attack(state.player, goblin)
         self.assertTrue(state.combat_events[-1].crit)
-        (crit_ms, interruptible), *_ = self.played(state)
+        _, (crit_ms, interruptible), *_ = self.played(state)
         self.assertFalse(interruptible)
         self.assertTrue(normal_ms < crit_ms <= 350, crit_ms)
 
@@ -762,12 +930,17 @@ class HitShakeAndHealthBarTest(unittest.TestCase):
         try:
             struck = r._map_cell_rect(hit.x, hit.y)
             other = r._map_cell_rect(attacker.x, attacker.y)
+            bar = r.restock_bar_rect(state.player)
         finally:
             r._proj = None
         # The struck sprite may spill a few pixels over the edge it shares
         # with the attacker; the rest of the attacker's cell is its own
         # sprite, which must not jitter.
         spill = camera.sprite_shake_peak(camera.shake_for(hit), struck.height)
+        if hit.defender is state.player:
+            # The bar under the player (a warrior's parry bar, an archer's
+            # restock bar) overhangs its cell, rim included, and shakes with it.
+            spill += (bar.width - struck.width + 1) // 2 + 1
         dx, dy = attacker.x - hit.x, attacker.y - hit.y
         own = pygame.Rect(other)
         if dx:
@@ -1201,6 +1374,12 @@ class ChoiceCardTextTest(unittest.TestCase):
         expected = {
             'weapon': ['+1 damage', '+2 damage', '+4 damage', '+7 damage'],
             'armor': ['+3 defence', '+6 defence', '+12 defence', '+21 defence'],
+            'leather': [
+                '+2 defence, 4% dodge',
+                '+3 defence, 6% dodge',
+                '+6 defence, 9% dodge',
+                '+10 defence, 12% dodge',
+            ],
             'war_axe': [
                 '+0 damage, +3 HP',
                 '+1 damage, +6 HP',
@@ -1236,6 +1415,42 @@ class ChoiceCardTextTest(unittest.TestCase):
                 '+2 damage, reach 2',
                 '+4 damage, reach 2',
                 '+7 damage, reach 2',
+            ],
+            'longbow': [
+                '+0 damage, pierces 2',
+                '+1 damage, pierces 2',
+                '+3 damage, pierces 3',
+                '+6 damage, pierces 4',
+            ],
+            'heavy_crossbow': [
+                '+3 damage, reload 2',
+                '+4 damage, reload 2',
+                '+6 damage, reload 1',
+                '+9 damage, reload 1',
+            ],
+            'volley_bow': [
+                '-1 damage, +2 arrows at 50%',
+                '+0 damage, +2 arrows at 50%',
+                '+2 damage, +3 arrows at 60%',
+                '+5 damage, +3 arrows at 70%',
+            ],
+            'sling': [
+                '+0 damage, knockback 1',
+                '+1 damage, knockback 1',
+                '+3 damage, knockback 2',
+                '+6 damage, knockback 2',
+            ],
+            'hunters_bow': [
+                '+0 damage, mark +25%',
+                '+1 damage, mark +50%',
+                '+3 damage, mark +75%',
+                '+6 damage, mark +100%',
+            ],
+            'quickdraw': [
+                '+1 damage, every 4 shots free',
+                '+2 damage, every 4 shots free',
+                '+4 damage, every 3 shots free',
+                '+7 damage, every 2 shots free',
             ],
         }
         from game.item import GEAR_KINDS, RARITIES
@@ -1310,9 +1525,8 @@ class BossArenaTest(unittest.TestCase):
         return self.renderer.canvas.surface.copy()
 
     def cell(self, surface, x, y):
-        rect = self.renderer.layout.map_cell_to_pixel(x, y)
-        size = self.renderer.layout.map_cell_size()
-        return pygame.image.tobytes(surface.subsurface(pygame.Rect(rect, size)), 'RGB')
+        rect = self.renderer._map_cell_rect(x, y)
+        return pygame.image.tobytes(surface.subsurface(rect), 'RGB')
 
     def decal_cells(self):
         layout = self.renderer._arena_decals(self.arena)
@@ -1368,6 +1582,868 @@ class BossArenaTest(unittest.TestCase):
         state.boss_arena = None
         self.renderer.draw(state)
         self.assertEqual(wall, self.cell(self.renderer.canvas.surface, 10, 6))
+
+
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
+class ArcherVisualsTest(unittest.TestCase):
+    """The archer in the window, in tile mode: an arrow flying to each hit
+    before its impact, the restock bar under the player, and arrow piles."""
+
+    TILES = True
+
+    def setUp(self):
+        from game.paths import resource_path
+        from render.tileset import Tileset
+
+        tileset = Tileset(resource_path('assets')) if self.TILES else None
+        self.renderer = PygameRenderer(WIDTH, HEIGHT, tileset=tileset)
+        self.renderer._set_mode((1600, 900), pygame.RESIZABLE)
+        self.renderer._relayout()
+        self.renderer.zoom_ms = 0
+        pygame.event.clear()
+        patcher = mock.patch('game.state.BASE_CRIT_CHANCE', 0.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.state = self.arena()
+        self.renderer.draw(self.state)
+
+    def tearDown(self):
+        self.renderer.close()
+
+    @staticmethod
+    def arena(char_class='archer'):
+        from game.item import Item
+
+        state = GameState(WIDTH, HEIGHT, char_class=char_class)
+        for y in range(1, HEIGHT - 1):
+            for x in range(1, WIDTH - 1):
+                state.game_map[y][x] = '.'
+        state.player.x, state.player.y = 10, 10
+        # A plain single-target weapon, not the archer's starting longbow.
+        state.player.weapon = Item(0, 0, 'weapon', 'common')
+        state.entities = [state.player]
+        state.update_fov()
+        return state
+
+    def goblin(self, x, y, hp=1000):
+        goblin = Monster(x, y, 'goblin')
+        goblin.hp = goblin.max_hp = hp
+        self.state.entities.append(goblin)
+        self.state.update_fov()
+        return goblin
+
+    def played(self):
+        """(kind, ms, interruptible) of every beat draw() plays: 'flight' or
+        'impact', told apart by the paint's keyword arguments (an impact may
+        also carry the arrows held in the air during it)."""
+        calls = []
+
+        def play(ms, paint, interruptible=True):
+            seen = {}
+            with mock.patch.object(
+                self.renderer, '_paint_game', side_effect=lambda state, **kw: seen.update(kw)
+            ):
+                paint(0.5)
+            kind = 'impact' if seen.get('impact') else 'flight' if seen.get('flight') else '?'
+            calls.append((kind, ms, interruptible, seen))
+
+        with mock.patch.object(self.renderer, '_play', side_effect=play):
+            self.renderer.draw(self.state)
+        return calls
+
+    @staticmethod
+    def flight_of(path):
+        """A one-arrow Flight over the whole of `path`."""
+        return camera.Flight((tuple(path),), len(path) - 1)
+
+    # -- flight ---------------------------------------------------------------
+
+    def test_a_shot_plays_its_flight_then_the_impact(self):
+        from render.pygame_render import FLIGHT_MS
+
+        goblin = self.goblin(14, 10)
+        self.state.handle_action('shoot_e')
+        calls = self.played()
+        self.assertEqual([c[0] for c in calls], ['flight', 'impact'])
+        kind, ms, interruptible, seen = calls[0]
+        self.assertEqual(ms, 4 * FLIGHT_MS)
+        self.assertFalse(interruptible)
+        flight, _ = seen['flight']
+        self.assertEqual(flight.paths[0][-1], (goblin.x, goblin.y))
+        # While the arrow flies the goblin is drawn as it was before the hit.
+        self.assertEqual([h.defender for h in seen['pending']], [goblin])
+        impact_hit, _ = calls[1][3]['impact']
+        self.assertIs(impact_hit.defender, goblin)
+
+    def test_a_pierce_shots_second_impact_follows_the_second_flight(self):
+        from game.item import Item
+
+        Item(0, 0, 'longbow', 'common').apply(self.state.player, self.state.log)
+        first, second = self.goblin(12, 10), self.goblin(14, 10)
+        self.state.handle_action('shoot_e')
+        calls = self.played()
+        self.assertEqual([c[0] for c in calls], ['flight', 'impact', 'flight', 'impact'])
+        self.assertEqual(calls[0][3]['flight'][0].paths[0][-1], (12, 10))
+        self.assertIs(calls[1][3]['impact'][0].defender, first)
+        self.assertEqual(calls[2][3]['flight'][0].paths, (((12, 10), (13, 10), (14, 10)),))
+        self.assertIs(calls[3][3]['impact'][0].defender, second)
+
+    def test_a_miss_flies_to_the_pile_with_no_impact(self):
+        self.state.game_map[10][14] = '#'
+        self.state.handle_action('shoot_e')
+        calls = self.played()
+        self.assertEqual([c[0] for c in calls], ['flight'])
+        self.assertEqual(calls[0][3]['flight'][0].paths[0][-1], (13, 10))
+        self.assertIsNotNone(self.state.arrows_at(13, 10))
+
+    def test_the_arrow_is_drawn_along_its_path_pointing_the_way_it_flies(self):
+        r = self.renderer
+        self.state.game_map[10][16] = '#'
+        self.state.handle_action('shoot_e')
+        flight = self.flight_of(self.state.shots[0].path)
+        ((centre, angle),) = r.flight_points(flight, 0.5)
+        self.assertEqual(angle, 0)  # east
+        self.assertEqual(r.flight_points(flight, 1.0)[0][0], r._map_cell_rect(15, 10).center)
+        self.assertEqual(r.flight_points(self.flight_of(((5, 5), (5, 4))), 0.5)[0][1], 90)
+        r.canvas.clear()
+        r._paint_game(self.state)
+        without = r.canvas.surface.copy()
+        r.canvas.clear()
+        r._paint_game(self.state, flight=(flight, 0.5))
+        around = pygame.Rect(0, 0, 8, 8)
+        around.center = centre
+        self.assertNotEqual(area_bytes(r.canvas.surface, around), area_bytes(without, around))
+
+    def test_the_arrow_is_drawn_under_the_impact(self):
+        goblin = self.goblin(14, 10)
+        self.state.handle_action('shoot_e')
+        order = []
+        r = self.renderer
+        with (
+            mock.patch.object(r, '_paint_flight', side_effect=lambda *a: order.append('arrow')),
+            mock.patch.object(r, '_paint_impact', side_effect=lambda *a: order.append('impact')),
+            mock.patch.object(r, '_paint_entity', side_effect=lambda e: order.append('entity')),
+        ):
+            hit = self.state.combat_events[-1]
+            flight = self.flight_of(self.state.shots[0].path)
+            r._paint_game(self.state, impact=(hit, 0.1), flight=(flight, 0.9))
+        self.assertIs(hit.defender, goblin)
+        self.assertEqual(order[-2:], ['arrow', 'impact'])
+        self.assertLess(order.index('entity'), order.index('arrow'))
+
+    def test_a_monster_killed_by_the_arrow_stays_on_screen_until_it_lands(self):
+        goblin = self.goblin(13, 10, hp=1)
+        self.state.handle_action('shoot_e')
+        self.assertFalse(goblin.alive)
+        hit = self.state.combat_events[-1]
+        drawn = self.renderer._before_hits(self.state, self.state.visible_entities(), [hit])
+        ghost = [e for e in drawn if isinstance(e, Monster)]
+        self.assertEqual(len(ghost), 1)
+        self.assertEqual((ghost[0].x, ghost[0].y, ghost[0].hp), (13, 10, 1))
+        self.assertTrue(ghost[0].alive)
+        self.assertFalse(goblin.alive)  # the state itself is untouched
+
+    def test_keys_pressed_during_a_flight_wait_until_it_ends(self):
+        r = self.renderer
+        r.impact_ms = 0
+        self.state.game_map[10][16] = '#'
+        self.state.handle_action('shoot_e')  # five cells to fly
+        typed = [key(pygame.K_d, 'd'), key(pygame.K_s, 's')]
+        real_show = r._show
+        shown = []
+
+        def show(paint):
+            if not shown:
+                for event in typed:
+                    pygame.event.post(event)
+            shown.append(1)
+            real_show(paint)
+
+        start = pygame.time.get_ticks()
+        with mock.patch.object(r, '_show', side_effect=show):
+            r.draw(self.state)
+        elapsed = pygame.time.get_ticks() - start
+        self.assertGreaterEqual(elapsed, 5 * r.flight_ms - 20)  # not cut short
+        self.assertGreaterEqual(len(shown), 2)  # flight frame(s), then the final one
+        self.assertTrue(pygame.event.peek(pygame.KEYDOWN))  # not consumed
+        self.assertEqual(r.get_action(), Action.MOVE_E)
+        self.assertEqual(r.get_action(), Action.MOVE_S)
+
+    def volley(self):
+        from game.item import Item
+
+        Item(0, 0, 'volley_bow', 'common').apply(self.state.player, self.state.log)
+
+    def test_a_volley_flies_all_its_arrows_at_once(self):
+        self.volley()
+        near, far = self.goblin(12, 9), self.goblin(14, 10)
+        self.state.handle_action('shoot_e')
+        shot = self.state.shots[0]
+        self.assertEqual(len(shot.arrows), 3)
+        calls = self.played()
+        kinds = [c[0] for c in calls]
+        self.assertEqual(kinds[0], 'flight')
+        self.assertTrue(all(not c[2] for c in calls))  # keys wait in the queue
+        first, _ = calls[0][3]['flight']
+        # One beat, all three arrows, each from the player's cell.
+        self.assertEqual(len(first.paths), 3)
+        self.assertEqual({p[0] for p in first.paths}, {(10, 10)})
+        # Each arrow's impact comes after the flight that brings it there.
+        impacts = [i for i, k in enumerate(kinds) if k == 'impact']
+        struck = [calls[i][3]['impact'][0].defender for i in impacts]
+        self.assertEqual(struck[:2], [near, far])
+        for i in impacts:
+            self.assertEqual(kinds[i - 1], 'flight')
+            hit = calls[i][3]['impact'][0]
+            self.assertIn((hit.x, hit.y), {p[-1] for p in calls[i - 1][3]['flight'][0].paths})
+        # The near goblin's impact: the aim arrow hangs in the air meanwhile.
+        held, t = calls[impacts[0]][3]['flight']
+        self.assertEqual(t, 1.0)
+        self.assertIn(shot.path[2], {p[-1] for p in held.paths})
+
+    def test_a_volleys_arrows_are_all_drawn_mid_flight(self):
+        r = self.renderer
+        self.volley()
+        self.state.handle_action('shoot_e')
+        beats = camera.Director().plan(self.state)
+        flight = beats[0]
+        points = r.flight_points(flight, 0.5)
+        self.assertEqual(len(points), 3)
+        self.assertEqual(len({c for c, _ in points}), 3)  # side by side
+        r.canvas.clear()
+        r._paint_game(self.state)
+        without = r.canvas.surface.copy()
+        r.canvas.clear()
+        r._paint_game(self.state, flight=(flight, 0.5))
+        for centre, _ in points:
+            around = pygame.Rect(0, 0, 8, 8)
+            around.center = centre
+            self.assertNotEqual(area_bytes(r.canvas.surface, around), area_bytes(without, around))
+
+    def test_a_goblin_archers_arrow_flies_and_lands_like_the_archers(self):
+        goblin = self.goblin(14, 10)
+        self.state.player.hp = 1000
+        with mock.patch.object(self.state, '_dodged', return_value=False):
+            self.state._monster_shot(goblin)
+        calls = self.played()
+        self.assertEqual([c[0] for c in calls[:2]], ['flight', 'impact'])
+        self.assertFalse(calls[0][2] or calls[1][2])
+        flight, _ = calls[0][3]['flight']
+        self.assertEqual(flight.paths, (((14, 10), (13, 10), (12, 10), (11, 10), (10, 10)),))
+        self.assertIs(calls[1][3]['impact'][0].defender, self.state.player)
+        # The same drawn arrow as the archer's, pointing west, at its size.
+        r = self.renderer
+        ((_, angle),) = r.flight_points(flight, 0.5)
+        self.assertEqual(angle, 180)
+        sprites = []
+        real = r.arrow_sprite
+
+        def record(*args):
+            sprites.append(args)
+            return real(*args)
+
+        with mock.patch.object(r, 'arrow_sprite', side_effect=record):
+            r._paint_game(self.state, flight=(flight, 0.5))
+        self.assertEqual(sprites, [(round(min(r._map_cell_rect(10, 10).size) * 0.9), 180)])
+
+    # -- restock bar ----------------------------------------------------------
+
+    def fill_pixels(self, bar):
+        from render.pygame_render import RESTOCK_FILL
+
+        screen = self.renderer.canvas.surface
+        y = bar.centery
+        return sum(
+            1
+            for x in range(bar.left, bar.right)
+            if tuple(screen.get_at((x, y)))[:3] == RESTOCK_FILL
+        )
+
+    def test_restock_bar_fill_is_proportional(self):
+        r = self.renderer
+        for progress in (0, 1, 2):
+            self.state.restock_progress = progress
+            r.draw(self.state)
+            bar = r.restock_bar_rect(self.state.player)
+            self.assertEqual(self.fill_pixels(bar), round(bar.width * progress / 3), progress)
+            self.assertEqual(r.restock_fill(bar.width, progress), round(bar.width * progress / 3))
+        self.assertEqual(r.restock_fill(30, 3), 30)
+
+    def test_restock_bar_sits_under_the_player_in_its_cell(self):
+        r = self.renderer
+        cell = r._map_cell_rect(self.state.player.x, self.state.player.y)
+        bar = r.restock_bar_rect(self.state.player)
+        # Just below the sprite's feet: its rim is the first row under the cell.
+        self.assertEqual(bar.top - 1, cell.bottom)
+        self.assertFalse(bar.inflate(2, 2).colliderect(cell.inflate(0, -1)))
+        self.assertEqual(bar.centerx, cell.centerx)
+        # A little wider than the cell: it overhangs both sides evenly.
+        self.assertGreaterEqual(bar.width, cell.width)
+        self.assertLessEqual(bar.width, cell.width + max(2, cell.width // 10))
+        self.assertLessEqual(bar.height, max(3, cell.height // 5))
+
+    def test_restock_bar_is_one_and_a_half_times_the_old_size(self):
+        from render.pygame_render import (
+            RESTOCK_BAR_HEIGHT,
+            RESTOCK_BAR_WIDTH,
+            RESTOCK_FILL,
+            RESTOCK_TRACK,
+        )
+
+        self.assertAlmostEqual(RESTOCK_BAR_WIDTH, 1.5 * 0.7)
+        self.assertAlmostEqual(RESTOCK_BAR_HEIGHT, 1.5 * 0.1)
+        r = self.renderer
+        cell = r._map_cell_rect(self.state.player.x, self.state.player.y)
+        bar = r.restock_bar_rect(self.state.player)
+        # 1.5x the old 0.7 x 0.1 of the cell (at least 2 px, now 3), to the pixel.
+        self.assertEqual(bar.width, round(cell.width * 1.05))
+        self.assertEqual(bar.height, max(3, round(cell.height * 0.15)))
+        # The 1 px dark rim is painted round it, the fill inside it.
+        self.state.restock_progress = 3
+        r.canvas.clear()
+        r._paint_game(self.state)
+        screen = r.canvas.surface
+        self.assertEqual(tuple(screen.get_at((bar.left - 1, bar.centery)))[:3], RESTOCK_TRACK)
+        self.assertEqual(tuple(screen.get_at((bar.right, bar.centery)))[:3], RESTOCK_TRACK)
+        self.assertEqual(tuple(screen.get_at((bar.centerx, bar.top - 1)))[:3], RESTOCK_TRACK)
+        self.assertEqual(tuple(screen.get_at(bar.center))[:3], RESTOCK_FILL)
+
+    def test_no_restock_bar_for_a_warrior(self):
+        r = self.renderer
+        painted = []
+        with mock.patch.object(
+            r, '_paint_restock_bar', side_effect=lambda *a: painted.append(1)
+        ) as paint:
+            r.draw(self.state)
+            self.assertEqual(painted, [1])
+            painted.clear()
+            warrior = self.arena('warrior')
+            r.draw(warrior)
+        self.assertEqual(painted, [])
+        self.assertTrue(paint.called)
+        # The bar a warrior does get is the parry's: restock_progress (never
+        # set for a warrior) doesn't fill it, parry_progress() does.
+        warrior.restock_progress = 2
+        warrior.last_parry_turn = warrior.turn  # just spent: parry_progress() 0
+        r.draw(warrior)
+        bar = r.restock_bar_rect(warrior.player)
+        self.assertEqual(self.fill_pixels(bar), 0)
+
+    def test_restock_bar_stays_inside_the_map(self):
+        r = self.renderer
+        map_rect = r.layout.map_rect()
+        player = self.state.player
+        for x, y in ((0, 0), (1, 1), (WIDTH - 1, HEIGHT - 1), (0, HEIGHT - 1), (WIDTH - 1, 0)):
+            player.x, player.y = x, y
+            bar = r.restock_bar_rect(player)
+            # Its rim too: the overhang never crosses the map's edge.
+            self.assertTrue(map_rect.contains(bar.inflate(2, 2)), (x, y))
+        player.x = 10
+        player.y = 10
+        unzoomed = r.restock_bar_rect(player)
+        # The combat zoom: the bar follows the projection, still on the map.
+        r._view = camera.combat_view(player, collections.namedtuple('P', 'x y')(11, 10))
+        r._proj = camera.project(r._view, map_rect, r.layout.map_cell_size())
+        try:
+            bar = r.restock_bar_rect(player)
+            cell = r._map_cell_rect(player.x, player.y)
+        finally:
+            r._proj = None
+        self.assertTrue(map_rect.contains(bar.inflate(2, 2)))
+        self.assertEqual(bar.centerx, cell.centerx)
+        self.assertEqual(bar.top - 1, cell.bottom)  # below the zoomed sprite
+        self.assertEqual(bar.width, round(cell.width * 1.05))
+        self.assertGreater(bar.width, unzoomed.width)
+        self.state.restock_progress = 2
+        r.canvas.clear()
+        r._paint_game(self.state)  # painted through the projection
+        self.assertEqual(self.fill_pixels(bar), round(bar.width * 2 / 3))
+        r._view = None
+
+    # -- the warrior's parry bar ----------------------------------------------
+
+    def warrior(self):
+        state = self.arena('warrior')
+        state.last_parry_turn = state.turn  # Q pressed and the parry spent
+        return state
+
+    def test_parry_bar_fills_over_the_cooldown_one_turn_at_a_time(self):
+        from game.state import PARRY_COOLDOWN
+
+        r = self.renderer
+        state = self.warrior()
+        bar = r.restock_bar_rect(state.player)
+        fills = []
+        for _ in range(PARRY_COOLDOWN + 1):
+            r.draw(state)
+            fills.append(self.fill_pixels(bar))
+            state.handle_action('wait')
+            state.cancel_monster_phase()
+        self.assertEqual(fills, [round(bar.width * n / PARRY_COOLDOWN) for n in range(5)])
+        self.assertEqual(fills[0], 0)
+        self.assertEqual(fills[-1], bar.width)
+        self.assertEqual(r.parry_fill(bar.width, 2), round(bar.width / 2))
+
+    def test_parry_bar_is_drawn_like_the_restock_bar(self):
+        from render.pygame_render import RESTOCK_FILL, RESTOCK_TRACK
+
+        r = self.renderer
+        state = self.warrior()
+        state.turn += 2  # mid-cooldown
+        r.canvas.clear()
+        r._paint_game(state)
+        bar = r.restock_bar_rect(state.player)
+        cell = r._map_cell_rect(state.player.x, state.player.y)
+        self.assertEqual(bar.top - 1, cell.bottom)
+        self.assertEqual(bar.width, round(cell.width * 1.05))
+        self.assertEqual(bar.height, max(3, round(cell.height * 0.15)))
+        screen = r.canvas.surface
+        self.assertEqual(tuple(screen.get_at((bar.left - 1, bar.centery)))[:3], RESTOCK_TRACK)
+        self.assertEqual(tuple(screen.get_at((bar.centerx, bar.top - 1)))[:3], RESTOCK_TRACK)
+        self.assertEqual(tuple(screen.get_at((bar.left, bar.centery)))[:3], RESTOCK_FILL)
+        self.assertEqual(tuple(screen.get_at((bar.right - 1, bar.centery)))[:3], RESTOCK_TRACK)
+        self.assertEqual(self.fill_pixels(bar), round(bar.width / 2))
+
+    def test_parry_bar_is_full_when_ready_and_when_armed(self):
+        r = self.renderer
+        state = self.arena('warrior')  # never used: ready
+        bar = r.restock_bar_rect(state.player)
+        r.draw(state)
+        self.assertEqual(self.fill_pixels(bar), bar.width)
+        self.assertTrue(state.handle_action('ability'))  # armed, on this very turn
+        state.cancel_monster_phase()
+        self.assertTrue(state.parry_armed)
+        r.draw(state)
+        self.assertEqual(self.fill_pixels(bar), bar.width)
+
+    def test_no_parry_bar_for_the_archer(self):
+        r = self.renderer
+        painted = []
+        with mock.patch.object(r, '_paint_parry_bar', side_effect=lambda *a: painted.append(1)):
+            r.draw(self.state)
+            self.assertEqual(painted, [])
+            r.draw(self.warrior())
+        self.assertEqual(painted, [1])
+
+    def test_parry_bar_stays_inside_the_map_and_follows_the_zoom(self):
+        r = self.renderer
+        map_rect = r.layout.map_rect()
+        state = self.warrior()
+        player = state.player
+        screen = r.canvas.surface
+        from render.pygame_render import RESTOCK_TRACK
+
+        for x, y in ((0, 0), (5, 0), (WIDTH - 1, 0), (0, HEIGHT - 1), (WIDTH - 1, HEIGHT - 1)):
+            player.x, player.y = x, y
+            r.canvas.clear()
+            r._paint_game(state)
+            bar = r.restock_bar_rect(player)
+            self.assertTrue(map_rect.contains(bar.inflate(2, 2)), (x, y))
+            self.assertEqual(tuple(screen.get_at((bar.left - 1, bar.centery)))[:3], RESTOCK_TRACK)
+        player.x, player.y = 10, 10
+        state.turn += 3
+        r._view = camera.combat_view(player, collections.namedtuple('P', 'x y')(11, 10))
+        r._proj = camera.project(r._view, map_rect, r.layout.map_cell_size())
+        try:
+            bar = r.restock_bar_rect(player)
+            cell = r._map_cell_rect(player.x, player.y)
+        finally:
+            r._proj = None
+        self.assertTrue(map_rect.contains(bar.inflate(2, 2)))
+        self.assertEqual(bar.width, round(cell.width * 1.05))
+        r.canvas.clear()
+        r._paint_game(state)  # painted through the projection
+        self.assertEqual(self.fill_pixels(bar), round(bar.width * 3 / 4))
+        r._view = None
+
+    # -- arrow piles ----------------------------------------------------------
+
+    def test_an_arrow_pile_is_painted_over_the_floor(self):
+        from game.quiver import ArrowPile
+
+        r = self.renderer
+        floor = r._map_cell_rect(13, 13)
+        plain = cell_pixels(r, floor, as_list=True)
+        self.state.entities.insert(1, ArrowPile(13, 13))
+        r.draw(self.state)
+        painted = cell_pixels(r, floor, as_list=True)
+        changed = sum(1 for a, b in zip(plain, painted) if a != b)
+        self.assertGreater(changed, len(plain) // 10)  # clearly there, not a speck
+        self.assert_arrow_look(painted)
+
+    def assert_arrow_look(self, pixels):
+        from render.pygame_render import ARROW_HEAD, ARROW_SHAFT
+
+        self.assertTrue({ARROW_HEAD, ARROW_SHAFT} & set(pixels))
+
+
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
+class GlyphModeArcherVisualsTest(ArcherVisualsTest):
+    TILES = False
+
+    def assert_arrow_look(self, pixels):
+        # The pile's light tint fills most of its text cell (a floor cell is
+        # black round its dot), with the bold glyph on top.
+        from render.pygame_render import PILE_BACKDROP_ALPHA
+
+        tint = round(230 * PILE_BACKDROP_ALPHA / 255)
+        tinted = [p for p in pixels if p[0] == p[1] == p[2] and abs(p[0] - tint) <= 2]
+        self.assertGreater(len(tinted), len(pixels) // 4)
+
+
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
+class MeleeSwingTest(unittest.TestCase):
+    """A melee blow's Swing beat (render/camera.py) plays before its Impact,
+    always to the end, and draws a light arc towards the struck cell."""
+
+    def setUp(self):
+        from game.item import Item
+        from game.paths import resource_path
+        from render.tileset import Tileset
+
+        self.item = Item
+        self.renderer = PygameRenderer(WIDTH, HEIGHT, tileset=Tileset(resource_path('assets')))
+        self.renderer._set_mode((1600, 900), pygame.RESIZABLE)
+        self.renderer._relayout()
+        self.renderer.zoom_ms = self.renderer.follow_ms = 0
+        self.renderer.director = camera.Director(zoom=False)
+        patcher = mock.patch('game.state.BASE_CRIT_CHANCE', 0.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        pygame.event.clear()
+
+    def tearDown(self):
+        self.renderer.close()
+
+    def fight(self, kind='weapon', offset=(1, 0)):
+        """The player on open floor holding `kind`, a sturdy goblin `offset`
+        away, drawn once (so nothing old is left to stage)."""
+        state = floor_level(WIDTH, HEIGHT)
+        state.player.weapon = self.item(0, 0, kind, 'common')
+        p = state.player
+        goblin = Monster(p.x + offset[0], p.y + offset[1], 'goblin')
+        goblin.hp = goblin.max_hp = 500
+        state.entities.append(goblin)
+        state.update_fov()
+        # A fresh director: a new GameState's hit serials start again at 1.
+        self.renderer.director = camera.Director(zoom=False)
+        self.renderer.draw(state)
+        return state, goblin
+
+    def played(self, state):
+        """(ms, interruptible, beat kind) of every beat draw() plays."""
+        calls = []
+
+        def play(ms, paint, interruptible=True):
+            frame = {}  # the keywords one frame of the beat is painted with
+            with mock.patch.object(
+                self.renderer, '_paint_game', side_effect=lambda s, **kw: frame.update(kw)
+            ):
+                paint(0.5)
+            kind = 'swing' if frame.get('swing') else 'impact' if frame.get('impact') else 'other'
+            calls.append((ms, interruptible, kind))
+
+        with mock.patch.object(self.renderer, '_play', side_effect=play):
+            self.renderer.draw(state)
+        return calls
+
+    def test_the_swing_plays_first_uninterruptible_then_the_impact(self):
+        for kind, ms in (('weapon', 120), ('dagger', 90), ('great_sword', 150), ('spear', 200)):
+            with self.subTest(kind=kind):
+                state, goblin = self.fight(kind)
+                state.attack(state.player, goblin)
+                calls = self.played(state)
+                self.assertEqual([c[2] for c in calls], ['swing', 'impact'])
+                self.assertEqual(calls[0][:2], (ms, False))
+                self.assertFalse(calls[1][1])
+
+    def test_a_monster_blow_plays_the_standard_swing(self):
+        state, goblin = self.fight('spear')
+        state.attack(goblin, state.player)
+        calls = self.played(state)
+        self.assertEqual([c[2] for c in calls], ['swing', 'impact'])
+        self.assertEqual(calls[0][0], camera.SWING_MS)
+
+    def test_an_arrow_plays_no_swing(self):
+        state, goblin = self.fight()
+        state._monster_shot(goblin)
+        kinds = [c[2] for c in self.played(state)]
+        self.assertIn('impact', kinds)
+        self.assertNotIn('swing', kinds)
+
+    def test_keys_pressed_during_the_swing_are_not_consumed(self):
+        state, goblin = self.fight()
+        state.attack(state.player, goblin)
+        typed = [key(pygame.K_d, 'd'), key(pygame.K_s, 's')]
+        real_show = self.renderer._show
+        shown = []
+
+        def show(paint):
+            if not shown:  # the swing's first frame: the player types ahead
+                for event in typed:
+                    pygame.event.post(event)
+            shown.append(1)
+            real_show(paint)
+
+        start = pygame.time.get_ticks()
+        with mock.patch.object(self.renderer, '_show', side_effect=show):
+            self.renderer.draw(state)
+        elapsed = pygame.time.get_ticks() - start
+        # Neither the swing nor the impact was cut short by the keys.
+        self.assertGreaterEqual(elapsed, camera.SWING_MS + self.renderer.impact_ms - 40)
+        self.assertTrue(pygame.event.peek(pygame.KEYDOWN))
+        self.assertEqual(self.renderer.get_action(), Action.MOVE_E)
+        self.assertEqual(self.renderer.get_action(), Action.MOVE_S)
+
+    def changed(self, state, swing, t):
+        """Pixels the swing's arc changes at t: (x, y) list."""
+        r = self.renderer
+        r.canvas.clear()
+        r._paint_game(state)
+        before = r.canvas.surface.copy()
+        r.canvas.clear()
+        r._paint_game(state, swing=(swing, t))
+        after = r.canvas.surface
+        rect = r.layout.map_rect()
+        return [
+            (x, y)
+            for y in range(rect.top, rect.bottom)
+            for x in range(rect.left, rect.right)
+            if after.get_at((x, y)) != before.get_at((x, y))
+        ]
+
+    def test_the_swing_is_drawn_in_the_direction_of_the_blow(self):
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            with self.subTest(direction=(dx, dy)):
+                state, goblin = self.fight(offset=(dx, dy))
+                state.attack(state.player, goblin)
+                (swing,) = [
+                    b for b in self.renderer.director.plan(state) if isinstance(b, camera.Swing)
+                ]
+                self.renderer._view = self.renderer.director.current(state)
+                pixels = self.changed(state, swing, 0.5)
+                self.assertGreater(len(pixels), 20)
+                r = self.renderer
+                r._proj = camera.project(r._view, r.layout.map_rect(), r.layout.map_cell_size())
+                try:
+                    origin = r._map_cell_rect(state.player.x, state.player.y)
+                    struck = r._map_cell_rect(goblin.x, goblin.y)
+                finally:
+                    r._proj = None
+                cx, cy = origin.center
+                ahead = [(x - cx) * dx + (y - cy) * dy for x, y in pixels]
+                self.assertTrue(all(a > 0 for a in ahead))  # nothing behind the attacker
+                self.assertTrue(any(struck.collidepoint(p) for p in pixels))  # over the target
+                # Light pixels: the arc itself.
+                surface = r.canvas.surface
+                light = [p for p in pixels if min(surface.get_at(p)[:3]) > 200]
+                self.assertTrue(light)
+
+    def test_the_spear_swing_reaches_the_cell_two_away(self):
+        state, goblin = self.fight('spear', offset=(2, 0))
+        state.attack(state.player, goblin)
+        (swing,) = [b for b in self.renderer.director.plan(state) if isinstance(b, camera.Swing)]
+        self.renderer._view = self.renderer.director.current(state)
+        pixels = self.changed(state, swing, 0.5)
+        r = self.renderer
+        r._proj = camera.project(r._view, r.layout.map_rect(), r.layout.map_cell_size())
+        try:
+            struck = r._map_cell_rect(goblin.x, goblin.y)
+        finally:
+            r._proj = None
+        self.assertTrue(any(struck.collidepoint(p) for p in pixels))
+
+    def test_the_swing_is_gone_once_it_ends(self):
+        state, goblin = self.fight()
+        state.attack(state.player, goblin)
+        (swing,) = [b for b in self.renderer.director.plan(state) if isinstance(b, camera.Swing)]
+        self.renderer._view = self.renderer.director.current(state)
+        self.assertEqual(self.changed(state, swing, 1.0), [])
+
+
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
+class ParryAnimationTest(unittest.TestCase):
+    """A parried blow plays the monster's swing, the shield over the warrior,
+    the riposte's swing and impact, then "Parry!" fading -- the blue text up
+    from the shield on -- all to the end, keys left queued."""
+
+    def setUp(self):
+        from game.item import Item
+        from game.paths import resource_path
+        from render.tileset import Tileset
+
+        self.item = Item
+        self.renderer = PygameRenderer(WIDTH, HEIGHT, tileset=Tileset(resource_path('assets')))
+        self.renderer._set_mode((1600, 900), pygame.RESIZABLE)
+        self.renderer._relayout()
+        self.renderer.zoom_ms = self.renderer.follow_ms = 0
+        for target, value in (('BASE_CRIT_CHANCE', 0.0), ('dodge_chance', lambda _: 0)):
+            patcher = mock.patch(f'game.state.{target}', value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        pygame.event.clear()
+
+    def tearDown(self):
+        self.renderer.close()
+
+    def fight(self, armed=True):
+        """A warrior on open floor with a sturdy goblin east of them, drawn
+        once; then the goblin swings (parried if `armed`)."""
+        state = floor_level(WIDTH, HEIGHT)
+        state.player.weapon = self.item(0, 0, 'weapon', 'common')
+        p = state.player
+        goblin = Monster(p.x + 1, p.y, 'goblin')
+        goblin.hp = goblin.max_hp = 500
+        state.entities.append(goblin)
+        state.update_fov()
+        self.renderer.director = camera.Director(zoom=False)
+        self.renderer.draw(state)
+        state.parry_armed = armed
+        state._monster_melee(goblin)
+        return state, goblin
+
+    def played(self, state):
+        """(ms, interruptible, beat kind, attacker or None, text up) of every
+        beat draw() plays, from one frame of each painted mid-beat."""
+        calls = []
+        r = self.renderer
+
+        def play(ms, paint, interruptible=True):
+            frame = {}
+            with mock.patch.object(r, '_paint_game', side_effect=lambda s, **kw: frame.update(kw)):
+                paint(0.5)
+            attacker = None
+            if frame.get('swing'):
+                kind, attacker = 'swing', frame['swing'][0].origin
+            elif frame.get('guard'):
+                kind = 'guard'
+            elif frame.get('impact'):
+                kind = 'impact'
+            elif frame.get('parry_text'):
+                kind = 'text'
+            else:
+                kind = 'other'
+            text = bool(frame.get('parry_text') or r._parry_text)
+            calls.append((ms, interruptible, kind, attacker, text))
+
+        with mock.patch.object(r, '_play', side_effect=play):
+            r.draw(state)
+        return calls
+
+    def test_the_sequence_plays_in_order_uninterruptible(self):
+        state, goblin = self.fight()
+        p = state.player
+        calls = self.played(state)
+        self.assertEqual(
+            [c[2:] for c in calls],
+            [
+                ('swing', (goblin.x, goblin.y), False),  # the monster's, no text yet
+                ('guard', None, True),
+                ('swing', (p.x, p.y), True),  # the riposte, back from the warrior
+                ('impact', None, True),
+                ('text', None, True),  # the text's fade
+            ],
+        )
+        self.assertEqual(
+            [c[0] for c in calls],
+            [
+                camera.SWING_MS,
+                camera.GUARD_MS,
+                camera.SWING_MS,
+                self.renderer.impact_ms,
+                camera.PARRY_FADE_MS,
+            ],
+        )
+        self.assertTrue(all(not c[1] for c in calls))
+        self.assertIsNone(self.renderer._parry_text)  # gone once the sequence ends
+
+    def test_a_normal_blow_plays_its_swing_and_no_parry(self):
+        state, goblin = self.fight(armed=False)
+        calls = self.played(state)
+        self.assertEqual(
+            [c[2:4] for c in calls], [('swing', (goblin.x, goblin.y)), ('impact', None)]
+        )
+        self.assertFalse(any(c[4] for c in calls))
+
+    def test_a_dodged_blow_plays_nothing(self):
+        with mock.patch('game.state.dodge_chance', return_value=100):
+            state, _ = self.fight()
+        self.assertEqual(self.played(state), [])
+
+    def test_keys_pressed_during_the_parry_are_not_consumed(self):
+        state, _ = self.fight()
+        typed = [key(pygame.K_d, 'd'), key(pygame.K_s, 's')]
+        real_show = self.renderer._show
+        shown = []
+
+        def show(paint):
+            if not shown:
+                for event in typed:
+                    pygame.event.post(event)
+            shown.append(1)
+            real_show(paint)
+
+        start = pygame.time.get_ticks()
+        with mock.patch.object(self.renderer, '_show', side_effect=show):
+            self.renderer.draw(state)
+        elapsed = pygame.time.get_ticks() - start
+        total = 2 * camera.SWING_MS + camera.GUARD_MS + self.renderer.impact_ms
+        self.assertGreaterEqual(elapsed, total + camera.PARRY_FADE_MS - 60)
+        self.assertEqual(self.renderer.get_action(), Action.MOVE_E)
+        self.assertEqual(self.renderer.get_action(), Action.MOVE_S)
+
+    def parry_frame(self, state, **kw):
+        """The pixels of the map area changed by painting with `kw`."""
+        r = self.renderer
+        r._view = r.director.current(state)
+        r.canvas.clear()
+        r._paint_game(state)
+        before = r.canvas.surface.copy()
+        r.canvas.clear()
+        r._paint_game(state, **kw)
+        after = r.canvas.surface
+        rect = r.layout.map_rect()
+        return {
+            (x, y): tuple(after.get_at((x, y)))[:3]
+            for y in range(rect.top, rect.bottom)
+            for x in range(rect.left, rect.right)
+            if after.get_at((x, y)) != before.get_at((x, y))
+        }
+
+    def test_the_shield_is_drawn_over_the_warriors_cell_and_fades(self):
+        state, _ = self.fight()
+        (parry,) = state.parries
+        cell = self.renderer._map_cell_rect(state.player.x, state.player.y)
+        early = self.parry_frame(state, guard=(parry, 0.3))
+        self.assertGreater(len(early), 20)
+        self.assertTrue(all(cell.collidepoint(p) for p in early))  # on the cell, nowhere else
+        light = [p for p, rgb in early.items() if min(rgb) > 200]
+        self.assertGreater(len(light), 10)  # the light outline itself
+        # An outline, not a fill: the shield's middle is left as it was.
+        self.assertNotIn(cell.center, early)
+        late = self.parry_frame(state, guard=(parry, 0.9))
+        self.assertLess(len([rgb for rgb in late.values() if min(rgb) > 200]), len(light))
+        self.assertEqual(self.parry_frame(state, guard=(parry, 1.0)), {})
+
+    def test_parry_text_is_blue_above_the_warriors_cell(self):
+        state, _ = self.fight()
+        (parry,) = state.parries
+        cell = self.renderer._map_cell_rect(state.player.x, state.player.y)
+        changed = self.parry_frame(state, parry_text=(parry, 1.0))
+        self.assertGreater(len(changed), 30)
+        self.assertTrue(all(y < cell.top for _, y in changed))  # above the cell
+        xs = [x for x, _ in changed]
+        self.assertLess(abs((min(xs) + max(xs)) / 2 - cell.centerx), 3)  # centred on it
+        bright = [rgb for rgb in changed.values() if max(rgb) > 120]
+        self.assertTrue(bright)
+        # Blue dominates the text's lit pixels.
+        blue = [rgb for rgb in bright if rgb[2] > rgb[1] > rgb[0]]
+        self.assertGreater(len(blue), 0.8 * len(bright))
+        self.assertIn((80, 160, 255), set(changed.values()))
+        # Fading: dimmer at half alpha, gone at none.
+        half = self.parry_frame(state, parry_text=(parry, 0.5))
+        self.assertLess(max(rgb[2] for rgb in half.values()), max(rgb[2] for rgb in bright))
+        self.assertEqual(self.parry_frame(state, parry_text=(parry, 0.0)), {})
 
 
 def cell_pixels(renderer, rect, as_list=False):
@@ -1427,6 +2503,111 @@ def record_frames(renderer):
 
     renderer.draw = draw
     return frames
+
+
+def floor_level(width, height):
+    """A GameState whose map is `width` x `height` of open floor, the player
+    alone in the middle of it."""
+    state = GameState(WIDTH, HEIGHT)
+    state.width, state.height = width, height
+    state.game_map = [
+        ['#' if x in (0, width - 1) or y in (0, height - 1) else '.' for x in range(width)]
+        for y in range(height)
+    ]
+    state.visible = [[False] * width for _ in range(height)]
+    state.seen = [[False] * width for _ in range(height)]
+    state.entities = [state.player]
+    state.player.x, state.player.y = width // 2, height // 2
+    state.update_fov()
+    return state
+
+
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
+class FollowCameraTest(unittest.TestCase):
+    """The map area holds camera.view_size cells whatever the floor's size;
+    the view follows the player over a bigger map."""
+
+    def setUp(self):
+        from game.paths import resource_path
+        from render.tileset import Tileset
+
+        self.renderer = PygameRenderer(WIDTH, HEIGHT, tileset=Tileset(resource_path('assets')))
+        self.renderer.zoom_ms = self.renderer.follow_ms = 0
+        pygame.event.clear()
+
+    def tearDown(self):
+        self.renderer.close()
+
+    def assert_player_in_view(self, state):
+        rect = self.renderer._map_cell_rect(state.player.x, state.player.y)
+        self.assertTrue(self.renderer.layout.map_rect().contains(rect))
+
+    def test_the_layout_is_the_view_not_the_level(self):
+        layout = self.renderer.layout
+        self.assertEqual((layout.map_width, layout.map_height), camera.view_size(WIDTH, HEIGHT))
+        state = GameState(WIDTH, HEIGHT)
+        self.renderer.draw(state)
+        tile, map_rect = layout.tile, layout.map_rect()
+        state.next_level()
+        self.renderer.draw(state)
+        # A new, bigger floor: the same tiles in the same map area.
+        self.assertEqual((layout.tile, layout.map_rect()), (tile, map_rect))
+        self.assert_player_in_view(state)
+
+    def test_the_view_follows_the_player_on_a_big_map(self):
+        state = floor_level(100, 50)
+        self.renderer.draw(state)
+        self.assert_player_in_view(state)
+        before = self.renderer._view
+        # Exploring, cells are drawn at the layout's own tile: no shrinking.
+        self.assertEqual(self.renderer._map_cell_rect(0, 0).width, self.renderer.layout.tile)
+        for _ in range(10):
+            state.player.x += 1
+            state.turn += 1
+            self.renderer.draw(state)
+            self.assert_player_in_view(state)
+        self.assertEqual(self.renderer._view.left, before.left + 10)
+        # Run into the corner: the view stops at the map's edge.
+        state.player.x, state.player.y = 98, 48
+        state.turn += 1
+        self.renderer.draw(state)
+        self.assert_player_in_view(state)
+        view = self.renderer._view
+        self.assertEqual((view.left + view.width, view.top + view.height), (100, 50))
+
+    def test_a_map_that_fits_is_shown_whole_and_never_pans(self):
+        state = floor_level(20, 10)
+        self.renderer.draw(state)
+        view = self.renderer._view
+        map_rect = self.renderer.layout.map_rect()
+        for corner in ((0, 0), (19, 9)):
+            self.assertTrue(map_rect.contains(self.renderer._map_cell_rect(*corner)))
+        for dx in (3, -6):
+            state.player.x += dx
+            state.turn += 1
+            self.renderer.draw(state)
+            self.assertEqual(self.renderer._view, view)
+
+    def test_a_step_pans_for_follow_ms_and_a_zoom_for_zoom_ms(self):
+        state = floor_level(100, 50)
+        self.renderer.draw(state)
+        self.renderer.follow_ms, self.renderer.zoom_ms = 7, 999
+        played = []
+        with mock.patch.object(
+            self.renderer, '_play', side_effect=lambda ms, *a, **k: played.append(ms)
+        ):
+            state.player.x += 1
+            state.turn += 1
+            self.renderer.draw(state)
+            self.assertIn(7, played)
+            self.assertNotIn(999, played)
+            played.clear()
+            goblin = Monster(state.player.x + 1, state.player.y, 'goblin')
+            state.entities.append(goblin)
+            state.update_fov()
+            self.renderer.draw(state)
+            self.assertIn(999, played)
+        self.assertIsNotNone(self.renderer.director.view)  # zoomed on the fight
 
 
 if __name__ == '__main__':

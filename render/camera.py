@@ -1,5 +1,13 @@
-"""The combat camera: which part of the map the window shows, and the beats
-that change it.
+"""The camera: which part of the map the window shows, and the beats that
+change it.
+
+Exploring, the window shows a fixed-size view of the map -- `view_size`: the
+base map (MAP_WIDTH x MAP_HEIGHT, which every floor's map is at least as big
+as) shrunk by `VIEW_ZOOM` on each axis -- centred on the player and clamped to
+the map's edges (`follow_view`). Deeper floors have bigger maps (game/dungeon.py
+map_size), so the view pans to follow the player rather than shrinking the
+tiles to fit; a map no bigger than the view is shown whole, centred, and never
+pans. Each step's pan is a short `Pan(..., follow=True)` beat.
 
 When a monster is in melee range the map zooms in on the fight -- the player
 and that monster centred, `MARGIN` squares of map around them -- and zooms
@@ -8,29 +16,84 @@ back out when the fight ends. Ranged combat (the archer) doesn't zoom for now:
 
 The camera is *staged*: `Director.plan(state)` turns what changed since the
 last frame into a list of beats, and the renderer plays them one after another
-before showing the frame. Today there are two kinds:
+before showing the frame. The kinds:
 
-  Impact(hit, shake) a blow landing -- played at the current view, so a
-                     killing blow is seen before the camera pulls back. The
+  Flight(paths, steps)
+                     arrows flying together, cell to cell, for `steps`
+                     cells at FLIGHT_MS_PER_CELL a cell: paths[i] is arrow
+                     i's cells over this stretch. Planned from
+                     GameState.shots (game/combat.py's Shot): every arrow in
+                     shot.arrows leaves the shooter's cell at the same moment
+                     (a volley's arrows fly side by side; any other bow, and
+                     the goblin archer, is a one-arrow Shot on the same path).
+                     The shot's timeline is cut at each step where an arrow
+                     reaches a monster it hit: a Flight up to there, that
+                     hit's Impact, then a Flight on. So each arrow's damage
+                     shows the moment that arrow arrives, and a pierce's
+                     second hit waits for the arrow to fly on to it. An arrow
+                     whose path ends inside a stretch (it landed, or left
+                     sight) is gone from then on. Plays out like an Impact:
+                     keys wait in the queue until it ends.
+  Swing(hit, origin, target, shape, mirror)
+                     a melee weapon's swing, played right before that blow's
+                     Impact: a light arc traced from the attacker's cell
+                     (`origin`) towards the cell it strikes (`target`),
+                     fading behind its leading edge. `shape` is one of
+                     SWING_SHAPES, picked from the attacker's weapon
+                     (swing_shape_for): standard, short (dagger), skinny
+                     (rapier -- each of its two strikes gets its own, the
+                     second traced the other way, `mirror`), wide (great
+                     sword, war axe) or long (spear: it spans two tiles).
+                     Monsters swing the standard arc. Never staged for an
+                     arrow's hit (a Flight shows it) or a dodge (no Hit).
+                     Plays out like an Impact: keys wait in the queue.
+  Impact(hit, shake, held)
+                     a blow landing -- played at the current view, so a
+                     killing blow is seen before the camera pulls back.
+                     `held`: the arrows still in the air at that moment, as
+                     (from, at) cell pairs, drawn hanging at `at`. The
                      map shakes for the length of the beat (`Shake`: harder
                      and longer on a crit), and the beat always plays out:
                      keys pressed meanwhile wait in the queue until it ends
-  Pan(start, end)    the view moving: zooming in, out, or across to another
-                     opponent
+  Guard(parry)       the warrior's parry turning a monster's blow aside
+                     (game/combat.py's Parry, from GameState.parries): a
+                     light shield outline over the warrior's cell for
+                     GUARD_MS, fading out at the end. A parried blow records
+                     no Hit, so its Parry stages the sequence: the monster's
+                     standard Swing (hit = the Parry) from its cell at the
+                     warrior, the Guard, then the riposte's own Swing and
+                     Impact (its Hit, staged as any melee blow), then a
+                     ParryText. Keys wait in the queue throughout.
+  ParryText(parry)   ends that sequence: the blue "Parry!" over the warrior
+                     appears with the Guard, stays over every beat up to
+                     here, and fades out over this one (PARRY_FADE_MS).
+  Pan(start, end, follow)
+                     the view moving: zooming in, out, or across to another
+                     opponent; `follow` when it is only the exploring view
+                     tracking the player (played shorter)
 
 A new effect (a lunge, a screen shake, a death animation) is another beat type
 here plus a player for it in the renderer; the loop in main.py never changes.
 The renderer services the window during every beat and leaves key presses
 queued, so input typed during an animation is never lost -- and a queued key
-cuts the remaining animation short (except an Impact's shake, which is
-short and always finishes), so it never holds the player up for long.
+cuts the remaining animation short (except an Impact's shake or a Flight,
+which are short and always finish), so it never holds the player up for long.
 
 Pure geometry, no pygame: views are in map cells (floats while animating).
 """
 
+import math
 import random
 from collections import namedtuple
 
+from game.combat import Parry, Shot
+
+# The exploring zoom -- the one knob for it. The map area is laid out for
+# base map / VIEW_ZOOM cells per axis (view_size), so tiles are VIEW_ZOOM
+# times the size the whole base map would get: a 40x20 base shows 32x16 cells,
+# 50x20 shows 40x16. The layout still picks the tile from ui.TILE_SIZES
+# (16 px at the least), so it is never below the renderer's minimum.
+VIEW_ZOOM = 1.25
 MARGIN = 2  # squares of map shown around the fight
 ZOOM_CLASSES = frozenset({'warrior'})
 HOLD_RANGE = 3  # once zoomed, a monster this close keeps it
@@ -47,9 +110,12 @@ class View(namedtuple('View', 'left top width height')):
         return self.left + self.width / 2, self.top + self.height / 2
 
 
-Impact = namedtuple('Impact', 'hit shake')
-Impact.__new__.__defaults__ = (None,)
-Pan = namedtuple('Pan', 'start end')
+Impact = namedtuple('Impact', 'hit shake held')
+Impact.__new__.__defaults__ = (None, ())
+Pan = namedtuple('Pan', 'start end follow')
+Pan.__new__.__defaults__ = (False,)
+Flight = namedtuple('Flight', 'paths steps')
+FLIGHT_MS_PER_CELL = 40  # a 5-cell shot flies for 0.2 s
 
 # The hit shake: `ms` is how long the impact beat (and its shake) lasts,
 # `amplitude` the peak offset as a fraction of an unzoomed map cell, `seed`
@@ -65,6 +131,85 @@ SHAKE_STEP_MS = 30  # the jitter picks a new offset this often
 # applied to the sprite's cell at the current view: 0.09 of a cell for a
 # normal hit, 0.19 for a crit (4 / 8 px on a 40 px tile, 12 / 24 zoomed to 128).
 SPRITE_SHAKE_RATIO = 0.75
+
+
+# Melee swings. A shape is an arc of an ellipse round the centre of the
+# attacker's cell: `forward` cells along the blow (times the distance to the
+# target, at least `reach`) and `lateral` cells across it, swept through
+# `sweep` degrees centred on the blow, `thickness` of a cell wide, over `ms`.
+SwingShape = namedtuple('SwingShape', 'name ms reach forward lateral sweep thickness')
+SWING_SHAPES = {
+    'standard': SwingShape('standard', 120, 1, 0.9, 0.45, 140, 0.11),
+    'short': SwingShape('short', 90, 1, 0.65, 0.3, 120, 0.09),
+    'skinny': SwingShape('skinny', 80, 1, 0.95, 0.22, 100, 0.045),
+    'wide': SwingShape('wide', 150, 1, 1.0, 0.85, 170, 0.15),
+    'long': SwingShape('long', 200, 2, 0.95, 0.35, 150, 0.1),
+}
+SWING_MS = SWING_SHAPES['standard'].ms
+# Weapon kind (game/item.py) -> its swing; anything else (the plain weapon,
+# sword & shield, a bow used up close, a monster's claws) swings 'standard'.
+WEAPON_SWINGS = {
+    'dagger': 'short',
+    'rapier': 'skinny',
+    'great_sword': 'wide',
+    'war_axe': 'wide',
+    'spear': 'long',
+}
+SWING_TRAIL = 0.6  # of the sweep: how far the fading trail reaches behind
+SWING_FADE = 0.35  # the last part of the beat, over which the whole arc fades
+Swing = namedtuple('Swing', 'hit origin target shape mirror')
+Swing.__new__.__defaults__ = (False,)
+
+# The parry (Guard, ParryText): the shield's beat, and the "Parry!" text's
+# fade once the riposte has landed -- it is shown from the Guard on, so it
+# lives GUARD_MS + the riposte's swing and impact + PARRY_FADE_MS (550 ms
+# with a standard weapon).
+GUARD_MS = 150
+PARRY_FADE_MS = 100
+Guard = namedtuple('Guard', 'parry')
+ParryText = namedtuple('ParryText', 'parry')
+
+
+def swing_shape_for(attacker):
+    """The SwingShape of `attacker`'s melee blow: its weapon's, read from
+    `attacker.weapon.kind`, else the standard one."""
+    weapon = getattr(attacker, 'weapon', None)
+    kind = getattr(weapon, 'kind', '')
+    return SWING_SHAPES[WEAPON_SWINGS.get(kind, 'standard')]
+
+
+def swing_points(swing, t, samples=16):
+    """The arc of `swing` at t (0 -> 1 over the beat), in map cells: a list of
+    (x, y, alpha) from the trail's tail to the leading edge, alpha 0-1. The
+    leading edge sweeps from one end of the arc to the other (eased); the
+    trail behind it fades to nothing, and over the last SWING_FADE of the beat
+    the whole arc fades out. Empty at t >= 1."""
+    if not 0 <= t < 1:
+        return []
+    shape = swing.shape
+    (ox, oy), (tx, ty) = swing.origin, swing.target
+    dx, dy = tx - ox, ty - oy
+    dist = max(1e-9, (dx * dx + dy * dy) ** 0.5)
+    ux, uy = dx / dist, dy / dist  # along the blow
+    px, py = -uy, ux  # across it
+    forward = shape.forward * max(dist, shape.reach)
+    half = shape.sweep / 2
+    side = -1 if swing.mirror else 1
+    start, end = -half * side, half * side
+    lead = start + (end - start) * ease(t)
+    trail = shape.sweep * SWING_TRAIL
+    fade = 1.0 if t < 1 - SWING_FADE else (1 - t) / SWING_FADE
+    cx, cy = ox + 0.5, oy + 0.5
+    points = []
+    for i in range(samples + 1):
+        f = i / samples  # 0 = tail, 1 = leading edge
+        angle = lead - side * trail * (1 - f)
+        if (angle - start) * side < 0:
+            continue  # the trail can't reach back past where the swing began
+        rad = math.radians(angle)
+        along, across = forward * math.cos(rad), shape.lateral * math.sin(rad)
+        points.append((cx + ux * along + px * across, cy + uy * along + py * across, f * fade))
+    return points
 
 
 def shake_for(hit):
@@ -112,8 +257,51 @@ def _jitter(shake, t, peak, skip):
     return round(rng.uniform(-1, 1) * peak), round(rng.uniform(-1, 1) * peak)
 
 
+def flight_ms(flight, per_cell=FLIGHT_MS_PER_CELL):
+    """How long `flight` plays: `per_cell` for every cell its arrows cross."""
+    return flight.steps * per_cell
+
+
+def flight_step(path, steps, t):
+    """Where an arrow on `path` is at t (0 -> 1 over a flight of `steps`
+    cells): (a, b, f) -- it is `f` of the way from cell a to the next cell b
+    on `path`. Cells are crossed at an even pace, the same for every arrow in
+    the flight, so at t = 1 a full-length path is on its last cell (f = 1).
+    None once a path shorter than `steps` has reached its end: that arrow
+    has landed (or flown out of sight)."""
+    cells = len(path) - 1
+    if cells < 1:
+        return None
+    s = min(1.0, max(0.0, t)) * steps
+    if s >= cells and cells < steps:
+        return None
+    i = min(int(s), cells - 1)
+    return path[i], path[i + 1], s - i
+
+
 def full_view(map_width, map_height):
     return View(0, 0, map_width, map_height)
+
+
+def view_size(base_width, base_height, zoom=VIEW_ZOOM):
+    """(cols, rows) of map the window shows while exploring: the base map's
+    size over `zoom`, rounded, at least one cell."""
+    return max(1, round(base_width / zoom)), max(1, round(base_height / zoom))
+
+
+def follow_view(player, map_width, map_height, size):
+    """A `size` (cols, rows) view with `player` at its centre (to the cell),
+    clamped so it never runs past the map's edges. On an axis where the map
+    is no bigger than the view, the map is centred instead -- shown whole,
+    the same wherever the player stands."""
+
+    def axis(pos, extent, span):
+        if extent <= span:
+            return (extent - span) / 2
+        return min(max(0, pos - span // 2), extent - span)
+
+    cols, rows = size
+    return View(axis(player.x, map_width, cols), axis(player.y, map_height, rows), cols, rows)
 
 
 def combat_view(a, b, margin=MARGIN):
@@ -162,9 +350,12 @@ def project(view, rect, cell):
 class Director:
     """Decides what the camera should show and stages the beats to get there.
 
-    Keeps the view (None = the whole map, whatever its size), the monster the
-    camera is following, and the serial of the last hit it staged. Reads the
-    GameState; never mutates it.
+    Keeps the combat view (None = not zoomed on a fight: the exploring view,
+    `explore_view`), the monster the camera is following, and the serial of
+    the last hit it staged. Reads the GameState; never mutates it.
+
+    `view_size`: (cols, rows) of the exploring view (see `view_size`); None
+    shows the whole map, whatever its size, and never follows the player.
 
     Two rules keep the zoom from jolting (both count *player turns* --
     `state.turn` -- never frames, so the monster phase and redrawn frames
@@ -181,9 +372,12 @@ class Director:
       once.
     """
 
-    def __init__(self, zoom=True):
+    def __init__(self, zoom=True, view_size=None):
         self.zoom = zoom
+        self.view_size = view_size
         self.view = None
+        self._map = None  # the level (its game_map) at the last frame
+        self._shown = None  # the view planned for the last frame
         self.focus = None
         self._last_hit = 0
         self._turn = None  # state.turn at the last frame
@@ -192,29 +386,164 @@ class Director:
         self._calm_since = None  # turn the hold's countdown started, or None
 
     def current(self, state):
-        return self.view or full_view(state.width, state.height)
+        """The view to paint: the fight's, else the exploring one."""
+        return self.view or self.explore_view(state)
+
+    def explore_view(self, state):
+        """The view while no fight is framed: following the player, or the
+        whole map if there is no view_size."""
+        if self.view_size is None:
+            return full_view(state.width, state.height)
+        return follow_view(state.player, state.width, state.height, self.view_size)
 
     def plan(self, state):
-        """The beats to play before showing `state`: any new hits, then a pan
-        if the camera has to move. Updates the director as if they had
+        """The beats to play before showing `state`: any new arrows' flights
+        and hits, in the order they happened, then a pan if the camera has to
+        move. Updates the director as if they had
         played (the renderer may cut an animation short, never skip one)."""
         beats = []
-        for hit in state.combat_events:
-            if hit.serial > self._last_hit:
-                self._last_hit = hit.serial
-                if state.visible[hit.y][hit.x]:
-                    beats.append(Impact(hit, shake_for(hit)))
+        new = [e for e in state.combat_events if e.serial > self._last_hit]
+        new += [s for s in getattr(state, 'shots', ()) if s.serial > self._last_hit]
+        new += [p for p in getattr(state, 'parries', ()) if p.serial > self._last_hit]
+        staged = set()  # serials of hits a shot has already staged
+        closing = {}  # a riposte's Hit serial -> the Parry whose ParryText follows it
+        for event in sorted(new, key=lambda e: e.serial):
+            self._last_hit = max(self._last_hit, event.serial)
+            if isinstance(event, Shot):
+                beats += self._shot_beats(state, event)
+                staged.update(hit.serial for arrow in event.arrows for hit in arrow.hits)
+            elif isinstance(event, Parry):
+                if not state.visible[event.y][event.x]:
+                    continue
+                swing = self._swing(state, event)
+                if swing is not None:
+                    beats.append(swing)
+                beats.append(Guard(event))
+                riposte = self._riposte_of(state, event)
+                if riposte is not None and state.visible[riposte.y][riposte.x]:
+                    closing[riposte.serial] = event
+                else:
+                    beats.append(ParryText(event))
+            elif event.serial not in staged and state.visible[event.y][event.x]:
+                # Not an arrow's (a shot staged those): a melee blow.
+                swing = self._swing(state, event)
+                if swing is not None:
+                    beats.append(swing)
+                beats.append(Impact(event, shake_for(event)))
+                if event.serial in closing:
+                    beats.append(ParryText(closing.pop(event.serial)))
 
         self._track_turn(state)
-        start = self.current(state)
+        # A new floor: the old view belongs to another map, so no pan from it.
+        same_level = self._map is None or self._map is state.game_map
+        self._map = state.game_map
+        # Where the last frame's view was -- not current(), which follows the
+        # player to where they stand now.
+        start = self._shown if self._shown is not None else self.current(state)
+        was_zoomed = self.view is not None
         self.focus, view = self._frame(state)
         if view is None:
             self._calm_since = None
-        target = view or full_view(state.width, state.height)
-        if target != start:
-            beats.append(Pan(start, target))
+        target = view or self.explore_view(state)
+        if target != start and same_level:
+            beats.append(Pan(start, target, follow=not was_zoomed and view is None))
         self.view = view
+        self._shown = target
         return beats
+
+    @staticmethod
+    def _riposte_of(state, parry):
+        """The riposte's Hit that `parry` led to: the first after it of the
+        warrior's on that monster, or None."""
+        for hit in state.combat_events:
+            if (
+                hit.serial > parry.serial
+                and hit.attacker is parry.player
+                and hit.defender is parry.monster
+            ):
+                return hit
+        return None
+
+    @staticmethod
+    def _swing(state, hit):
+        """The Swing before melee `hit`: from where its attacker stands to
+        the defender's cell, shaped by the attacker's weapon. None if the two
+        aren't in a straight line one or two cells apart (melee is 4-way;
+        a spear reaches two) -- nothing to swing across. A rapier's strikes
+        on the same target this action alternate direction. `hit` may be a
+        Parry instead (a blow nullified: no Hit): the monster's swing at the
+        warrior, the same as for any of its blows."""
+        if isinstance(hit, Parry):
+            monster = hit.monster
+            origin, target = (monster.x, monster.y), (hit.x, hit.y)
+            dx, dy = target[0] - origin[0], target[1] - origin[1]
+            if (dx and dy) or not 1 <= abs(dx) + abs(dy) <= 2:
+                return None
+            return Swing(hit, origin, target, swing_shape_for(monster))
+        attacker = hit.attacker
+        origin, target = (attacker.x, attacker.y), (hit.x, hit.y)
+        dx, dy = target[0] - origin[0], target[1] - origin[1]
+        if (dx and dy) or not 1 <= abs(dx) + abs(dy) <= 2:
+            return None
+        shape = swing_shape_for(attacker)
+        mirror = False
+        if shape.name == 'skinny':
+            earlier = 0
+            for other in state.combat_events:
+                if other.serial >= hit.serial:
+                    break
+                if other.attacker is attacker and other.defender is hit.defender:
+                    earlier += 1
+            mirror = earlier % 2 == 1
+        return Swing(hit, origin, target, shape, mirror)
+
+    @staticmethod
+    def _shot_beats(state, shot):
+        """A shot's beats. Every arrow in shot.arrows leaves the shooter at
+        once and crosses a cell a step; the timeline is cut at each step where
+        an arrow reaches a monster it hit: a Flight of all the arrows still in
+        the air up to there, the hit's Impact (if in view) with the others
+        held in the air, and so on to where the last one lands."""
+        paths = [Director._in_sight(state, arrow.path) for arrow in shot.arrows]
+        arrivals = []  # (step, hit): when each arrow reaches each monster
+        for arrow in shot.arrows:
+            at = 0
+            for hit in arrow.hits:
+                cell = (hit.x, hit.y)
+                if cell not in arrow.path[at:]:
+                    continue  # not on its path: nothing to fly to
+                at = arrow.path.index(cell, at)
+                arrivals.append((at, hit))
+        arrivals.sort(key=lambda arrival: arrival[0])  # stable: aim arrow first
+        last = max(len(path) - 1 for path in paths)
+        beats, at = [], 0
+        for step, hit in arrivals:
+            beats += Director._flight(paths, at, min(step, last))
+            at = max(at, step)
+            if state.visible[hit.y][hit.x]:
+                held = tuple((p[step - 1], p[step]) for p in paths if len(p) - 1 > step)
+                beats.append(Impact(hit, shake_for(hit), held))
+        return beats + Director._flight(paths, at, last)
+
+    @staticmethod
+    def _in_sight(state, path):
+        """`path` cut short where the arrow leaves the player's sight (the
+        shooter's cell is always kept)."""
+        seen = list(path[:1])
+        for x, y in path[1:]:
+            if not state.visible[y][x]:
+                break
+            seen.append((x, y))
+        return tuple(seen)
+
+    @staticmethod
+    def _flight(paths, start, end):
+        """A Flight of every arrow in the air from step `start` to `end`;
+        none if that is no time, or no arrow is seen moving."""
+        if end <= start:
+            return []
+        stretch = tuple(p[start : end + 1] for p in paths if len(p) - 1 > start)
+        return [Flight(stretch, end - start)] if stretch else []
 
     def _track_turn(self, state):
         """Remember where the player stood before their latest turn. The

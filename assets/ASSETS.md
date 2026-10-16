@@ -46,7 +46,23 @@ variants, sample maps and `.url` shortcuts are left out.
 Sheets are 16x16 cells with a 1 px margin, so cell `(col, row)` starts at pixel
 `(col * 17, row * 17)`. To change what a char looks like, edit its `layers` in `tiles.json` (bottom
 layer first; floor-standing things like doors and stairs put the floor tile underneath). After
-changing `@`, rerun `packaging/make_icon.py`.
+changing `@`, rerun `packaging/make_icon.py`. The archer player is drawn with the `&` tile
+(`render/pygame_render.py`'s `ARCHER_TILE`): characters-pack body (0,0), green clothes (6,7) and the
+brown bow at (52,1), all from `roguelikeChar_transparent.png` (Kenney, CC0).
+
+## Drawn in code (no file)
+
+Effects the bundled sheets have no art for are drawn by `render/pygame_render.py` at runtime, so
+there is no file to list and no licence beyond the project's own.
+
+| Sprite | Drawn by | Notes |
+|---|---|---|
+| Melee swing arc | `PygameRenderer._paint_swing` (geometry: `render/camera.py`'s `swing_points`, `SWING_SHAPES`) | A light (`SWING_RGB`) arc over a dark edge, tapering and fading towards its tail, traced from the attacker's cell towards the struck one. Five shapes: standard, short (dagger), skinny (rapier), wide (great sword, war axe), long (spear, two tiles). Searched the three Kenney sheets first (2026-10-16): no slash, swing or motion-trail effect exists — the streaks at `roguelikeDungeon_transparent.png` (11,10), (13,10), (15,10) are ore in rock, not motion lines — nor any longer or wider swing sprite for the spear or axe. |
+| Arrows (in flight, in a pile) | `PygameRenderer.arrow_sprite` | Shaft, steel head, red fletching, near-black outline. No arrow in the sheets. |
+
+The characters sheet does have shields — `roguelikeChar_transparent.png` columns 33-41, rows 0-8
+(e.g. the steel heater shield at (38,2), the wooden one at (34,2)) — but no swing uses one yet, so none
+is referenced from `tiles.json` or the code.
 
 ## Boss-arena blood decals
 

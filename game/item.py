@@ -1,9 +1,10 @@
 """Items (spec §6, stretch goal #4) plus a gear/rarity system and chests.
 
 Item kinds: potions (drunk on the spot), gear for the equipment slots --
-the weapon slot (bonus power: the plain 'weapon' kind and the six
-WEAPON_TYPES, each with a special effect from WEAPON_EFFECTS) and armor
-(defense, see ARMOR_DEFENSE) -- and junk (a dud drop with no stats). Every potion and gear item is tiered Common ->
+the weapon slot (bonus power: the plain 'weapon' kind and the
+WEAPON_TYPES, six per class, each with a special effect from WEAPON_EFFECTS) and armor
+(ARMOR_KINDS: heavy 'armor', all defense, and 'leather', defense plus dodge;
+see ARMOR_SPLIT) -- and junk (a dud drop with no stats). Every potion and gear item is tiered Common ->
 Uncommon -> Rare -> Epic; rarity drives both the visual color (an int
 color-pair number, same convention Entity.color already uses for
 players/monsters) and the stat payoff.
@@ -50,15 +51,33 @@ POTION_HEAL = {'common': 20, 'uncommon': 35, 'rare': 55, 'epic': 88}
 BELT_SLOTS = 3
 # Weapon power bonus by rarity.
 GEAR_BONUS = {'common': 1, 'uncommon': 2, 'rare': 4, 'epic': 7}
-# Armor defense by rarity. This is the value the damage-reduction system
-# reads from player.defense.
-ARMOR_DEFENSE = {'common': 3, 'uncommon': 6, 'rare': 12, 'epic': 21}
+# The armor kinds, rarity -> (defense, dodge): the whole defence/dodge
+# balance in one table. 'armor' is heavy armor (all defense, no dodge);
+# 'leather' trades defense for dodge. Defense is what the damage-reduction
+# system reads from player.defense (game/damage.py); dodge is the percent
+# chance (points out of 100) that a monster's hit misses the player
+# entirely (dodge_chance, rolled in GameState.attack).
+ARMOR_SPLIT = {
+    'armor': {'common': (3, 0), 'uncommon': (6, 0), 'rare': (12, 0), 'epic': (21, 0)},
+    'leather': {'common': (2, 4), 'uncommon': (3, 6), 'rare': (6, 9), 'epic': (10, 12)},
+}
+ARMOR_KINDS = list(ARMOR_SPLIT)
+ARMOR_DEFENSE = {rarity: split[0] for rarity, split in ARMOR_SPLIT['armor'].items()}
+LEATHER_DEFENSE = {rarity: split[0] for rarity, split in ARMOR_SPLIT['leather'].items()}
+LEATHER_DODGE = {rarity: split[1] for rarity, split in ARMOR_SPLIT['leather'].items()}
+# Whatever the armor, the player's dodge chance never goes above this.
+MAX_DODGE = 50
 
-# The six weapon types (each fills the weapon slot). Their damage bonus is the
-# GEAR_BONUS table plus a per-kind offset; their special effect is data in
-# WEAPON_EFFECTS below. The plain 'weapon' kind is the original sword line
-# with no effect (it still drops).
-WEAPON_TYPES = ['war_axe', 'rapier', 'great_sword', 'sword_shield', 'dagger', 'spear']
+# The weapon types (each fills the weapon slot): the warrior's six and the
+# archer's six. Their damage bonus is the GEAR_BONUS table plus a per-kind
+# offset; their special effect is data in WEAPON_EFFECTS below. The plain
+# 'weapon' kind is the original sword line with no effect (the starting
+# weapon; it never drops). A class only ever finds its own weapon types in a
+# chest (CLASS_WEAPONS, roll_gear_kind).
+WARRIOR_WEAPONS = ['war_axe', 'rapier', 'great_sword', 'sword_shield', 'dagger', 'spear']
+ARCHER_WEAPONS = ['longbow', 'heavy_crossbow', 'volley_bow', 'sling', 'hunters_bow', 'quickdraw']
+WEAPON_TYPES = WARRIOR_WEAPONS + ARCHER_WEAPONS
+CLASS_WEAPONS = {'warrior': WARRIOR_WEAPONS, 'archer': ARCHER_WEAPONS}
 WEAPON_DAMAGE_OFFSET = {
     'war_axe': -1,
     'rapier': -2,
@@ -66,6 +85,12 @@ WEAPON_DAMAGE_OFFSET = {
     'sword_shield': 0,
     'dagger': -1,
     'spear': 0,
+    'longbow': -1,
+    'heavy_crossbow': 2,
+    'volley_bow': -2,
+    'sling': -1,
+    'hunters_bow': -1,
+    'quickdraw': 0,
 }
 AXE_MAX_HP = {'common': 3, 'uncommon': 6, 'rare': 9, 'epic': 15}
 # The requested 1/2/3 shield defense, x3 for the ARMOR_DEFENSE rescale, with
@@ -75,6 +100,21 @@ SHIELD_DEFENSE = {'common': 3, 'uncommon': 6, 'rare': 9, 'epic': 12}
 DAGGER_CRIT = {'common': 0.05, 'uncommon': 0.10, 'rare': 0.15, 'epic': 0.20}
 RAPIER_STRIKES = 2
 SPEAR_REACH = 2
+# The archer's weapons (GameState.shoot_arrow reads these off player.weapon).
+# Longbow: an arrow passes through this many monsters, each hit in full.
+LONGBOW_PIERCE = {'common': 2, 'uncommon': 2, 'rare': 3, 'epic': 4}
+# Heavy crossbow: player turns after a shot before it can shoot again.
+CROSSBOW_RELOAD = {'common': 2, 'uncommon': 2, 'rare': 1, 'epic': 1}
+# Volley bow: extra arrows per shot (one lane each side, then a second arrow
+# down the aim line), each at this share of a normal shot's damage.
+VOLLEY_SPREAD = {'common': 2, 'uncommon': 2, 'rare': 3, 'epic': 3}
+VOLLEY_FACTOR = {'common': 0.5, 'uncommon': 0.5, 'rare': 0.6, 'epic': 0.7}
+# Sling: tiles a hit monster is pushed straight away from the player.
+SLING_KNOCKBACK = {'common': 1, 'uncommon': 1, 'rare': 2, 'epic': 2}
+# Hunter's bow: extra damage share against the marked monster.
+HUNTER_MARK = {'common': 0.25, 'uncommon': 0.50, 'rare': 0.75, 'epic': 1.00}
+# Quickdraw shortbow: every Nth shot takes no monster phase.
+QUICKDRAW_TEMPO = {'common': 4, 'uncommon': 4, 'rare': 3, 'epic': 2}
 # Whatever the weapon's bonus, the player's power never drops below this.
 MIN_POWER = 1
 
@@ -90,6 +130,14 @@ EFFECT_DEFAULTS = {
     'defense_bonus': 0,
     'crit_bonus': 0.0,
     'reach': 1,
+    'dodge': 0,
+    'pierce': 1,
+    'reload': 0,
+    'spread': 0,
+    'spread_factor': 1.0,
+    'knockback': 0,
+    'mark_bonus': 0.0,
+    'tempo': 0,
 }
 WEAPON_EFFECTS = {
     'war_axe': {'max_hp_bonus': AXE_MAX_HP},
@@ -98,16 +146,25 @@ WEAPON_EFFECTS = {
     'sword_shield': {'defense_bonus': SHIELD_DEFENSE},
     'dagger': {'crit_bonus': DAGGER_CRIT},
     'spear': {'reach': SPEAR_REACH},
+    'longbow': {'pierce': LONGBOW_PIERCE},
+    'heavy_crossbow': {'reload': CROSSBOW_RELOAD},
+    'volley_bow': {'spread': VOLLEY_SPREAD, 'spread_factor': VOLLEY_FACTOR},
+    'sling': {'knockback': SLING_KNOCKBACK},
+    'hunters_bow': {'mark_bonus': HUNTER_MARK},
+    'quickdraw': {'tempo': QUICKDRAW_TEMPO},
+    # Not a weapon, but dodge rides on the same per-item effect mechanism.
+    'leather': {'dodge': LEATHER_DODGE},
 }
 
 # Gear kinds, the player slot each one fills, and the rarity -> stat table it
 # uses (for anything in the weapon slot, the stat is its power bonus). Adding
 # a gear kind is data: an entry in each of these, plus its GEAR_NAMES and
 # ITEM_CHARS rows.
-GEAR_KINDS = ['weapon', 'armor'] + WEAPON_TYPES
-GEAR_SLOTS = {'weapon': 'weapon', 'armor': 'armor'}
+GEAR_KINDS = ['weapon'] + ARMOR_KINDS + WEAPON_TYPES
+GEAR_SLOTS = {'weapon': 'weapon'}
+GEAR_SLOTS.update({kind: 'armor' for kind in ARMOR_KINDS})
 GEAR_SLOTS.update({kind: 'weapon' for kind in WEAPON_TYPES})
-GEAR_STATS = {'weapon': GEAR_BONUS, 'armor': ARMOR_DEFENSE}
+GEAR_STATS = {'weapon': GEAR_BONUS, 'armor': ARMOR_DEFENSE, 'leather': LEATHER_DEFENSE}
 GEAR_STATS.update(
     {
         kind: {r: GEAR_BONUS[r] + WEAPON_DAMAGE_OFFSET[kind] for r in RARITIES}
@@ -116,22 +173,36 @@ GEAR_STATS.update(
 )
 
 # The kinds a gear-chest (or boss-chest) drop can be. The plain 'weapon' is
-# not among them: it is the starting weapon every run begins with (see
-# GameState), so it never drops. Armor's share of drops is ARMOR_DROP_CHANCE;
-# the rest are weapons, split evenly across WEAPON_TYPES (roll_gear_kind).
-GEAR_DROP_KINDS = ['armor'] + WEAPON_TYPES
-# The starting weapon, equipped at the start of every run.
-STARTING_WEAPON_RARITY = 'common'
+# not among them: it is the warrior's starting weapon (STARTING_WEAPON, see
+# GameState), so it never drops. Armor's share of drops is ARMOR_DROP_CHANCE,
+# split evenly between the class's CLASS_ARMOR (both ARMOR_KINDS for a
+# warrior; leather only for an archer); the rest are weapons, split evenly
+# across the player's class's CLASS_WEAPONS (roll_gear_kind).
+GEAR_DROP_KINDS = ARMOR_KINDS + WEAPON_TYPES
+# The armor kinds each class can find. An archer only ever finds leather (the
+# evasion armour); any other class -- the warrior -- finds both.
+CLASS_ARMOR = {'archer': ['leather']}
+# The starting weapon, by class: the warrior starts with the plain 'weapon'
+# (it never drops), the archer with a common longbow. A class not listed gets
+# the plain one.
+STARTING_WEAPON = {'warrior': ('weapon', 'common'), 'archer': ('longbow', 'common')}
+# The starting armor, by class: the archer starts in common leather (so it
+# has some dodge from the first turn); a class not listed starts with none.
+STARTING_ARMOR = {'archer': ('leather', 'common')}
 
 GEAR_NAMES = {
     ('weapon', 'common'): 'Rusty Dagger',
     ('weapon', 'uncommon'): 'Iron Sword',
     ('weapon', 'rare'): 'Steel Blade',
     ('weapon', 'epic'): 'Dragon Fang',
-    ('armor', 'common'): 'Cloth Vest',
-    ('armor', 'uncommon'): 'Leather Armor',
-    ('armor', 'rare'): 'Chainmail',
+    ('armor', 'common'): 'Ring Mail',
+    ('armor', 'uncommon'): 'Chain Mail',
+    ('armor', 'rare'): 'Plate Armor',
     ('armor', 'epic'): 'Plate of the Ancients',
+    ('leather', 'common'): 'Leather Jerkin',
+    ('leather', 'uncommon'): 'Studded Leather',
+    ('leather', 'rare'): "Ranger's Leathers",
+    ('leather', 'epic'): 'Shadowhide Leathers',
     ('war_axe', 'common'): 'Worn War Axe',
     ('war_axe', 'uncommon'): 'Iron War Axe',
     ('war_axe', 'rare'): 'Steel War Axe',
@@ -156,6 +227,30 @@ GEAR_NAMES = {
     ('spear', 'uncommon'): 'Iron Spear',
     ('spear', 'rare'): 'Steel Spear',
     ('spear', 'epic'): 'Skypiercer Spear',
+    ('longbow', 'common'): 'Frayed Longbow',
+    ('longbow', 'uncommon'): 'Ash Longbow',
+    ('longbow', 'rare'): 'Yew Longbow',
+    ('longbow', 'epic'): 'Windsong Longbow',
+    ('heavy_crossbow', 'common'): 'Rusty Crossbow',
+    ('heavy_crossbow', 'uncommon'): 'Iron Crossbow',
+    ('heavy_crossbow', 'rare'): 'Steel Arbalest',
+    ('heavy_crossbow', 'epic'): 'Siegebreaker Arbalest',
+    ('volley_bow', 'common'): 'Cracked Volley Bow',
+    ('volley_bow', 'uncommon'): 'Volley Bow',
+    ('volley_bow', 'rare'): "Ranger's Volley Bow",
+    ('volley_bow', 'epic'): 'Hailstorm Volley Bow',
+    ('sling', 'common'): 'Frayed Sling',
+    ('sling', 'uncommon'): 'Leather Sling',
+    ('sling', 'rare'): 'Braided Sling',
+    ('sling', 'epic'): 'Thunderclap Sling',
+    ('hunters_bow', 'common'): "Worn Hunter's Bow",
+    ('hunters_bow', 'uncommon'): "Hunter's Bow",
+    ('hunters_bow', 'rare'): "Tracker's Bow",
+    ('hunters_bow', 'epic'): "Beastmaster's Bow",
+    ('quickdraw', 'common'): 'Worn Shortbow',
+    ('quickdraw', 'uncommon'): 'Quickdraw Shortbow',
+    ('quickdraw', 'rare'): 'Swift Shortbow',
+    ('quickdraw', 'epic'): 'Quicksilver Shortbow',
 }
 POTION_NAMES = {
     'common': 'potion of healing',
@@ -165,7 +260,7 @@ POTION_NAMES = {
 }
 # The weapon types never lie on the map (they only appear in a chest's
 # choice), but share the weapon glyph so every Item still has a tiled char.
-ITEM_CHARS = {'potion': '!', 'weapon': '/', 'armor': '['}
+ITEM_CHARS = {'potion': '!', 'weapon': '/', 'armor': '[', 'leather': '['}
 ITEM_CHARS.update({kind: '/' for kind in WEAPON_TYPES})
 
 # Junk: a dud chest drop. No rarity, no stats; picking it only logs a line.
@@ -178,8 +273,8 @@ JUNK_COLOR = 7
 # Chance that any one gear-chest drop is junk. Flat: does not scale with depth.
 JUNK_CHANCE = 0.15
 # Share of every drop (junk not counted separately, boss drops included) that
-# is armor. Armor is the more impactful drop, so it gets a fixed 20%; the
-# remainder of non-junk drops are weapons.
+# is armor (of either kind, half each). Armor is the more impactful drop, so
+# it gets a fixed 20%; the remainder of non-junk drops are weapons.
 ARMOR_DROP_CHANCE = 0.20
 
 CHEST_CHAR = '='
@@ -219,28 +314,44 @@ def roll_kind(rng: Rng = random):
     return rng.choice(CHEST_KINDS)
 
 
-def roll_gear_kind(armor_chance, rng: Rng = random):
-    """Armor with probability armor_chance, otherwise a weapon type picked evenly."""
+def class_weapons(char_class):
+    """The weapon types `char_class` can find (CLASS_WEAPONS); an unknown
+    class gets the warrior's, as GameState treats it as a warrior."""
+    return CLASS_WEAPONS.get(char_class, WARRIOR_WEAPONS)
+
+
+def class_armor(char_class):
+    """The armor kinds `char_class` can find (CLASS_ARMOR): leather only for
+    an archer, both ARMOR_KINDS for anyone else."""
+    return CLASS_ARMOR.get(char_class, ARMOR_KINDS)
+
+
+def roll_gear_kind(armor_chance, rng: Rng = random, char_class='warrior'):
+    """An armor kind of `char_class`'s (class_armor: heavy or leather evenly
+    for a warrior, always leather for an archer) with probability
+    armor_chance, otherwise one of `char_class`'s weapon types picked
+    evenly: an archer never finds a warrior's weapon, nor the reverse."""
     if rng.random() < armor_chance:
-        return 'armor'
-    return rng.choice(WEAPON_TYPES)
+        return rng.choice(class_armor(char_class))
+    return rng.choice(class_weapons(char_class))
 
 
-def roll_gear_drop(depth=1, rng: Rng = random):
+def roll_gear_drop(depth=1, rng: Rng = random, char_class='warrior'):
     """One gear-chest drop: junk with JUNK_CHANCE, else a gear piece at a
     depth-scaled rarity. Armor is ARMOR_DROP_CHANCE of ALL drops, so among the
     non-junk ones it is ARMOR_DROP_CHANCE / (1 - JUNK_CHANCE)."""
     if rng.random() < JUNK_CHANCE:
         return Item(0, 0, JUNK)
     armor_of_gear = ARMOR_DROP_CHANCE / (1 - JUNK_CHANCE)
-    return Item(0, 0, roll_gear_kind(armor_of_gear, rng), roll_rarity(depth, rng))
+    kind = roll_gear_kind(armor_of_gear, rng, char_class)
+    return Item(0, 0, kind, roll_rarity(depth, rng))
 
 
-def roll_boss_drop(rng: Rng = random):
+def roll_boss_drop(rng: Rng = random, char_class='warrior'):
     """One boss-chest drop: always gear, always rare or epic, never junk, so
     armor is ARMOR_DROP_CHANCE of them directly."""
     rarity = rng.choices(BOSS_CHEST_MIN_RARITIES, weights=BOSS_CHEST_MIN_WEIGHTS)[0]
-    return Item(0, 0, roll_gear_kind(ARMOR_DROP_CHANCE, rng), rarity)
+    return Item(0, 0, roll_gear_kind(ARMOR_DROP_CHANCE, rng, char_class), rarity)
 
 
 def belt_capacity(player):
@@ -281,6 +392,14 @@ def gear_defense(player):
     return armor + shield + boon_total(player, 'defense')
 
 
+def dodge_chance(player):
+    """The player's chance to dodge a monster's hit, in points out of 100:
+    the worn armor's dodge (only leather has any), capped at MAX_DODGE.
+    Read when a hit lands (GameState.attack), never stored."""
+    dodge = player.armor.dodge if player.armor is not None else 0
+    return min(MAX_DODGE, max(0, dodge))
+
+
 def gear_power(player):
     """base_power plus the weapon's bonus (which can be negative: rapier,
     dagger and war axe) plus any shrine boon's (game/shrine.py), never below
@@ -299,6 +418,14 @@ class Item(Entity):
     defense_bonus: int
     crit_bonus: float
     reach: int
+    dodge: int
+    pierce: int
+    reload: int
+    spread: int
+    spread_factor: float
+    knockback: int
+    mark_bonus: float
+    tempo: int
 
     def __init__(self, x, y, kind='potion', rarity='common'):
         # Weapon effects, defaulted for every item (see WEAPON_EFFECTS).
@@ -357,8 +484,8 @@ class Item(Entity):
             player.max_hp += delta
             player.hp = max(1, min(player.max_hp, player.hp + delta))
         # Power and defense are recomputed from everything equipped, so no
-        # effect of the replaced piece lingers. Crit, reach, strikes and
-        # cleave are read off player.weapon when they are used.
+        # effect of the replaced piece lingers. Crit, reach, strikes, cleave
+        # and the bows' effects are read off player.weapon when they are used.
         player.power = gear_power(player)
         player.defense = gear_defense(player)
         player.inventory.append(self.name)
@@ -393,14 +520,15 @@ class Chest(Entity):
         """True if opening this chest asks the player to pick one item."""
         return self.kind != 'potion'
 
-    def open(self, depth, rng: Rng = random):
+    def open(self, depth, rng: Rng = random, char_class='warrior'):
         """Roll the contents. Returns a list of Items: one potion for a
-        potion chest, GEAR_CHEST_DROPS choices for a gear or boss chest."""
+        potion chest, GEAR_CHEST_DROPS choices for a gear or boss chest --
+        weapons of `char_class`'s kinds only (roll_gear_kind)."""
         if self.kind == 'potion':
             return [Item(self.x, self.y, 'potion', roll_rarity(depth, rng))]
         if self.guaranteed_min_rarity == 'rare':
-            return [roll_boss_drop(rng) for _ in range(GEAR_CHEST_DROPS)]
-        return [roll_gear_drop(depth, rng) for _ in range(GEAR_CHEST_DROPS)]
+            return [roll_boss_drop(rng, char_class) for _ in range(GEAR_CHEST_DROPS)]
+        return [roll_gear_drop(depth, rng, char_class) for _ in range(GEAR_CHEST_DROPS)]
 
 
 def _place_chest(room, kind, occupied, rng):

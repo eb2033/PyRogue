@@ -676,6 +676,43 @@ class PanelTest(unittest.TestCase):
                 self.assertGreater(self.pixels(armor, uncommon), 0)
                 self.assertEqual(self.pixels(armor, epic), 0)
 
+    def test_dodge_is_shown_for_leather_and_not_for_heavy_armor(self):
+        def wearing(kind):
+            def make():
+                state = self.state()
+                Item(0, 0, kind, 'uncommon').apply(state.player, state.log)
+                return state
+
+            return make
+
+        for state in self.each_layout(wearing('leather')):
+            text = ui.stats_text(state.player)
+            self.assertTrue(text.endswith('DODGE 6%'), text)
+            plain = len(f'ATK {state.player.power}   DEF {state.player.defense}')
+            self.assertGreater(self.pixels(self.row_rect(3, plain)), 0)
+        for state in self.each_layout(wearing('armor')):
+            text = ui.stats_text(state.player)
+            self.assertNotIn('DODGE', text)
+            self.assertEqual(self.pixels(self.row_rect(3, len(text))), 0)
+
+    def test_archer_shows_the_quiver_on_the_items_row(self):
+        for tiles, size in self.LAYOUTS:
+            with self.subTest(tiles=tiles, size=size):
+                state = self.state('archer')
+                state.player.quiver = 9
+                self.paint(state, tiles, size)
+                text = ui.items_text(state.player)
+                self.assertEqual(text, 'Items: 0   Arrows 9/12')
+                self.assertGreater(self.pixels(self.row_rect(4, len('Items: 0'))), 0)
+                before = self.row_bytes(4)
+                state.player.quiver = 3
+                self.paint(state, tiles, size)
+                self.assertNotEqual(self.row_bytes(4), before)
+        for state in self.each_layout():
+            text = ui.items_text(state.player)
+            self.assertNotIn('Arrows', text)
+            self.assertEqual(self.pixels(self.row_rect(4, len(text))), 0)
+
     def test_no_gear_is_plain_text(self):
         for _ in self.each_layout():
             for row in (ui.GEAR_TOP + 1, ui.GEAR_TOP + 3):

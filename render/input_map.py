@@ -15,9 +15,12 @@ CHAR_ACTIONS = {
     'a': Action.MOVE_W,
     'd': Action.MOVE_E,
     '.': Action.WAIT,
+    ' ': Action.WAIT,
     'e': Action.DESCEND,
-    'q': Action.QUIT,
+    'q': Action.ABILITY,
     'h': Action.DRINK,
+    # Only acts on the game-over screen (GameState.handle_action).
+    'r': Action.RESTART,
     # A chest's choice cards. The numpad's digits produce the same characters.
     '1': Action.CHOOSE_1,
     '2': Action.CHOOSE_2,

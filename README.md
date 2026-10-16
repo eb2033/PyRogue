@@ -34,9 +34,9 @@ python -m venv .venv
 |---|---|
 | `W` `A` `S` `D` | Move. Walk into a monster to attack it. |
 | Arrow keys | **Warrior:** move. **Archer:** shoot an arrow that way. |
-| `.` | Wait a turn |
+| `space` or `.` | Wait a turn |
 | `e` | Go down the stairs (`>`) when you're standing on them |
-| `q` | Quit |
+| `q` | Class ability (on the death screen: quit) |
 | `F11` | Fullscreen |
 
 Menus also take the mouse.

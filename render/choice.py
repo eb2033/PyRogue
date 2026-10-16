@@ -35,6 +35,18 @@ def _effect_text(item):
         return f'+{round(item.crit_bonus * 100)}% crit'
     if item.reach > 1:
         return f'reach {item.reach}'
+    if item.pierce > 1:
+        return f'pierces {item.pierce}'
+    if item.reload:
+        return f'reload {item.reload}'
+    if item.spread:
+        return f'+{item.spread} arrows at {round(item.spread_factor * 100)}%'
+    if item.knockback:
+        return f'knockback {item.knockback}'
+    if item.mark_bonus:
+        return f'mark +{round(item.mark_bonus * 100)}%'
+    if item.tempo:
+        return f'every {item.tempo} shots free'
     return None
 
 
@@ -45,8 +57,9 @@ def title(offers):
 
 def stat_text(item):
     """'+N damage' (with the weapon type's effect after a comma, e.g.
-    '-1 damage, strikes twice') / '+N defence', or 'nothing useful' for junk.
-    Every kind in the weapon slot reads 'damage'; armor reads 'defence'.
+    '-1 damage, strikes twice') / '+N defence' (leather adds ', N% dodge'),
+    or 'nothing useful' for junk. Every kind in the weapon slot reads
+    'damage'; armor reads 'defence'.
     For a boon: its cost (rarity_text gives its benefit)."""
     if isinstance(item, Boon):
         return item.cost
@@ -54,7 +67,8 @@ def stat_text(item):
     if slot is None or item.bonus is None:
         return JUNK_STAT
     if slot == 'armor':
-        return f'+{item.bonus} defence'
+        defence = f'+{item.bonus} defence'
+        return f'{defence}, {item.dodge}% dodge' if item.dodge else defence
     effect = _effect_text(item)
     damage = f'{item.bonus:+d} damage'
     return damage if effect is None else f'{damage}, {effect}'

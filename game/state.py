@@ -23,22 +23,26 @@ resolve_player_phase() does that in one go for headless callers.
 import random
 from typing import Any
 
-from game.combat import Hit
+from game import archery
+from game.combat import Arrow, Hit, Parry, Shot
 from game.damage import mitigate, round_damage
-from game.dungeon import generate_dungeon, place_stairs
+from game.dungeon import generate_level, map_size, place_boss_stairs, place_stairs
 from game.entity import Player
 from game.fov import update_visibility
 from game.item import (
-    STARTING_WEAPON_RARITY,
+    STARTING_ARMOR,
+    STARTING_WEAPON,
     Chest,
     Item,
     belt_capacity,
+    dodge_chance,
     gear_defense,
     gear_power,
     spawn_boss_chest,
     spawn_chests,
 )
 from game.monster import Monster, is_boss_level, tier_for_depth
+from game.quiver import QUIVER_CAPACITY, RESTOCK_TURNS, ArrowPile
 from game.shrine import Boon, Shrine, boon_total, place_shrine, roll_boons
 from game.spawn import spawn_level
 from game.tiles import DOOR, FLOOR, STAIRS_DOWN, is_walkable
@@ -61,6 +65,13 @@ SHOOT_DELTAS = {
     'shoot_w': (-1, 0),
     'shoot_e': (1, 0),
 }
+
+# The archer's hop (Q): reach, trigger radius, and turns before the next one.
+HOP_DISTANCE = 2
+HOP_TRIGGER_RANGE = 3
+HOP_COOLDOWN = 4
+# The warrior's parry (Q): turns from arming one before the next can be armed.
+PARRY_COOLDOWN = 4
 
 # Keys 1-3 on a chest's choice screen -> index into pending_choice.
 CHOOSE_INDEX = {
@@ -96,6 +107,8 @@ BASE_CRIT_CHANCE = 0.10
 # A crit multiplies raw damage by this BEFORE defense reduction.
 CRIT_MULTIPLIER = 1.5
 MAX_CRIT_CHANCE = 1.0
+# Taking the stairs down restores this fraction of the player's max HP.
+DESCENT_HEAL_FRACTION = 0.2
 
 
 def crit_chance(attacker):
@@ -109,21 +122,46 @@ def crit_chance(attacker):
 
 class GameState:
     def __init__(self, width, height, fov_radius=6, char_class=DEFAULT_CLASS):
-        self.width = width
-        self.height = height
+        """`width` x `height`: the base map size (MAP_WIDTH/MAP_HEIGHT), the
+        map for ungrown rooms. Each floor's map is bigger -- dungeon.map_size
+        -- and self.width/self.height are the current floor's, reset by
+        next_level."""
+        self.base_width = width
+        self.base_height = height
+        self.width, self.height = map_size(width, height, 1)
         self.fov_radius = fov_radius
         self.running = True
         self.game_over = False
+        # Set by 'restart' on the game-over screen: the run has ended and the
+        # caller (main.play) goes back to the title screen instead of quitting.
+        self.restart_requested = False
         self.depth = 1
         self.messages = []
         # This round's blows, oldest first -- see game/combat.py. Cleared when
         # the player acts; the serial keeps counting across rounds and levels.
         self.combat_events = []
+        # This round's arrows (game.combat.Shot), oldest first: their paths,
+        # for a renderer to draw them flying. Cleared with combat_events.
+        self.shots = []
+        # This round's parried blows (game.combat.Parry), oldest first, for a
+        # renderer to show the parry. Cleared with combat_events.
+        self.parries = []
         self._hit_serial = 0
         # Player actions taken so far (+1 per turn-consuming action in
         # handle_action; never per frame or per monster). The combat zoom's
         # hold (render/camera.py) counts turns with it.
         self.turn = 0
+        # GameState.turn when the archer last hopped (None: never). Not saved.
+        self.last_hop_turn: int | None = None
+        # True after a successful hop until the archer's next shot, which
+        # always crits (archery.shoot spends it, hit or miss). Not saved.
+        self.hop_crit = False
+        # The warrior's parry (Q): armed until the next monster melee hit that
+        # would land on the player, which it nullifies (see _monster_melee);
+        # parry_progress() is its recharge for the bar. last_parry_turn is
+        # GameState.turn when Q armed it (None: never). Neither is saved.
+        self.parry_armed = False
+        self.last_parry_turn: int | None = None
         # Items an opened gear chest is offering, or the Boons a shrine is
         # (game/shrine.py), or None. While set, the player must choose() one
         # before anything else happens. Typed Any, not Item | Boon: a choice
@@ -142,10 +180,7 @@ class GameState:
         # _spawn_level_monsters on every new floor.
         self.boss_arena = None
 
-        self.game_map, self.rooms = generate_dungeon(width, height)
-        place_stairs(self.game_map, self.rooms)
-        self.visible = [[False] * width for _ in range(height)]
-        self.seen = [[False] * width for _ in range(height)]
+        self._build_map()
 
         char_class = char_class if char_class in CLASS_STATS else DEFAULT_CLASS
         hp, power = CLASS_STATS[char_class]
@@ -158,11 +193,28 @@ class GameState:
         self.player.base_power = power
         self.player.power = power
         self.player.defense = 0
-        self.player.weapon = Item(0, 0, 'weapon', STARTING_WEAPON_RARITY)
+        self.player.weapon = Item(0, 0, *STARTING_WEAPON.get(char_class, ('weapon', 'common')))
         self.player.armor = None
+        if char_class in STARTING_ARMOR:
+            self.player.armor = Item(0, 0, *STARTING_ARMOR[char_class])
         self.player.power = gear_power(self.player)
+        self.player.defense = gear_defense(self.player)
         self.player.inventory = []
+        self.player.quiver = QUIVER_CAPACITY if char_class == 'archer' else None
         self.player.alive = True
+
+        # The archer's bookkeeping (see shoot_arrow and _spend_turn).
+        # restock_progress: player turns towards the next free arrow, 0..
+        # RESTOCK_TURNS (it reads RESTOCK_TURNS on the turn one is added,
+        # and stays 0 while the quiver is full). reload_turns: turns until a
+        # heavy crossbow can shoot again. marked: the hunter's bow's quarry.
+        # tempo_shots: quickdraw shots since its last free one.
+        self.restock_progress = 0
+        self.reload_turns = 0
+        self.marked: Monster | None = None
+        self.tempo_shots = 0
+        # True after a free (quickdraw) shot: that action queues no monsters.
+        self._free_turn = False
 
         self.entities: list[Any] = self._populate_level()
 
@@ -183,12 +235,19 @@ class GameState:
 
     def _populate_level(self):
         """The player, then this floor's monsters, chests and (maybe) shrine.
-        The shrine avoids the stairs and every tile already taken."""
+        The shrine avoids the stairs and every tile already taken. On a boss
+        floor the stairs are placed here, in the boss room, after the boss
+        and every other entity (_build_map leaves them out there)."""
         monsters = self._spawn_level_monsters()
         chests = spawn_chests(self.rooms, depth=self.depth)
         taken = {(e.x, e.y) for e in monsters + chests}
-        taken.add(self.rooms[-1].center())  # the stairs (place_stairs)
         taken.add((self.player.x, self.player.y))
+        if self.boss_arena is not None:
+            boss = next((m for m in monsters if m.is_boss), None)
+            boss_pos = (boss.x, boss.y) if boss is not None else self.boss_arena.center()
+            taken.add(place_boss_stairs(self.game_map, self.boss_arena, boss_pos, taken))
+        else:
+            taken.add(self.rooms[-1].center())  # the stairs (place_stairs)
         shrine = place_shrine(self.rooms, self.depth, taken, self.boss_arena)
         # The shrine goes before the monsters so one standing on it is drawn
         # on top (renderers paint in entity order).
@@ -200,15 +259,48 @@ class GameState:
         """Apply one semantic action. Returns True if a turn was consumed."""
         if action is None:
             return False
+        if action == 'restart':
+            # Only on the death screen ('press r to restart'); mid-game it
+            # does nothing at all and takes no turn.
+            if self.game_over:
+                self.restart_requested = True
+                self.running = False
+            return False
         # A strike left over from the last action (a headless caller that
         # never stepped it) lands first: the player's half of that round is
         # always finished before anything else happens.
         self.resolve_player_phase()
         self.combat_events = []
+        self.shots = []
+        self.parries = []
+        self._free_turn = False
 
         if action == 'quit':
             self.running = False
             return False
+
+        if action == 'ability':
+            # On the death screen ('press q to quit') it is the quit key.
+            # Mid-game it is the class's ability: the archer's hop, or (any
+            # other class, i.e. the warrior) the parry.
+            if self.game_over:
+                self.running = False
+                return False
+            if self.is_choosing:
+                return False
+            if self.player.char_class == 'archer':
+                if not self.hop():
+                    return False
+                self._spend_turn()
+                self.last_hop_turn = self.turn
+                self.hop_crit = True
+            else:
+                if not self.arm_parry():
+                    return False
+                self._spend_turn()
+                self.last_parry_turn = self.turn
+            self.end_player_phase()
+            return True
 
         if self.game_over:
             return False
@@ -231,18 +323,26 @@ class GameState:
             dx, dy = MOVE_DELTAS[action]
             if not self.try_move_player(dx, dy):
                 return False
-            self.turn += 1
+            self._spend_turn()
             self._close_player_action()
             return True
 
         if action in SHOOT_DELTAS:
             dx, dy = SHOOT_DELTAS[action]
-            if self.player.char_class == 'archer':
-                self.shoot_arrow(dx, dy)
-            elif not self.try_move_player(dx, dy):
+            if self.player.char_class != 'archer':
+                if not self.try_move_player(dx, dy):
+                    return False
+                self._spend_turn()
+                self._close_player_action()
+                return True
+            # A refused shot (no arrows, still reloading) takes no turn.
+            if not self.shoot_arrow(dx, dy):
                 return False
-            self.turn += 1
-            self._close_player_action()
+            self._spend_turn(shot=True)
+            if self._free_turn:
+                self.update_fov()  # a quickdraw's free shot: no monster half
+            else:
+                self.end_player_phase()
             return True
 
         if action == 'drink':
@@ -250,22 +350,146 @@ class GameState:
             # belt is empty, which only logs.
             if not self.drink_from_belt():
                 return False
-            self.turn += 1
+            self._spend_turn()
             self.end_player_phase()
             return True
 
         if action == 'wait':
-            self.turn += 1
+            self._spend_turn()
             self.end_player_phase()
             return True
 
         if action == 'descend':
             if self.try_descend():
-                self.turn += 1
+                self._spend_turn()
                 return True
             return False
 
         return False
+
+    def hop(self):
+        """The archer's backward hop: up to HOP_DISTANCE tiles straight away
+        from the nearest living monster within HOP_TRIGGER_RANGE, along the
+        axis where it is farther (vertical on a tie), stopping at a wall or
+        anything standing in the way. Returns False, with a log line and no
+        position change, if it is refused; the caller spends the turn."""
+        if self.last_hop_turn is not None:
+            left = HOP_COOLDOWN - (self.turn - self.last_hop_turn)
+            if left > 0:
+                self.log(f'Hop recovering ({left} turns).')
+                return False
+        player = self.player
+        near = [
+            e
+            for e in self.entities
+            if isinstance(e, Monster) and e.alive and player.distance_to(e) <= HOP_TRIGGER_RANGE
+        ]
+        if not near:
+            self.log('Nothing to hop from.')
+            return False
+        foe = min(near, key=player.distance_to)
+        ddx, ddy = player.x - foe.x, player.y - foe.y
+        if abs(ddx) > abs(ddy):
+            dx, dy = (1 if ddx > 0 else -1), 0
+        else:
+            dx, dy = 0, (1 if ddy >= 0 else -1)
+        hopped = 0
+        for _ in range(HOP_DISTANCE):
+            nx, ny = player.x + dx, player.y + dy
+            if (
+                not is_walkable(self.game_map, nx, ny)
+                or self.monster_at(nx, ny) is not None
+                or self.chest_at(nx, ny) is not None
+                or self.shrine_at(nx, ny) is not None
+            ):
+                break
+            player.x, player.y = nx, ny
+            hopped += 1
+        if not hopped:
+            self.log('Nowhere to hop.')
+            return False
+        return True
+
+    def arm_parry(self):
+        """The warrior's parry: ready it for the next monster melee hit that
+        would land, which it nullifies (see _monster_melee). Returns False, with a log line and nothing
+        armed, if it is refused -- one is already armed, or PARRY_COOLDOWN
+        turns haven't passed since the last one was armed; the caller spends
+        the turn."""
+        if self.parry_armed:
+            self.log('Your parry is already ready.')
+            return False
+        if self.last_parry_turn is not None:
+            left = PARRY_COOLDOWN - (self.turn - self.last_parry_turn)
+            if left > 0:
+                self.log(f'Parry recovering ({left} turns).')
+                return False
+        self.parry_armed = True
+        self.log('You ready a parry.')
+        return True
+
+    def parry_progress(self):
+        """How far the warrior's parry has recharged, 0..PARRY_COOLDOWN, for
+        the renderer's bar: turns since Q last armed it, capped. Full when it
+        is ready (never used, or the cooldown is over) and while it is armed,
+        so a full bar means "a parry is available or armed"."""
+        if self.parry_armed or self.last_parry_turn is None:
+            return PARRY_COOLDOWN
+        return max(0, min(PARRY_COOLDOWN, self.turn - self.last_parry_turn))
+
+    def _monster_melee(self, monster):
+        """`monster`'s melee blow at the player. With a parry armed, the
+        dodge is rolled first (a dodged blow does nothing and leaves the
+        parry armed); a blow that would land is parried instead: no damage,
+        no Hit (a Parry in self.parries instead, for the renderer), and the
+        monster takes the riposte (_riposte). Unarmed, it is
+        an ordinary attack()."""
+        if not self.parry_armed or self.player.hp <= 0:
+            self.attack(monster, self.player)
+            return
+        if self._dodged(monster):
+            return
+        # Recorded before the riposte, so its serial sorts before the riposte's Hit.
+        player = self.player
+        self.parries.append(Parry(self.next_event_serial(), monster, player, player.x, player.y))
+        self._riposte(monster)
+
+    def _riposte(self, monster):
+        """An armed parry spent on `monster`'s melee blow, which is nullified
+        (the caller rolled the dodge already): the monster takes the player's
+        crit damage (raw power x CRIT_MULTIPLIER, with no crit roll of its
+        own) through attack(), so its defence reduces it and a Hit is
+        recorded for the riposte only."""
+        self.parry_armed = False
+        self.log(f"You parry the {monster.name}'s attack!")
+        self.log(f'Your parry returns the blow to the {monster.name}!')
+        self.attack(self.player, monster, CRIT_MULTIPLIER, crit=False)
+
+    def _spend_turn(self, shot=False):
+        """A turn-taking player action happened: count it (GameState.turn),
+        tick a heavy crossbow's reload down -- except on the shot that just
+        started it -- and advance the quiver's restock."""
+        self.turn += 1
+        if not shot and self.reload_turns > 0:
+            self.reload_turns -= 1
+        self._restock()
+
+    def _restock(self):
+        """One more turn towards a free arrow: every RESTOCK_TURNS turns the
+        quiver gains one, up to QUIVER_CAPACITY. restock_progress shows how
+        far along it is: 1, 2, 3 (the arrow is added), then 1 again; it sits
+        at 0 while the quiver is full. No quiver (a warrior): nothing."""
+        player = self.player
+        if player.quiver is None:
+            return
+        if player.quiver >= QUIVER_CAPACITY:
+            self.restock_progress = 0
+            return
+        if self.restock_progress >= RESTOCK_TURNS:
+            self.restock_progress = 0
+        self.restock_progress += 1
+        if self.restock_progress >= RESTOCK_TURNS:
+            player.quiver += 1
 
     def try_move_player(self, dx, dy):
         """Walk, bump-attack, or reach-attack in (dx, dy). Returns False
@@ -301,7 +525,28 @@ class GameState:
         shrine = self.shrine_at(nx, ny)
         if shrine is not None:
             self.visit_shrine(shrine)
+        pile = self.arrows_at(nx, ny)
+        if pile is not None:
+            self.pick_up_arrows(pile)
         return True
+
+    def pick_up_arrows(self, pile):
+        """Put as many of `pile`'s arrows in the quiver as it has room for;
+        whatever doesn't fit stays on the floor. A full quiver takes none
+        (logged); without a quiver (a warrior) the pile is left alone."""
+        player = self.player
+        if player.quiver is None:
+            return
+        room = QUIVER_CAPACITY - player.quiver
+        if room <= 0:
+            self.log('Your quiver is full.')
+            return
+        taken = min(room, pile.count)
+        player.quiver += taken
+        pile.count -= taken
+        if pile.count <= 0:
+            self.entities.remove(pile)
+        self.log(f'You pick up {taken} arrow{"s" if taken != 1 else ""}.')
 
     def _belt_refuses(self, chest):
         """True if a potion chest can't be taken now: full HP (so it
@@ -459,7 +704,7 @@ class GameState:
             self.log('Your potion belt is full.')
             return False
         self.log('You open the chest.')
-        items = chest.open(self.depth)
+        items = chest.open(self.depth, char_class=self.player.char_class)
         self.entities.remove(chest)
         if not chest.offers_choice:
             for item in items:
@@ -536,20 +781,15 @@ class GameState:
 
     def shoot_arrow(self, dx, dy):
         """Archer-only ranged attack: travels in a straight line until it
-        hits a wall or the first monster in its path."""
-        self.log('You loose an arrow.')
-        x, y = self.player.x, self.player.y
-        while True:
-            x, y = x + dx, y + dy
-            if not is_walkable(self.game_map, x, y):
-                self.log('The arrow thuds into a wall.')
-                return
-            monster = self.monster_at(x, y)
-            if monster is not None:
-                self.attack(self.player, monster)
-                return
+        hits a wall or the first monster in its path (more with a longbow),
+        with the equipped bow's effects -- see game/archery.py. Returns
+        False, taking nothing, if the shot is refused (no arrows, or a
+        crossbow still reloading)."""
+        return archery.shoot(self, dx, dy)
 
     def try_descend(self):
+        if self.game_over or not self.player.alive:
+            return False
         if self.game_map[self.player.y][self.player.x] != STAIRS_DOWN:
             self.log('There are no stairs here.')
             return False
@@ -558,30 +798,60 @@ class GameState:
 
     def next_level(self):
         self.depth += 1
-        self.game_map, self.rooms = generate_dungeon(self.width, self.height)
-        place_stairs(self.game_map, self.rooms)
+        self._build_map()
 
         px, py = self.rooms[0].center()
         self.player.x, self.player.y = px, py
 
-        self.visible = [[False] * self.width for _ in range(self.height)]
-        self.seen = [[False] * self.width for _ in range(self.height)]
-
         self.cancel_monster_phase()
         self._clear_strikes()
+        self.marked = None
         self.pending_choice = None
         self.entities = self._populate_level()
         if is_boss_level(self.depth):
             self.log(f'You descend to level {self.depth}. Something powerful lurks here...')
         else:
             self.log(f'You descend to level {self.depth}.')
+        healed = self._descent_heal()
+        self.log(f'You descend the stairs and rest for a while, restoring {healed} HP.')
         self.update_fov()
 
-    def attack(self, attacker, defender):
+    def _descent_heal(self):
+        """Heal DESCENT_HEAL_FRACTION of max HP, capped at max; returns the
+        HP actually restored."""
+        player = self.player
+        before = player.hp
+        player.hp = min(player.max_hp, before + int(player.max_hp * DESCENT_HEAL_FRACTION))
+        return player.hp - before
+
+    def _build_map(self):
+        """This floor's map, rooms, stairs and empty FOV/fog grids, at this
+        floor's size (dungeon.map_size: it grows with depth)."""
+        self.width, self.height = map_size(self.base_width, self.base_height, self.depth)
+        self.game_map, self.rooms = generate_level(self.base_width, self.base_height, self.depth)
+        if not is_boss_level(self.depth):  # boss floors: _populate_level
+            place_stairs(self.game_map, self.rooms)
+        self.visible = [[False] * self.width for _ in range(self.height)]
+        self.seen = [[False] * self.width for _ in range(self.height)]
+
+    def next_event_serial(self):
+        """The next serial for a combat record (a Hit or a Shot): one counter
+        for both, so they sort in the order they happened."""
+        self._hit_serial += 1
+        return self._hit_serial
+
+    def attack(self, attacker, defender, factor=1.0, crit=None):
+        """One blow. `factor` scales the attacker's raw power before crits
+        and defence (a volley's extra arrows, the hunter's mark, a parry).
+        `crit` None rolls for a crit as usual; True or False forces it (the
+        shot after a hop always crits; a parry's riposte never rolls)."""
+        if defender is self.player and self._dodged(attacker):
+            return
         defense = getattr(defender, 'defense', 0)
-        raw = attacker.power
+        raw = attacker.power * factor
         # Only the player crits (monsters never do); arrows are player hits too.
-        crit = attacker is self.player and random.random() < crit_chance(attacker)
+        if crit is None:
+            crit = attacker is self.player and random.random() < crit_chance(attacker)
         if crit:
             raw = raw * CRIT_MULTIPLIER
         damage = round_damage(mitigate(raw, defense))
@@ -592,10 +862,9 @@ class GameState:
         self.log(f'{subject} {verb} {target} for {damage}.')
         if crit:
             self.log('Critical hit!')
-        self._hit_serial += 1
         self.combat_events.append(
             Hit(
-                self._hit_serial,
+                self.next_event_serial(),
                 attacker,
                 defender,
                 damage,
@@ -607,6 +876,8 @@ class GameState:
         )
         if defender.hp <= 0:
             defender.alive = False
+            if defender is self.marked:
+                self.marked = None
             if defender is not self.player:
                 # The player's own death message is logged once by end_turn,
                 # which also flips game_over -- avoid a duplicate line here.
@@ -622,6 +893,17 @@ class GameState:
             defender.enraged = True
             self.log(f'The {defender.kind} boss roars and calls for help!')
             self._summon_goblins(defender)
+
+    def _dodged(self, attacker):
+        """Roll the player's dodge against `attacker`'s blow (melee or a
+        goblin archer's shot: every monster hit comes through attack). On a dodge
+        the blow does nothing -- no damage, no Hit -- and is logged. With no
+        dodge nothing is rolled, so the rng sequence is untouched."""
+        chance = dodge_chance(self.player)
+        if chance <= 0 or random.random() * 100 >= chance:
+            return False
+        self.log(f"You dodge the {attacker.name}'s attack.")
+        return True
 
     def _summon_goblins(self, boss):
         """Enrage helper: put min(tier, 2) goblins on free floor within 3
@@ -693,7 +975,9 @@ class GameState:
                 sees_player=was_seen,
             )
             if result == 'attack':
-                self.attack(monster, self.player)
+                self._monster_melee(monster)
+            elif result == 'shoot':
+                self._monster_shot(monster)
             self.update_fov()
 
             if self._player_just_died():
@@ -706,11 +990,41 @@ class GameState:
             moved_in_view = (monster.x, monster.y) != before and (
                 was_seen or self.is_visible(monster.x, monster.y)
             )
-            if result == 'attack' or moved_in_view:
+            if result in ('attack', 'shoot') or moved_in_view:
                 return True
 
         self._finish_round()
         return False
+
+    def _monster_shot(self, monster):
+        """A ranged monster's arrow at the player (it has a clear shot, see
+        Monster.clear_shot). The damage goes through attack, so dodge,
+        defence and the log work as for a melee blow; the flight is recorded
+        as a one-Arrow Shot in self.shots, like the player's bow shots. Its
+        serial is taken before the arrow flies, so it sorts before its Hit.
+
+        The path runs from the monster's cell to the player's. A dodged arrow
+        (no Hit) flies on past the player and stops on the last free tile
+        before a wall or another creature."""
+        serial = self.next_event_serial()
+        first_event = len(self.combat_events)
+        self.attack(monster, self.player)
+        hits = tuple(self.combat_events[first_event:])
+        dx = (self.player.x > monster.x) - (self.player.x < monster.x)
+        dy = (self.player.y > monster.y) - (self.player.y < monster.y)
+        x, y = monster.x, monster.y
+        path = [(x, y)]
+        while (x, y) != (self.player.x, self.player.y):
+            x, y = x + dx, y + dy
+            path.append((x, y))
+        if not hits:
+            while is_walkable(self.game_map, x + dx, y + dy) and (
+                self.monster_at(x + dx, y + dy) is None
+            ):
+                x, y = x + dx, y + dy
+                path.append((x, y))
+        arrow = Arrow(tuple(path), hits)
+        self.shots.append(Shot(serial, arrow.path, arrow.hits, (arrow,)))
 
     def end_turn(self):
         """Run the monster half of the round in one go.
@@ -722,7 +1036,9 @@ class GameState:
         the monsters' starts.
         """
         self.resolve_player_phase()
-        if not self.monster_phase_pending():
+        # A free (quickdraw) shot has no monster half to run.
+        free, self._free_turn = self._free_turn, False
+        if not self.monster_phase_pending() and not free:
             self.end_player_phase()
         while self.step_monster_phase():
             pass
@@ -803,6 +1119,12 @@ class GameState:
     def chest_at(self, x, y):
         for e in self.entities:
             if isinstance(e, Chest) and e.x == x and e.y == y:
+                return e
+        return None
+
+    def arrows_at(self, x, y):
+        for e in self.entities:
+            if isinstance(e, ArrowPile) and e.x == x and e.y == y:
                 return e
         return None
 

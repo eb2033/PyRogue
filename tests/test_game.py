@@ -15,12 +15,27 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from game.damage import mitigate, round_damage
-from game.dungeon import generate_dungeon, make_empty_map, place_doors, place_stairs, wall_sides
+from game.dungeon import (
+    BOSS_STAIRS_MIN_DISTANCE,
+    boss_stairs_tile,
+    generate_dungeon,
+    generate_level,
+    make_empty_map,
+    map_size,
+    place_doors,
+    place_stairs,
+    room_growth,
+    room_size_range,
+    wall_sides,
+)
 from game.entity import Entity
 from game.fov import compute_fov, update_visibility
 from game.item import (
+    ARCHER_WEAPONS,
     ARMOR_DEFENSE,
     ARMOR_DROP_CHANCE,
+    ARMOR_KINDS,
+    ARMOR_SPLIT,
     BELT_SLOTS,
     CHEST_COLOR,
     GEAR_BONUS,
@@ -32,15 +47,18 @@ from game.item import (
     JUNK,
     JUNK_CHANCE,
     JUNK_NAME,
+    MAX_DODGE,
     MAX_SCALING_DEPTH,
     POTION_CHEST_COLOR,
     POTION_HEAL,
     RARITIES,
+    WARRIOR_WEAPONS,
     WEAPON_TYPES,
     Chest,
     Item,
     belt_capacity,
     belt_slot_label,
+    dodge_chance,
     rarity_weights_for_depth,
     roll_boss_drop,
     roll_gear_drop,
@@ -62,6 +80,7 @@ from game.monster import (
     spawn_monsters,
     tier_for_depth,
 )
+from game.quiver import QUIVER_CAPACITY, RESTOCK_TURNS, ArrowPile
 from game.rect import Rect
 from game.shrine import (
     BOONS,
@@ -83,7 +102,14 @@ from game.spawn import (
     pick_tiles,
     spawn_level,
 )
-from game.state import BASE_CRIT_CHANCE, CRIT_MULTIPLIER, GameState, crit_chance
+from game.state import (
+    BASE_CRIT_CHANCE,
+    CRIT_MULTIPLIER,
+    DESCENT_HEAL_FRACTION,
+    PARRY_COOLDOWN,
+    GameState,
+    crit_chance,
+)
 from game.tiles import DOOR, FLOOR, STAIRS_DOWN, WALL, is_walkable
 
 
@@ -120,6 +146,85 @@ class DungeonGenerationTests(unittest.TestCase):
         sx, sy = place_stairs(game_map, rooms)
         self.assertEqual(game_map[sy][sx], STAIRS_DOWN)
         self.assertEqual((sx, sy), rooms[-1].center())
+
+
+class SizeByDepthTests(unittest.TestCase):
+    """Rooms grow with depth (dungeon.room_growth) and the map with them
+    (dungeon.map_size), keeping 4-6 rooms a floor."""
+
+    DEPTHS = (1, 8, 9, 16, 17, 30)
+
+    def test_room_growth_table(self):
+        self.assertEqual([room_growth(d) for d in self.DEPTHS], [2, 2, 5, 5, 6, 6])
+
+    def test_growth_is_added_on_every_side_of_the_base_room(self):
+        for depth in self.DEPTHS:
+            extra = 2 * room_growth(depth)
+            self.assertEqual(room_size_range(depth), (4 + extra, 8 + extra))
+
+    def test_map_grows_with_depth_and_never_shrinks(self):
+        for base in ((40, 20), (50, 20)):
+            sizes = [map_size(*base, depth) for depth in range(1, 41)]
+            for shallower, deeper in zip(sizes, sizes[1:]):
+                self.assertGreaterEqual(deeper[0], shallower[0])
+                self.assertGreaterEqual(deeper[1], shallower[1])
+            # Bigger than the base from floor 1, and again at each growth step.
+            self.assertGreater(sizes[0][0], base[0])
+            self.assertGreater(sizes[0][1], base[1])
+            self.assertGreater(sizes[8], sizes[7])  # floor 9
+            self.assertGreater(sizes[16], sizes[15])  # floor 17
+
+    def test_rooms_fit_inside_the_solid_border_at_every_depth(self):
+        for depth in range(1, 31):
+            random.seed(depth)
+            game_map, rooms = generate_level(40, 20, depth)
+            w, h = map_size(40, 20, depth)
+            self.assertEqual((len(game_map[0]), len(game_map)), (w, h))
+            low, high = room_size_range(depth)
+            for room in rooms:
+                self.assertTrue(1 <= room.x1 and room.x2 <= w - 1, (depth, vars(room)))
+                self.assertTrue(1 <= room.y1 and room.y2 <= h - 1, (depth, vars(room)))
+                self.assertTrue(low <= room.x2 - room.x1 <= high)
+                self.assertTrue(low <= room.y2 - room.y1 <= high)
+            for x in range(w):
+                self.assertEqual((game_map[0][x], game_map[h - 1][x]), (WALL, WALL))
+            for y in range(h):
+                self.assertEqual((game_map[y][0], game_map[y][w - 1]), (WALL, WALL))
+
+    def test_room_count_stays_in_range_at_every_depth(self):
+        for depth in self.DEPTHS:
+            for base in ((40, 20), (50, 20)):
+                for seed in range(6):
+                    random.seed(seed)
+                    _, rooms = generate_level(*base, depth)
+                    self.assertTrue(4 <= len(rooms) <= 6, (depth, base, seed, len(rooms)))
+
+    def test_next_level_rebuilds_the_map_size(self):
+        random.seed(5)
+        state = GameState(40, 20)
+        self.assertEqual((state.width, state.height), map_size(40, 20, 1))
+        while state.depth < 17:
+            state.next_level()
+            w, h = map_size(40, 20, state.depth)
+            self.assertEqual((state.width, state.height), (w, h))
+            for grid in (state.game_map, state.visible, state.seen):
+                self.assertEqual((len(grid[0]), len(grid)), (w, h))
+            self.assertTrue(state.visible[state.player.y][state.player.x])
+
+    def test_no_entity_is_placed_outside_the_map(self):
+        random.seed(6)
+        state = GameState(40, 20)
+        while state.depth <= 25:
+            for entity in state.entities:
+                self.assertTrue(0 < entity.x < state.width - 1, (state.depth, entity))
+                self.assertTrue(0 < entity.y < state.height - 1, (state.depth, entity))
+                self.assertNotEqual(state.game_map[entity.y][entity.x], WALL)
+            if is_boss_level(state.depth):
+                # A boss floor's arena is still one of its (grown) rooms.
+                self.assertIn(state.boss_arena, state.rooms[1:])
+                boss = next(m for m in state.entities if getattr(m, 'is_boss', False))
+                self.assertEqual((boss.x, boss.y), state.boss_arena.center())
+            state.next_level()
 
 
 class DoorPlacementTests(unittest.TestCase):
@@ -875,6 +980,18 @@ class GameStateIntegrationTests(unittest.TestCase):
         self.assertFalse(handled)
         self.assertEqual(state.depth, 1)
 
+    def test_ability_key_parries_in_play_and_quits_on_game_over(self):
+        random.seed(13)
+        state = GameState(50, 20)
+        turn = state.turn
+        self.assertTrue(state.handle_action('ability'))  # a warrior's Q: parry
+        self.assertTrue(state.parry_armed)
+        self.assertEqual(state.turn, turn + 1)
+        self.assertTrue(state.running)
+        state.game_over = True
+        self.assertFalse(state.handle_action('ability'))
+        self.assertFalse(state.running)
+
     def test_game_over_blocks_movement_but_not_quit(self):
         random.seed(13)
         state = GameState(50, 20)
@@ -884,6 +1001,34 @@ class GameStateIntegrationTests(unittest.TestCase):
         self.assertEqual((state.player.x, state.player.y), (px, py))
         state.handle_action('quit')
         self.assertFalse(state.running)
+
+    def test_restart_does_nothing_during_play(self):
+        random.seed(13)
+        state = GameState(50, 20)
+        pos, turn, log = (state.player.x, state.player.y), state.turn, list(state.messages)
+        self.assertFalse(state.handle_action('restart'))
+        self.assertTrue(state.running)
+        self.assertFalse(state.restart_requested)
+        self.assertEqual(state.turn, turn)
+        self.assertEqual((state.player.x, state.player.y), pos)
+        self.assertEqual(state.messages, log)
+        self.assertFalse(state.monster_phase_pending())
+
+    def test_restart_on_game_over_ends_the_run_and_asks_for_a_restart(self):
+        random.seed(13)
+        state = GameState(50, 20)
+        state.game_over = True
+        self.assertFalse(state.handle_action('restart'))
+        self.assertFalse(state.running)
+        self.assertTrue(state.restart_requested)
+
+    def test_quit_on_game_over_is_not_a_restart(self):
+        random.seed(13)
+        state = GameState(50, 20)
+        state.game_over = True
+        state.handle_action('ability')  # 'press q to quit'
+        self.assertFalse(state.running)
+        self.assertFalse(state.restart_requested)
 
 
 class TurnPhaseTests(unittest.TestCase):
@@ -1047,6 +1192,329 @@ class ClassAndArcherTests(unittest.TestCase):
         self.assertEqual((state.player.x, state.player.y), (px, py))
 
 
+class ArcherHopTests(unittest.TestCase):
+    def _arena(self, monster_dx=-2, monster_dy=0):
+        state = GameState(20, 20, char_class='archer')
+        state.game_map = make_empty_map(20, 20, WALL)
+        for y in range(1, 19):
+            for x in range(1, 19):
+                state.game_map[y][x] = FLOOR
+        state.player.x, state.player.y = 10, 10
+        state.player.defense = 0
+        mon = Monster(10 + monster_dx, 10 + monster_dy, 'goblin')
+        state.entities = [state.player, mon]
+        state.update_fov()
+        return state, mon
+
+    def test_hop_moves_two_tiles_away(self):
+        state, _ = self._arena()
+        self.assertTrue(state.handle_action('ability'))
+        self.assertEqual((state.player.x, state.player.y), (12, 10))
+
+    def test_hop_takes_a_turn_and_monsters_act(self):
+        state, mon = self._arena()
+        turn = state.turn
+        state.handle_action('ability')
+        self.assertEqual(state.turn, turn + 1)
+        while state.step_monster_phase():
+            pass
+        self.assertNotEqual((mon.x, mon.y), (8, 10))  # it acted after the hop
+
+    def test_hop_vertical_on_tie(self):
+        state, _ = self._arena(-2, -2)
+        state.handle_action('ability')
+        self.assertEqual((state.player.x, state.player.y), (10, 12))
+
+    def test_hop_stops_at_wall(self):
+        state, _ = self._arena()
+        state.game_map[10][12] = WALL
+        state.handle_action('ability')
+        self.assertEqual((state.player.x, state.player.y), (11, 10))
+
+    def test_no_monster_in_range_refuses(self):
+        state, _ = self._arena(-5, 0)
+        turn = state.turn
+        self.assertFalse(state.handle_action('ability'))
+        self.assertEqual(state.turn, turn)
+        self.assertEqual(state.messages[-1], 'Nothing to hop from.')
+
+    def test_cooldown_four_turns(self):
+        state, mon = self._arena()
+        state.handle_action('ability')
+        state.cancel_monster_phase()
+        mon.x, mon.y = state.player.x - 2, state.player.y
+        for left in (4, 3, 2, 1):
+            self.assertFalse(state.handle_action('ability'))
+            self.assertEqual(state.messages[-1], f'Hop recovering ({left} turns).')
+            state.handle_action('wait')
+            state.cancel_monster_phase()
+            mon.x, mon.y = state.player.x - 2, state.player.y
+        px = state.player.x
+        self.assertTrue(state.handle_action('ability'))
+        self.assertEqual(state.player.x, px + 2)
+
+    def test_warrior_q_parries_instead_of_hopping(self):
+        state, _ = self._arena()
+        state.player.char_class = 'warrior'
+        turn = state.turn
+        self.assertTrue(state.handle_action('ability'))
+        self.assertEqual((state.turn, state.player.x), (turn + 1, 10))
+        self.assertTrue(state.parry_armed)
+        self.assertFalse(state.hop_crit)
+
+    def test_successful_hop_arms_a_crit_for_the_next_shot_only(self):
+        state, mon = self._arena()
+        mon.hp = mon.max_hp = 1000
+        mon.defense = 0
+        # round_damage rounds a fractional hit up or down at random, in the game
+        # and again in the expectation below: pin random() so both round alike.
+        with (
+            mock.patch('game.state.BASE_CRIT_CHANCE', 0.0),
+            mock.patch('random.random', return_value=0.0),
+        ):
+            self.assertTrue(state.handle_action('ability'))
+            self.assertTrue(state.hop_crit)
+            state.cancel_monster_phase()
+            power = state.player.power
+            self.assertTrue(state.handle_action('shoot_w'))
+            (hit,) = state.combat_events
+            self.assertTrue(hit.crit)
+            self.assertEqual(hit.damage, round_damage(mitigate(power * CRIT_MULTIPLIER, 0)))
+            self.assertIn('Critical hit!', state.messages)
+            self.assertFalse(state.hop_crit)
+            state.cancel_monster_phase()
+            state.handle_action('shoot_w')  # the one after: no crit
+            (hit,) = state.combat_events
+            self.assertFalse(hit.crit)
+
+    def test_hop_crit_is_spent_by_a_missed_shot(self):
+        state, mon = self._arena()
+        mon.hp = mon.max_hp = 1000
+        with mock.patch('game.state.BASE_CRIT_CHANCE', 0.0):
+            state.handle_action('ability')
+            state.cancel_monster_phase()
+            state.handle_action('shoot_n')  # into the wall: nothing hit
+            self.assertEqual(state.combat_events, [])
+            self.assertFalse(state.hop_crit)
+            state.cancel_monster_phase()
+            state.handle_action('shoot_w')
+            (hit,) = state.combat_events
+            self.assertFalse(hit.crit)
+
+    def test_refused_hop_does_not_arm_the_crit(self):
+        state, _ = self._arena(-5, 0)  # nothing to hop from
+        self.assertFalse(state.handle_action('ability'))
+        self.assertFalse(state.hop_crit)
+        state, _ = self._arena()
+        state.game_map[10][11] = WALL  # nowhere to hop
+        self.assertFalse(state.handle_action('ability'))
+        self.assertFalse(state.hop_crit)
+        state, mon = self._arena()
+        state.handle_action('ability')
+        state.cancel_monster_phase()
+        state.handle_action('shoot_w')  # spends it
+        state.cancel_monster_phase()
+        mon.x, mon.y = state.player.x - 2, state.player.y
+        self.assertFalse(state.handle_action('ability'))  # on cooldown
+        self.assertFalse(state.hop_crit)
+
+    def test_nowhere_to_hop_refuses(self):
+        state, _ = self._arena()
+        state.game_map[10][11] = WALL
+        turn = state.turn
+        self.assertFalse(state.handle_action('ability'))
+        self.assertEqual(state.turn, turn)
+        self.assertEqual(state.messages[-1], 'Nowhere to hop.')
+        self.assertEqual(state.player.x, 10)
+
+    def test_pending_choice_blocks_hop(self):
+        state, _ = self._arena()
+        state.pending_choice = [Item(0, 0, 'weapon', 'common')]
+        self.assertFalse(state.handle_action('ability'))
+        self.assertEqual(state.player.x, 10)
+
+
+class WarriorParryTests(unittest.TestCase):
+    """A warrior at (10, 10) in an open arena, with an adjacent goblin to the
+    west unless a test says otherwise."""
+
+    def _arena(self, monster=True):
+        state = GameState(20, 20, char_class='warrior')
+        state.game_map = make_empty_map(20, 20, WALL)
+        for y in range(1, 19):
+            for x in range(1, 19):
+                state.game_map[y][x] = FLOOR
+        p = state.player
+        p.x, p.y = 10, 10
+        p.hp = p.max_hp = 1000
+        p.defense = 0
+        state.entities = [p]
+        mon = None
+        if monster:
+            mon = Monster(9, 10, 'goblin')
+            mon.hp = mon.max_hp = 1000
+            mon.power = 5
+            mon.defense = 2
+            state.entities.append(mon)
+        state.update_fov()
+        return state, mon
+
+    def run_monsters(self, state):
+        while state.step_monster_phase():
+            pass
+
+    def test_q_arms_a_parry_and_takes_a_turn(self):
+        state, _ = self._arena(monster=False)
+        self.assertTrue(state.handle_action('ability'))
+        self.assertTrue(state.parry_armed)
+        self.assertEqual(state.turn, 1)
+        self.assertEqual(state.messages[-1], 'You ready a parry.')
+
+    def test_second_q_while_armed_is_refused_and_takes_no_turn(self):
+        state, _ = self._arena(monster=False)
+        state.handle_action('ability')
+        turn = state.turn
+        self.assertFalse(state.handle_action('ability'))
+        self.assertEqual(state.turn, turn)
+        self.assertEqual(state.messages[-1], 'Your parry is already ready.')
+        self.assertFalse(state.monster_phase_pending())
+
+    # The riposte's fractional damage is rounded at random, in the game and again
+    # in the expectation below: pin random() so both round the same way.
+    @mock.patch('random.random', return_value=0.0)
+    def test_next_monster_hit_is_nullified_and_returns_crit_damage(self, _rng):
+        state, mon = self._arena()
+        assert mon is not None
+        p = state.player
+        state.handle_action('ability')
+        self.run_monsters(state)
+        self.assertFalse(state.parry_armed)
+        # The goblin's blow is nullified: no damage, no Hit for it ...
+        self.assertEqual(p.hp, 1000)
+        (riposte,) = state.combat_events
+        # ... and the goblin takes raw power x CRIT_MULTIPLIER, less its defence.
+        self.assertIs(riposte.attacker, p)
+        self.assertIs(riposte.defender, mon)
+        self.assertFalse(riposte.crit)
+        expected = round_damage(mitigate(p.power * CRIT_MULTIPLIER, 2))
+        self.assertEqual(riposte.damage, expected)
+        self.assertEqual(mon.hp, 1000 - expected)
+        parried = state.messages.index("You parry the goblin's attack!")
+        returned = state.messages.index('Your parry returns the blow to the goblin!')
+        self.assertEqual(returned, parried + 1)
+        self.assertEqual(state.messages[returned + 1], f'You hit goblin for {expected}.')
+        self.assertNotIn('Goblin hits you', ' '.join(state.messages))
+        # Spent: the next hit lands in full and is not answered.
+        state.handle_action('wait')
+        self.run_monsters(state)
+        self.assertEqual([h.defender for h in state.combat_events], [p])
+        self.assertEqual(p.hp, 1000 - round_damage(mitigate(5, 0)))
+
+    def test_a_parry_absorbs_a_blow_that_would_kill(self):
+        state, mon = self._arena()
+        assert mon is not None
+        state.player.hp = 1
+        state.handle_action('ability')
+        self.run_monsters(state)
+        self.assertEqual(state.player.hp, 1)
+        self.assertFalse(state.game_over)
+        self.assertEqual([h.defender for h in state.combat_events], [mon])
+
+    def test_only_the_first_of_two_blows_is_parried(self):
+        state, mon = self._arena()
+        assert mon is not None
+        p = state.player
+        other = Monster(11, 10, 'goblin')
+        other.hp = other.max_hp = 1000
+        other.power = 5
+        state.entities.append(other)
+        state.update_fov()
+        state.handle_action('ability')
+        self.run_monsters(state)
+        self.assertEqual(
+            [(h.attacker, h.defender) for h in state.combat_events], [(p, mon), (other, p)]
+        )
+        self.assertEqual(other.hp, 1000)
+        self.assertEqual(p.hp, 1000 - round_damage(mitigate(5, 0)))
+
+    def test_parry_progress_fills_over_the_cooldown(self):
+        state, _ = self._arena(monster=False)
+        self.assertEqual(state.parry_progress(), PARRY_COOLDOWN)  # never used: ready
+        state.handle_action('ability')
+        self.assertEqual(state.parry_progress(), PARRY_COOLDOWN)  # armed: full
+        state.parry_armed = False  # as if a monster's hit had spent it
+        seen = [state.parry_progress()]
+        for _ in range(PARRY_COOLDOWN + 2):
+            state.handle_action('wait')
+            seen.append(state.parry_progress())
+        self.assertEqual(seen, [0, 1, 2, 3, 4, 4, 4])
+
+    def test_parry_progress_is_empty_when_spent_on_the_turn_it_was_armed(self):
+        state, _ = self._arena()
+        state.handle_action('ability')
+        self.run_monsters(state)  # the adjacent goblin swings at once
+        self.assertFalse(state.parry_armed)
+        self.assertEqual(state.parry_progress(), 0)
+        for expected in (1, 2, 3, 4):
+            state.handle_action('wait')
+            state.cancel_monster_phase()
+            self.assertEqual(state.parry_progress(), expected)
+        self.assertTrue(state.handle_action('ability'))
+
+    def test_parry_is_not_triggered_by_the_warriors_own_attack(self):
+        state, mon = self._arena()
+        assert mon is not None
+        state.handle_action('ability')
+        state.cancel_monster_phase()
+        state.handle_action('move_w')  # bump the goblin
+        state.cancel_monster_phase()
+        self.assertEqual([h.defender for h in state.combat_events], [mon])
+        self.assertTrue(state.parry_armed)
+
+    def test_a_dodged_hit_does_not_trigger_it(self):
+        state, mon = self._arena()
+        assert mon is not None
+        state.player.armor = Item(0, 0, 'leather', 'epic')
+        state.handle_action('ability')
+        with mock.patch('game.state.random.random', return_value=0.0):
+            self.run_monsters(state)
+        self.assertEqual(state.combat_events, [])
+        self.assertEqual(mon.hp, 1000)
+        self.assertTrue(state.parry_armed)
+
+    def test_an_untriggered_parry_stays_armed(self):
+        state, _ = self._arena(monster=False)
+        state.handle_action('ability')
+        for _ in range(10):
+            state.handle_action('wait')
+            self.run_monsters(state)
+        self.assertTrue(state.parry_armed)
+
+    def test_cooldown_four_turns(self):
+        state, _ = self._arena(monster=False)
+        state.handle_action('ability')
+        state.parry_armed = False  # as if a monster's hit had spent it
+        for left in (4, 3, 2, 1):
+            turn = state.turn
+            self.assertFalse(state.handle_action('ability'))
+            self.assertEqual(state.messages[-1], f'Parry recovering ({left} turns).')
+            self.assertEqual(state.turn, turn)
+            state.handle_action('wait')
+        self.assertTrue(state.handle_action('ability'))
+        self.assertTrue(state.parry_armed)
+
+    def test_pending_choice_and_game_over_block_it(self):
+        state, _ = self._arena(monster=False)
+        state.pending_choice = [Item(0, 0, 'weapon', 'common')]
+        self.assertFalse(state.handle_action('ability'))
+        self.assertFalse(state.parry_armed)
+        state.pending_choice = None
+        state.game_over = True
+        self.assertFalse(state.handle_action('ability'))
+        self.assertFalse(state.parry_armed)
+        self.assertFalse(state.running)  # Q quits on the death screen
+
+
 class GearTests(unittest.TestCase):
     def test_invalid_rarity_rejected(self):
         with self.assertRaises(ValueError):
@@ -1174,6 +1642,28 @@ class DifficultyScalingTests(unittest.TestCase):
         expected_hp, expected_power = scale_stats(base_hp, base_power, depth=10)
         m = Monster(0, 0, 'goblin', depth=10)
         self.assertEqual((m.hp, m.power), (expected_hp, expected_power))
+
+    def test_early_orcs_have_20_percent_less_hp(self):
+        base, power = MONSTER_TYPES['orc'][2], MONSTER_TYPES['orc'][3]
+        for depth in (1, 8):
+            full, _ = scale_stats(base, power, depth)
+            self.assertEqual(Monster(0, 0, 'orc', depth=depth).hp, round(full * 0.8))
+        self.assertEqual(Monster(0, 0, 'orc', depth=1).hp, 22)
+        self.assertEqual(Monster(0, 0, 'orc', depth=8).hp, 31)
+
+    def test_orc_hp_is_normal_from_floor_nine(self):
+        full, _ = scale_stats(MONSTER_TYPES['orc'][2], MONSTER_TYPES['orc'][3], 9)
+        self.assertEqual(Monster(0, 0, 'orc', depth=9).hp, full)
+        self.assertEqual(full, 39)
+
+    def test_goblin_hp_unchanged_by_orc_reduction(self):
+        base, power = MONSTER_TYPES['goblin'][2], MONSTER_TYPES['goblin'][3]
+        for depth in (1, 9):
+            full, _ = scale_stats(base, power, depth)
+            self.assertEqual(Monster(0, 0, 'goblin', depth=depth).hp, full)
+
+    def test_boss_hp_on_floor_eight_ignores_orc_reduction(self):
+        self.assertEqual(spawn_boss(Rect(1, 1, 10, 10), 8).hp, 78)
 
     def test_is_boss_level_every_eighth_floor(self):
         for d in (8, 16, 24):
@@ -1863,7 +2353,8 @@ class WeaponTypeTests(unittest.TestCase):
     # -- data ----------------------------------------------------------------
 
     def test_six_new_kinds_are_weapon_slot_gear_and_drop(self):
-        self.assertEqual(set(WEAPON_TYPES), set(self.EXPECTED_BONUS))
+        self.assertEqual(set(WARRIOR_WEAPONS), set(self.EXPECTED_BONUS))
+        self.assertEqual(set(WEAPON_TYPES), set(WARRIOR_WEAPONS) | set(ARCHER_WEAPONS))
         for kind in WEAPON_TYPES:
             self.assertEqual(GEAR_SLOTS[kind], 'weapon')
             self.assertIn(kind, GEAR_KINDS)
@@ -1884,12 +2375,12 @@ class WeaponTypeTests(unittest.TestCase):
         n = 20000
         gear = [roll_gear_drop(1, rng) for _ in range(n)]
         junk = sum(1 for d in gear if d.kind == JUNK) / n
-        armor = sum(1 for d in gear if d.kind == 'armor') / n
+        armor = sum(1 for d in gear if d.kind in ARMOR_KINDS) / n
         self.assertTrue(abs(junk - 0.15) < 0.01, junk)
         self.assertTrue(abs(armor - ARMOR_DROP_CHANCE) < 0.01, armor)
         boss = [roll_boss_drop(rng) for _ in range(n)]
         self.assertTrue(
-            abs(sum(1 for d in boss if d.kind == 'armor') / n - ARMOR_DROP_CHANCE) < 0.01
+            abs(sum(1 for d in boss if d.kind in ARMOR_KINDS) / n - ARMOR_DROP_CHANCE) < 0.01
         )
         self.assertNotIn('weapon', {d.kind for d in gear + boss})
 
@@ -2368,8 +2859,8 @@ class BossEnrageTests(unittest.TestCase):
         self.assertEqual(self._goblins(state), [])
 
 
-class SlingerTests(unittest.TestCase):
-    """The goblin slinger: shoots along a clear row/column up to SHOOT_RANGE,
+class GoblinArcherTests(unittest.TestCase):
+    """The goblin archer: shoots along a clear row/column up to SHOOT_RANGE,
     backs off when the player is within 2, chases when it can't see."""
 
     def _arena(self):
@@ -2385,25 +2876,25 @@ class SlingerTests(unittest.TestCase):
         return state
 
     def _add(self, state, x, y):
-        sling = Monster(x, y, 'slinger')
-        state.entities.append(sling)
+        shooter = Monster(x, y, 'goblin_archer')
+        state.entities.append(shooter)
         state.update_fov()
-        return sling
+        return shooter
 
     def _hits_by(self, state, attacker):
         return [h for h in state.combat_events if h.attacker is attacker]
 
     def test_stats_are_weaker_than_a_goblin(self):
         for depth in (1, 4, 7, 13, 25):
-            sling, gob = Monster(0, 0, 'slinger', depth), Monster(0, 0, 'goblin', depth)
-            self.assertLess(sling.power, gob.power, depth)
-            self.assertLess(sling.hp, gob.hp, depth)
-            self.assertEqual((sling.hp, sling.power), scale_stats(7, 1, depth))
+            shooter, gob = Monster(0, 0, 'goblin_archer', depth), Monster(0, 0, 'goblin', depth)
+            self.assertLess(shooter.power, gob.power, depth)
+            self.assertLess(shooter.hp, gob.hp, depth)
+            self.assertEqual((shooter.hp, shooter.power), scale_stats(7, 1, depth))
 
     def test_char_is_unique_among_monsters_and_items(self):
         chars = [c for c, *_ in MONSTER_TYPES.values()]
         self.assertEqual(len(chars), len(set(chars)))
-        self.assertEqual(MONSTER_TYPES['slinger'][0], 's')
+        self.assertEqual(MONSTER_TYPES['goblin_archer'][0], 's')
         self.assertNotIn(
             's', set(ITEM_CHARS.values()) | {'=', WALL, FLOOR, DOOR, STAIRS_DOWN, '@'}
         )
@@ -2413,113 +2904,159 @@ class SlingerTests(unittest.TestCase):
             for dx, dy in ORTHOGONAL_STEPS:
                 state = self._arena()
                 state.player.x, state.player.y = 9, 9
-                sling = self._add(state, 9 + dx * gap, 9 + dy * gap)
-                before = (sling.x, sling.y)
+                shooter = self._add(state, 9 + dx * gap, 9 + dy * gap)
+                before = (shooter.x, shooter.y)
                 hp = state.player.hp
                 state.end_turn()
-                self.assertEqual((sling.x, sling.y), before, 'a shooter stands still')
-                hits = self._hits_by(state, sling)
+                self.assertEqual((shooter.x, shooter.y), before, 'a shooter stands still')
+                hits = self._hits_by(state, shooter)
                 self.assertEqual(len(hits), 1, (gap, dx, dy))
                 self.assertEqual(hits[0].defender, state.player)
                 self.assertEqual(state.player.hp, hp - hits[0].damage)
                 self.assertGreater(hits[0].damage, 0)
-                self.assertIn('Slinger hits you', state.messages[-1])
+                self.assertIn('Goblin archer hits you', state.messages[-1])
 
     def test_shoots_from_two_tiles_when_cornered(self):
         state = self._arena()
         state.game_map = make_empty_map(20, 20, WALL)
         for x in range(1, 8):  # a dead-end corridor; nowhere to back off to
             state.game_map[10][x] = FLOOR
-        sling = self._add(state, 7, 10)
+        shooter = self._add(state, 7, 10)
         hp = state.player.hp
         state.end_turn()
-        self.assertEqual((sling.x, sling.y), (7, 10))
-        self.assertEqual(len(self._hits_by(state, sling)), 1)
+        self.assertEqual((shooter.x, shooter.y), (7, 10))
+        self.assertEqual(len(self._hits_by(state, shooter)), 1)
         self.assertLess(state.player.hp, hp)
 
     def test_out_of_range_or_off_line_it_does_not_shoot(self):
         state = self._arena()
-        sling = self._add(state, 5 + SHOOT_RANGE + 1, 10)
+        shooter = self._add(state, 5 + SHOOT_RANGE + 1, 10)
         state.end_turn()
-        self.assertEqual(self._hits_by(state, sling), [])
-        self.assertEqual((sling.x, sling.y), (5 + SHOOT_RANGE, 10), 'closes in instead')
+        self.assertEqual(self._hits_by(state, shooter), [])
+        self.assertEqual((shooter.x, shooter.y), (5 + SHOOT_RANGE, 10), 'closes in instead')
 
         state = self._arena()
-        sling = self._add(state, 9, 13)  # diagonal-ish: no straight line
+        shooter = self._add(state, 9, 13)  # diagonal-ish: no straight line
         state.end_turn()
-        self.assertEqual(self._hits_by(state, sling), [])
+        self.assertEqual(self._hits_by(state, shooter), [])
 
     def test_never_shoots_through_a_wall_or_closed_door(self):
         for blocker in (WALL, DOOR):
             state = self._arena()
             state.game_map[10][7] = blocker
-            sling = Monster(9, 10, 'slinger')
+            shooter = Monster(9, 10, 'goblin_archer')
             # Even if told it sees the player, the line itself is blocked.
-            result = sling.take_turn(state.player, state.game_map, sees_player=True)
+            result = shooter.take_turn(state.player, state.game_map, sees_player=True)
             self.assertIsNone(result, blocker)
-            self.assertFalse(sling.clear_shot(state.player, state.game_map), blocker)
+            self.assertFalse(shooter.clear_shot(state.player, state.game_map), blocker)
 
             state = self._arena()
             state.game_map[10][7] = blocker
-            sling = self._add(state, 9, 10)
+            shooter = self._add(state, 9, 10)
             hp = state.player.hp
             state.end_turn()
-            self.assertEqual(self._hits_by(state, sling), [], blocker)
+            self.assertEqual(self._hits_by(state, shooter), [], blocker)
             self.assertEqual(state.player.hp, hp, blocker)
 
     def test_does_not_shoot_through_another_monster(self):
         state = self._arena()
         state.entities.append(Monster(8, 10, 'goblin'))
-        sling = Monster(10, 10, 'slinger')
-        self.assertFalse(sling.clear_shot(state.player, state.game_map, {(8, 10)}))
+        shooter = Monster(10, 10, 'goblin_archer')
+        self.assertFalse(shooter.clear_shot(state.player, state.game_map, {(8, 10)}))
 
     def test_steps_away_when_the_player_is_within_two(self):
         for start in ((7, 10), (6, 10), (6, 11), (5, 12)):
             state = self._arena()
-            sling = self._add(state, *start)
-            gap = sling.distance_to(state.player)
+            shooter = self._add(state, *start)
+            gap = shooter.distance_to(state.player)
             hp = state.player.hp
             state.end_turn()
-            self.assertNotEqual((sling.x, sling.y), start)
-            self.assertEqual(sling.distance_to(state.player), gap + 1, start)
-            self.assertEqual(self._hits_by(state, sling), [], 'retreating, not shooting')
+            self.assertNotEqual((shooter.x, shooter.y), start)
+            self.assertEqual(shooter.distance_to(state.player), gap + 1, start)
+            self.assertEqual(self._hits_by(state, shooter), [], 'retreating, not shooting')
             self.assertEqual(state.player.hp, hp)
 
     def test_chases_when_it_cannot_see_the_player(self):
         game_map = [list(r) for r in ['#' * 20, '#' + '.' * 18 + '#', '#' * 20]]
         player = Entity(1, 1, '@')
-        sling = Monster(5, 1, 'slinger')
-        sling.chasing = True
-        result = sling.take_turn(player, game_map, sees_player=False)
+        shooter = Monster(5, 1, 'goblin_archer')
+        shooter.chasing = True
+        result = shooter.take_turn(player, game_map, sees_player=False)
         self.assertIsNone(result)
-        self.assertEqual((sling.x, sling.y), (4, 1), 'stepped toward the player')
+        self.assertEqual((shooter.x, shooter.y), (4, 1), 'stepped toward the player')
 
         # Through the game: a wall hides the player, so it walks round, not shoots.
         state = self._arena()
         for y in range(5, 16):
             state.game_map[y][8] = WALL
-        sling = self._add(state, 10, 10)
-        sling.chasing = True
+        shooter = self._add(state, 10, 10)
+        shooter.chasing = True
         self.assertFalse(state.is_visible(10, 10))
         state.end_turn()
-        self.assertEqual(self._hits_by(state, sling), [])
-        self.assertEqual((sling.x, sling.y), (9, 10), 'stepped toward the player')
+        self.assertEqual(self._hits_by(state, shooter), [])
+        self.assertEqual((shooter.x, shooter.y), (9, 10), 'stepped toward the player')
 
     def test_spawns_alone_per_room_from_depth_four(self):
         for depth in (1, 2, 3):
             for _rooms, monsters, _ in seeded_floors(depth, n=100):
-                self.assertFalse([m for m in monsters if m.kind == 'slinger'], depth)
+                self.assertFalse([m for m in monsters if m.kind == 'goblin_archer'], depth)
         seen = 0
         for depth in (4, 5, 9, 12, 20):
             for rooms, monsters, _ in seeded_floors(depth, n=100):
                 for room in rooms[1:]:
                     here = [m for m in monsters if in_room(room, m)]
-                    slings = [m for m in here if m.kind == 'slinger']
-                    if slings:
+                    shooters = [m for m in here if m.kind == 'goblin_archer']
+                    if shooters:
                         seen += 1
-                        self.assertEqual(len(slings), 1)
-                        self.assertEqual({m.kind for m in here}, {'slinger'})
+                        self.assertEqual(len(shooters), 1)
+                        self.assertEqual({m.kind for m in here}, {'goblin_archer'})
         self.assertGreater(seen, 0)
+
+    def test_name_and_log_say_goblin_archer(self):
+        state = self._arena()
+        shooter = self._add(state, 9, 10)
+        self.assertEqual(shooter.name, 'goblin archer')
+        with mock.patch('game.state.dodge_chance', return_value=0):
+            state.end_turn()
+        self.assertIn('Goblin archer hits you', ' '.join(state.messages))
+
+    def test_a_shot_records_one_arrow_from_its_cell_to_the_player(self):
+        state = self._arena()
+        shooter = self._add(state, 9, 10)
+        with mock.patch('game.state.dodge_chance', return_value=0):
+            state.end_turn()
+        (hit,) = self._hits_by(state, shooter)
+        (shot,) = state.shots
+        self.assertEqual(len(shot.arrows), 1)
+        (arrow,) = shot.arrows
+        self.assertEqual(arrow.path, ((9, 10), (8, 10), (7, 10), (6, 10), (5, 10)))
+        self.assertEqual(arrow.hits, (hit,))
+        self.assertIs(hit.defender, state.player)
+        self.assertEqual((shot.path, shot.hits), (arrow.path, arrow.hits))
+        self.assertLess(shot.serial, hit.serial, 'the shot sorts before its hit')
+
+    def test_a_melee_blow_records_no_shot(self):
+        state = self._arena()
+        state.entities.append(Monster(6, 10, 'goblin'))
+        state.update_fov()
+        with mock.patch('game.state.dodge_chance', return_value=0):
+            state.end_turn()
+        self.assertEqual(state.shots, [])
+
+    def test_a_dodged_shot_flies_past_the_player_to_the_wall(self):
+        state = self._arena()
+        shooter = self._add(state, 9, 10)
+        hp = state.player.hp
+        with mock.patch('game.state.dodge_chance', return_value=100):
+            state.end_turn()
+        self.assertEqual(state.player.hp, hp)
+        self.assertEqual(self._hits_by(state, shooter), [])
+        self.assertIn("You dodge the goblin archer's attack.", state.messages)
+        (shot,) = state.shots
+        self.assertEqual(shot.hits, ())
+        self.assertEqual(shot.path[0], (9, 10))
+        self.assertIn((5, 10), shot.path)
+        self.assertEqual(shot.path[-1], (1, 10), 'the last floor tile before the wall')
 
 
 def _in_room(room, e):
@@ -2746,6 +3283,782 @@ class ShrineBoonTests(unittest.TestCase):
         state.pending_choice = [Item(0, 0, JUNK)] * 3
         self.assertFalse(state.handle_action('move_e'))
         self.assertEqual((state.player.x, state.player.y), self.start)
+
+
+class DodgeAndArmorKindTests(unittest.TestCase):
+    """Leather (defence + dodge) vs heavy armor (defence only), and the dodge
+    roll on monster hits (game/item.py ARMOR_SPLIT / dodge_chance,
+    GameState.attack)."""
+
+    def setUp(self):
+        self.state = GameState(50, 20)
+        p = self.state.player
+        self.goblin = Monster(p.x + 1, p.y, 'goblin')
+        p.hp = p.max_hp = 10**6
+        self.state.entities = [p, self.goblin]
+
+    def wear(self, kind, rarity='common'):
+        armor = Item(0, 0, kind, rarity)
+        armor.apply(self.state.player, self.state.log)
+        return armor
+
+    def test_numbers_by_rarity(self):
+        heavy = {'common': (3, 0), 'uncommon': (6, 0), 'rare': (12, 0), 'epic': (21, 0)}
+        leather = {'common': (2, 4), 'uncommon': (3, 6), 'rare': (6, 9), 'epic': (10, 12)}
+        self.assertEqual(ARMOR_SPLIT, {'armor': heavy, 'leather': leather})
+        for kind, table in ARMOR_SPLIT.items():
+            for rarity, (defense, dodge) in table.items():
+                item = Item(0, 0, kind, rarity)
+                self.assertEqual((item.bonus, item.dodge), (defense, dodge), (kind, rarity))
+                self.assertEqual(GEAR_SLOTS[kind], 'armor')
+
+    def test_leather_has_dodge_and_heavy_has_none(self):
+        for rarity in RARITIES:
+            self.assertGreater(Item(0, 0, 'leather', rarity).dodge, 0)
+            self.assertEqual(Item(0, 0, 'armor', rarity).dodge, 0)
+            heavy, leather = ARMOR_SPLIT['armor'][rarity], ARMOR_SPLIT['leather'][rarity]
+            self.assertGreater(heavy[0], leather[0])
+
+    def test_dodge_chance_is_the_armors_dodge_capped(self):
+        player = self.state.player
+        self.assertEqual(dodge_chance(player), 0)
+        self.wear('leather', 'rare')
+        self.assertEqual(dodge_chance(player), 9)
+        self.assertEqual(player.defense, 6)
+        self.wear('armor', 'rare')
+        self.assertEqual(dodge_chance(player), 0)
+        player.armor.dodge = 80
+        self.assertEqual(dodge_chance(player), MAX_DODGE)
+        self.assertEqual(MAX_DODGE, 50)
+
+    def test_a_dodge_avoids_damage_records_no_hit_and_logs(self):
+        self.wear('leather', 'epic')
+        hp = self.state.player.hp
+        self.state.combat_events.clear()
+        with mock.patch('game.state.random.random', return_value=0.0):
+            self.state.attack(self.goblin, self.state.player)
+        self.assertEqual(self.state.player.hp, hp)
+        self.assertEqual(self.state.combat_events, [])
+        self.assertEqual(self.state.messages[-1], "You dodge the goblin's attack.")
+
+    def test_seeded_dodges_happen_at_the_dodge_rate(self):
+        self.wear('leather', 'epic')  # 12%
+        random.seed(3)
+        n = 5000
+        for _ in range(n):
+            self.state.attack(self.goblin, self.state.player)
+        dodges = sum(1 for m in self.state.messages if m.startswith('You dodge'))
+        self.assertAlmostEqual(dodges / n, 0.12, delta=0.02)
+        self.assertEqual(len(self.state.combat_events), n - dodges)
+
+    def test_a_failed_dodge_roll_still_hits(self):
+        self.wear('leather', 'epic')
+        hp = self.state.player.hp
+        with mock.patch('game.state.random.random', return_value=0.99):
+            self.state.attack(self.goblin, self.state.player)
+        self.assertLess(self.state.player.hp, hp)
+        self.assertEqual(len(self.state.combat_events), 1)
+
+    def test_no_dodge_without_dodge(self):
+        self.wear('armor', 'epic')
+        random.seed(1)
+        for _ in range(500):
+            self.state.attack(self.goblin, self.state.player)
+        self.assertEqual(len(self.state.combat_events), 500)
+        self.assertFalse(any(m.startswith('You dodge') for m in self.state.messages))
+
+    def test_the_players_own_attacks_are_never_dodged(self):
+        self.wear('leather', 'epic')
+        self.state.player.armor.dodge = 50
+        self.goblin.hp = self.goblin.max_hp = 10**6
+        for _ in range(200):
+            self.state.attack(self.state.player, self.goblin)
+        self.assertEqual(len(self.state.combat_events), 200)
+
+    def test_a_goblin_archers_shot_can_be_dodged(self):
+        p = self.state.player
+        shooter = Monster(p.x + 2, p.y, 'goblin_archer')
+        self.wear('leather')
+        hp = p.hp
+        with mock.patch('game.state.random.random', return_value=0.0):
+            self.state.attack(shooter, p)
+        self.assertEqual(p.hp, hp)
+        self.assertIn(f"You dodge the {shooter.name}'s attack.", self.state.messages)
+
+    def test_starting_armor_by_class(self):
+        archer = GameState(50, 20, char_class='archer').player
+        self.assertEqual((archer.armor.kind, archer.armor.rarity), ('leather', 'common'))
+        self.assertEqual(archer.defense, ARMOR_SPLIT['leather']['common'][0])
+        self.assertEqual(dodge_chance(archer), ARMOR_SPLIT['leather']['common'][1])
+        warrior = GameState(50, 20, char_class='warrior').player
+        self.assertIsNone(warrior.armor)
+        self.assertEqual(warrior.defense, 0)
+
+    def test_armor_drops_split_evenly_between_the_kinds(self):
+        rng = random.Random(11)
+        n = 40000
+        drops = [roll_gear_drop(1, rng) for _ in range(n)]
+        heavy = sum(1 for d in drops if d.kind == 'armor') / n
+        leather = sum(1 for d in drops if d.kind == 'leather') / n
+        self.assertAlmostEqual(heavy + leather, ARMOR_DROP_CHANCE, delta=0.01)
+        self.assertAlmostEqual(heavy, ARMOR_DROP_CHANCE / 2, delta=0.01)
+        self.assertAlmostEqual(leather, ARMOR_DROP_CHANCE / 2, delta=0.01)
+        boss = [roll_boss_drop(rng) for _ in range(n)]
+        self.assertAlmostEqual(
+            sum(1 for d in boss if d.kind == 'leather') / n, ARMOR_DROP_CHANCE / 2, delta=0.01
+        )
+        self.assertEqual(set(ARMOR_KINDS), {'armor', 'leather'})
+        self.assertIn('leather', GEAR_DROP_KINDS)
+
+    def test_warriors_find_both_armor_kinds(self):
+        rng = random.Random(12)
+        n = 20000
+        drops = [roll_gear_drop(1, rng, char_class='warrior') for _ in range(n)]
+        boss = [roll_boss_drop(rng, char_class='warrior') for _ in range(n)]
+        for found in (drops, boss):
+            kinds = {d.kind for d in found if d.kind in ARMOR_KINDS}
+            self.assertEqual(kinds, {'armor', 'leather'})
+
+    def test_archers_only_find_leather_at_the_same_armor_share(self):
+        rng = random.Random(13)
+        n = 40000
+        drops = [roll_gear_drop(1, rng, char_class='archer') for _ in range(n)]
+        self.assertFalse(any(d.kind == 'armor' for d in drops))
+        leather = sum(1 for d in drops if d.kind == 'leather') / n
+        self.assertAlmostEqual(leather, ARMOR_DROP_CHANCE, delta=0.01)
+        boss = [roll_boss_drop(rng, char_class='archer') for _ in range(n)]
+        self.assertFalse(any(d.kind == 'armor' for d in boss))
+        leather = sum(1 for d in boss if d.kind == 'leather') / n
+        self.assertAlmostEqual(leather, ARMOR_DROP_CHANCE, delta=0.01)
+        chest = Chest(0, 0, kind='gear')
+        for _ in range(500):
+            for item in chest.open(5, rng, char_class='archer'):
+                self.assertNotEqual(item.kind, 'armor')
+
+
+class ArcherArena(unittest.TestCase):
+    """An archer in an open arena: floor inside the border, player at
+    (10, 10), no other entities, crits off unless a test turns them on."""
+
+    def setUp(self):
+        random.seed(120)
+        self.state = GameState(50, 20, char_class='archer')
+        for y in range(1, 19):
+            for x in range(1, 49):
+                self.state.game_map[y][x] = FLOOR
+        p = self.state.player
+        p.x, p.y = 10, 10
+        p.hp = p.max_hp = 1000
+        # A plain single-target weapon, not the archer's starting longbow.
+        p.weapon = Item(0, 0, 'weapon', 'common')
+        self.state.entities = [p]
+        self.state.update_fov()
+        patcher = mock.patch('game.state.BASE_CRIT_CHANCE', 0.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def equip(self, kind, rarity='common', power=None):
+        Item(0, 0, kind, rarity).apply(self.state.player, self.state.log)
+        if power is not None:
+            self.state.player.power = power
+
+    def monster(self, x, y, hp=1000):
+        m = Monster(x, y, 'goblin')
+        m.hp = m.max_hp = hp
+        m.defense = 0
+        self.state.entities.append(m)
+        self.state.update_fov()
+        return m
+
+    def piles(self):
+        return {(e.x, e.y): e.count for e in self.state.entities if isinstance(e, ArrowPile)}
+
+
+class ArcherWeaponTests(ArcherArena):
+    EXPECTED_BONUS = {
+        'longbow': {'common': 0, 'uncommon': 1, 'rare': 3, 'epic': 6},
+        'heavy_crossbow': {'common': 3, 'uncommon': 4, 'rare': 6, 'epic': 9},
+        'volley_bow': {'common': -1, 'uncommon': 0, 'rare': 2, 'epic': 5},
+        'sling': {'common': 0, 'uncommon': 1, 'rare': 3, 'epic': 6},
+        'hunters_bow': {'common': 0, 'uncommon': 1, 'rare': 3, 'epic': 6},
+        'quickdraw': {'common': 1, 'uncommon': 2, 'rare': 4, 'epic': 7},
+    }
+    EXPECTED_EFFECT = {
+        'longbow': ('pierce', (2, 2, 3, 4)),
+        'heavy_crossbow': ('reload', (2, 2, 1, 1)),
+        'volley_bow': ('spread', (2, 2, 3, 3)),
+        'sling': ('knockback', (1, 1, 2, 2)),
+        'hunters_bow': ('mark_bonus', (0.25, 0.50, 0.75, 1.00)),
+        'quickdraw': ('tempo', (4, 4, 3, 2)),
+    }
+
+    # -- data ----------------------------------------------------------------
+
+    def test_six_archer_weapons_are_weapon_slot_gear(self):
+        self.assertEqual(set(ARCHER_WEAPONS), set(self.EXPECTED_BONUS))
+        self.assertFalse(set(ARCHER_WEAPONS) & set(WARRIOR_WEAPONS))
+        for kind in ARCHER_WEAPONS:
+            self.assertEqual(GEAR_SLOTS[kind], 'weapon')
+            self.assertIn(kind, GEAR_DROP_KINDS)
+
+    def test_damage_bonus_by_rarity(self):
+        p = self.state.player
+        for kind, table in self.EXPECTED_BONUS.items():
+            for rarity, bonus in table.items():
+                self.assertEqual(Item(0, 0, kind, rarity).bonus, bonus, (kind, rarity))
+                self.equip(kind, rarity)
+                self.assertEqual(p.power, max(1, p.base_power + bonus), (kind, rarity))
+
+    def test_effect_values_by_rarity(self):
+        for kind, (attr, values) in self.EXPECTED_EFFECT.items():
+            for rarity, value in zip(RARITIES, values):
+                self.assertAlmostEqual(getattr(Item(0, 0, kind, rarity), attr), value)
+        for rarity, factor in zip(RARITIES, (0.5, 0.5, 0.6, 0.7)):
+            self.assertAlmostEqual(Item(0, 0, 'volley_bow', rarity).spread_factor, factor)
+        plain = Item(0, 0, 'weapon', 'epic')
+        self.assertEqual(
+            (plain.pierce, plain.reload, plain.spread, plain.knockback, plain.tempo),
+            (1, 0, 0, 0, 0),
+        )
+        self.assertEqual(plain.mark_bonus, 0.0)
+
+    # -- longbow -------------------------------------------------------------
+
+    def test_longbow_pierces_two_monsters_at_full_damage(self):
+        self.equip('longbow', 'common', power=6)
+        first, second, third = self.monster(12, 10), self.monster(14, 10), self.monster(16, 10)
+        self.assertTrue(self.state.shoot_arrow(1, 0))
+        self.assertEqual([h.defender for h in self.state.combat_events], [first, second])
+        self.assertEqual([h.damage for h in self.state.combat_events], [6, 6])
+        self.assertEqual(third.hp, 1000)
+        self.assertEqual(self.piles(), {(14, 10): 1})  # where it stopped
+
+    def test_longbow_stops_at_a_wall(self):
+        self.equip('longbow', 'epic')
+        self.state.game_map[10][13] = WALL
+        near, beyond = self.monster(12, 10), self.monster(14, 10)
+        self.state.shoot_arrow(1, 0)
+        self.assertLess(near.hp, 1000)
+        self.assertEqual(beyond.hp, 1000)
+        self.assertEqual(self.piles(), {(12, 10): 1})  # last free tile before the wall
+
+    def test_a_plain_bow_stops_at_the_first_monster(self):
+        first, second = self.monster(12, 10), self.monster(14, 10)
+        self.state.shoot_arrow(1, 0)
+        self.assertLess(first.hp, 1000)
+        self.assertEqual(second.hp, 1000)
+
+    # -- heavy crossbow ------------------------------------------------------
+
+    def test_crossbow_refuses_a_shot_until_reloaded(self):
+        self.equip('heavy_crossbow', 'common')  # reload 2
+        state = self.state
+        self.assertTrue(state.handle_action('shoot_e'))
+        self.assertEqual(state.reload_turns, 2)
+        turn = state.turn
+        self.assertFalse(state.handle_action('shoot_e'))
+        self.assertIn('reloading', state.messages[-1])
+        self.assertEqual(state.turn, turn)  # a refused shot takes no turn
+        self.assertTrue(state.handle_action('move_s'))  # moving still works
+        self.assertEqual(state.reload_turns, 1)
+        self.assertFalse(state.handle_action('shoot_e'))
+        self.assertTrue(state.handle_action('wait'))  # so does waiting
+        self.assertEqual(state.reload_turns, 0)
+        self.assertTrue(state.handle_action('shoot_e'))
+        self.assertEqual(state.reload_turns, 2)
+
+    def test_epic_crossbow_reloads_in_one_turn(self):
+        self.equip('heavy_crossbow', 'epic')
+        self.assertTrue(self.state.handle_action('shoot_e'))
+        self.assertFalse(self.state.handle_action('shoot_e'))
+        self.state.handle_action('wait')
+        self.assertTrue(self.state.handle_action('shoot_e'))
+
+    # -- volley bow ----------------------------------------------------------
+
+    def test_volley_hits_the_side_lanes_at_the_damage_factor(self):
+        self.equip('volley_bow', 'common', power=10)  # 2 extras at 50%
+        aim, left, right = self.monster(13, 10), self.monster(13, 9), self.monster(13, 11)
+        self.state.shoot_arrow(1, 0)
+        damage = {h.defender: h.damage for h in self.state.combat_events}
+        self.assertEqual(damage, {aim: 10, left: 5, right: 5})
+        self.assertEqual(self.piles(), {(13, 10): 1})  # one arrow spent, one pile
+        self.assertEqual(self.state.player.quiver, QUIVER_CAPACITY - 1)
+
+    def test_rare_volley_sends_a_third_extra_down_the_aim_line(self):
+        self.equip('volley_bow', 'rare', power=10)  # 3 extras at 60%
+        aim = self.monster(13, 10)
+        self.state.shoot_arrow(1, 0)
+        self.assertEqual([h.damage for h in self.state.combat_events], [10, 6])
+        self.assertEqual(aim.hp, 1000 - 16)
+
+    def test_volley_side_lane_blocked_by_a_wall_does_not_fire(self):
+        self.equip('volley_bow', 'common', power=10)
+        self.state.game_map[9][11] = WALL  # the north lane's first tile
+        left = self.monster(13, 9)
+        self.state.shoot_arrow(1, 0)
+        self.assertEqual(left.hp, 1000)
+
+    def test_a_volley_is_one_shot_with_all_its_arrows_from_the_player(self):
+        self.equip('volley_bow', 'rare', power=10)  # aim + 3 extras
+        aim, left, right = self.monster(13, 10), self.monster(13, 9), self.monster(13, 11)
+        state = self.state
+        self.assertTrue(state.handle_action('shoot_e'))  # one action, one turn
+        self.assertEqual(len(state.shots), 1)  # one shot, not one per arrow
+        shot = state.shots[0]
+        self.assertEqual(len(shot.arrows), 4)
+        for arrow in shot.arrows:
+            self.assertEqual(arrow.path[0], (10, 10))  # all leave the player's cell
+            for hit in arrow.hits:
+                self.assertIn((hit.x, hit.y), arrow.path)
+        # The aim arrow comes first and is also the shot's path / hits.
+        self.assertEqual(shot.arrows[0].path[1], (11, 10))
+        self.assertEqual((shot.path, shot.hits), tuple(shot.arrows[0]))
+        # Side arrows step diagonally forward first; the third extra flies the aim line.
+        self.assertEqual({a.path[1] for a in shot.arrows[1:3]}, {(11, 9), (11, 11)})
+        self.assertEqual(shot.arrows[3].path[1], (11, 10))
+        # Each arrow keeps its own hits and damage; all of them are this shot's.
+        self.assertEqual(
+            [[h.defender for h in a.hits] for a in shot.arrows], [[aim], [right], [left], [aim]]
+        )
+        self.assertEqual([[h.damage for h in a.hits] for a in shot.arrows], [[10], [6], [6], [6]])
+        every = [h for a in shot.arrows for h in a.hits]
+        self.assertEqual(sorted(every, key=lambda h: h.serial), state.combat_events)
+        self.assertLess(shot.serial, min(h.serial for h in every))
+        self.assertEqual(state.player.quiver, QUIVER_CAPACITY - 1)  # one arrow spent
+        self.assertEqual(state.turn, 1)  # all of it on the same turn
+
+    def test_point_blank_volley_puts_every_arrow_into_the_adjacent_target(self):
+        self.equip('volley_bow', 'common', power=10)  # 2 extras at 50%
+        target = self.monster(11, 10)
+        left, right = self.monster(11, 9), self.monster(11, 11)  # the side lanes
+        state = self.state
+        self.assertTrue(state.handle_action('shoot_e'))
+        self.assertEqual([h.defender for h in state.combat_events], [target] * 3)
+        self.assertEqual([h.damage for h in state.combat_events], [10, 5, 5])
+        self.assertEqual(target.hp, 1000 - 20)
+        self.assertEqual((left.hp, right.hp), (1000, 1000))
+        (shot,) = state.shots
+        self.assertEqual(len(shot.arrows), 3)
+        for arrow in shot.arrows:
+            self.assertEqual(arrow.path, ((10, 10), (11, 10)))
+            self.assertEqual([h.defender for h in arrow.hits], [target])
+        self.assertEqual(state.player.quiver, QUIVER_CAPACITY - 1)  # one arrow spent
+        self.assertEqual(self.piles(), {(11, 10): 1})
+
+    def test_point_blank_rare_volley_lands_all_four_arrows(self):
+        self.equip('volley_bow', 'rare', power=10)  # 3 extras at 60%
+        target = self.monster(11, 10)
+        self.state.shoot_arrow(1, 0)
+        self.assertEqual([h.damage for h in self.state.combat_events], [10, 6, 6, 6])
+        self.assertEqual(target.hp, 1000 - 28)
+
+    def test_point_blank_volley_does_not_overkill(self):
+        self.equip('volley_bow', 'common', power=10)
+        target = self.monster(11, 10, hp=5)
+        self.state.shoot_arrow(1, 0)
+        self.assertEqual([h.defender for h in self.state.combat_events], [target])
+        self.assertFalse(target.alive)
+        (shot,) = self.state.shots
+        self.assertEqual([len(a.hits) for a in shot.arrows], [1, 0, 0])
+
+    def test_volley_two_tiles_away_is_not_point_blank(self):
+        self.equip('volley_bow', 'common', power=10)
+        target = self.monster(12, 10)
+        self.state.shoot_arrow(1, 0)
+        self.assertEqual([h.defender for h in self.state.combat_events], [target])
+        self.assertEqual(target.hp, 990)
+
+    def test_a_single_arrow_bow_records_a_one_arrow_shot(self):
+        self.equip('longbow', 'common', power=6)
+        first, second = self.monster(12, 10), self.monster(14, 10)
+        self.state.shoot_arrow(1, 0)
+        (shot,) = self.state.shots
+        self.assertEqual(len(shot.arrows), 1)
+        self.assertEqual(shot.arrows[0].path[0], (10, 10))
+        self.assertEqual([h.defender for h in shot.arrows[0].hits], [first, second])
+        self.assertEqual((shot.path, shot.hits), tuple(shot.arrows[0]))
+
+    def test_attack_factor_defaults_to_one(self):
+        m = self.monster(11, 10)
+        self.state.player.power = 8
+        self.state.attack(self.state.player, m)
+        self.state.attack(self.state.player, m, 0.5)
+        self.assertEqual([h.damage for h in self.state.combat_events], [8, 4])
+
+    # -- sling ---------------------------------------------------------------
+
+    def test_sling_pushes_the_target_away(self):
+        self.equip('sling', 'common')
+        m = self.monster(12, 10)
+        self.state.shoot_arrow(1, 0)
+        self.assertEqual((m.x, m.y), (13, 10))
+        self.assertEqual(len(self.state.combat_events), 1)  # the push is no Hit
+        self.assertEqual(self.piles(), {(12, 10): 1})  # where the shot hit
+
+    def test_rare_sling_pushes_two_tiles(self):
+        self.equip('sling', 'rare')
+        m = self.monster(12, 10)
+        self.state.shoot_arrow(1, 0)
+        self.assertEqual((m.x, m.y), (14, 10))
+
+    def test_sling_never_pushes_into_a_wall_or_onto_a_monster(self):
+        self.equip('sling', 'common')
+        self.state.game_map[10][13] = WALL
+        m = self.monster(12, 10)
+        self.state.shoot_arrow(1, 0)
+        self.assertEqual((m.x, m.y), (12, 10))
+        self.state.game_map[10][13] = FLOOR
+        behind = self.monster(13, 10)
+        self.state.shoot_arrow(1, 0)
+        self.assertEqual(((m.x, m.y), (behind.x, behind.y)), ((12, 10), (13, 10)))
+
+    def test_sling_push_stops_short_of_a_blocker(self):
+        self.equip('sling', 'epic')
+        self.state.game_map[10][14] = WALL
+        m = self.monster(12, 10)
+        self.state.shoot_arrow(1, 0)
+        self.assertEqual((m.x, m.y), (13, 10))
+
+    # -- hunter's bow --------------------------------------------------------
+
+    def test_mark_adds_damage_to_the_next_arrow_and_clears_on_death(self):
+        self.equip('hunters_bow', 'common', power=8)  # +25%
+        state = self.state
+        m = self.monster(12, 10)
+        state.shoot_arrow(1, 0)
+        self.assertIs(state.marked, m)
+        state.shoot_arrow(1, 0)
+        self.assertEqual([h.damage for h in state.combat_events], [8, 10])
+        m.hp = 1
+        state.shoot_arrow(1, 0)
+        self.assertFalse(m.alive)
+        self.assertIsNone(state.marked)
+
+    def test_a_new_mark_replaces_the_old(self):
+        self.equip('hunters_bow', 'epic', power=8)  # +100%
+        state = self.state
+        east, west = self.monster(12, 10), self.monster(8, 10)
+        state.shoot_arrow(1, 0)
+        state.shoot_arrow(-1, 0)
+        self.assertIs(state.marked, west)
+        state.shoot_arrow(1, 0)  # east is no longer marked: plain damage
+        self.assertEqual([h.damage for h in state.combat_events], [8, 8, 8])
+        self.assertIs(state.marked, east)
+
+    # -- quickdraw -----------------------------------------------------------
+
+    def test_every_fourth_quickdraw_shot_is_free(self):
+        self.equip('quickdraw', 'common')  # tempo 4
+        state = self.state
+        target = self.monster(14, 10)
+        self.monster(40, 15)  # someone to queue
+        with mock.patch.object(Monster, 'take_turn', return_value=None) as turn:
+            for shot in range(1, 9):
+                self.assertTrue(state.handle_action('shoot_e'))
+                free = shot % 4 == 0
+                self.assertEqual(state.monster_phase_pending(), not free, shot)
+                calls = turn.call_count
+                state.end_turn()
+                self.assertEqual(turn.call_count == calls, free, shot)
+        self.assertEqual(state.turn, 8)
+        self.assertEqual(target.hp, 1000 - 8 * state.player.power)  # all real shots
+
+    def test_epic_quickdraw_frees_every_second_shot(self):
+        self.equip('quickdraw', 'epic')
+        self.monster(40, 15)
+        self.state.handle_action('shoot_e')
+        self.assertTrue(self.state.monster_phase_pending())
+        self.state.end_turn()
+        self.state.handle_action('shoot_e')
+        self.assertFalse(self.state.monster_phase_pending())
+
+    # -- who finds what ------------------------------------------------------
+
+    def test_weapons_drop_only_to_their_own_class(self):
+        rng = random.Random(121)
+        for char_class, own, other, armor in (
+            ('archer', ARCHER_WEAPONS, WARRIOR_WEAPONS, {'leather'}),
+            ('warrior', WARRIOR_WEAPONS, ARCHER_WEAPONS, set(ARMOR_KINDS)),
+        ):
+            drops = [roll_gear_drop(1, rng, char_class) for _ in range(3000)]
+            drops += [roll_boss_drop(rng, char_class) for _ in range(3000)]
+            kinds = {d.kind for d in drops}
+            self.assertFalse(kinds & set(other), char_class)
+            self.assertTrue(set(own) <= kinds, char_class)
+            self.assertEqual(kinds & set(ARMOR_KINDS), armor, char_class)
+
+    def test_chests_opened_in_game_follow_the_class(self):
+        for char_class, other in (('archer', WARRIOR_WEAPONS), ('warrior', ARCHER_WEAPONS)):
+            state = GameState(50, 20, char_class=char_class)
+            for seed in range(60):
+                random.seed(seed)
+                chest = Chest(state.player.x, state.player.y, kind='gear')
+                boss = spawn_boss_chest(state.player.x, state.player.y)
+                for c in (chest, boss):
+                    state.entities.append(c)
+                    state.pending_choice = None
+                    state.open_chest(c)
+                    kinds = {item.kind for item in cast(list, state.pending_choice)}
+                    self.assertFalse(kinds & set(other), char_class)
+
+
+class StartingWeaponTests(unittest.TestCase):
+    def test_archer_starts_with_a_common_longbow_and_warrior_the_plain_weapon(self):
+        archer = GameState(50, 20, char_class='archer').player
+        self.assertEqual((archer.weapon.kind, archer.weapon.rarity), ('longbow', 'common'))
+        self.assertEqual(archer.weapon.pierce, 2)
+        # base 3 + common bonus 1 + longbow offset -1 = 3 (above MIN_POWER).
+        self.assertEqual(archer.power, 3)
+        warrior = GameState(50, 20, char_class='warrior').player
+        self.assertEqual((warrior.weapon.kind, warrior.weapon.rarity), ('weapon', 'common'))
+
+
+class QuiverTests(ArcherArena):
+    def test_archer_starts_with_a_full_quiver_and_warrior_has_none(self):
+        self.assertEqual(self.state.player.quiver, QUIVER_CAPACITY)
+        self.assertEqual(QUIVER_CAPACITY, 12)
+        self.assertIsNone(GameState(50, 20, char_class='warrior').player.quiver)
+
+    def test_a_shot_spends_one_arrow(self):
+        self.state.handle_action('shoot_e')
+        self.assertEqual(self.state.player.quiver, QUIVER_CAPACITY - 1)
+
+    def test_no_arrows_refuses_the_shot_without_a_turn(self):
+        state = self.state
+        state.player.quiver = 0
+        m = self.monster(12, 10)
+        self.assertFalse(state.handle_action('shoot_e'))
+        self.assertEqual(state.messages[-1], 'No arrows left.')
+        self.assertEqual((state.turn, m.hp, self.piles()), (0, 1000, {}))
+        self.assertFalse(state.monster_phase_pending())
+
+    def test_pile_lies_where_the_arrow_stopped(self):
+        state = self.state
+        state.shoot_arrow(1, 0)  # nothing in the way: the tile before the wall
+        state.shoot_arrow(1, 0)  # the same tile: one pile of two
+        self.assertEqual(self.piles(), {(48, 10): 2})
+        self.monster(10, 13)
+        state.shoot_arrow(0, 1)  # on the hit monster's tile
+        self.assertEqual(self.piles(), {(48, 10): 2, (10, 13): 1})
+
+    def test_a_pile_does_not_block_and_is_picked_up(self):
+        state = self.state
+        state.player.quiver = 10
+        state.entities.append(ArrowPile(11, 10))
+        self.assertTrue(state.handle_action('move_e'))
+        self.assertEqual((state.player.x, state.player.y), (11, 10))
+        self.assertEqual(state.player.quiver, 11)
+        self.assertEqual(self.piles(), {})
+
+    def test_full_quiver_leaves_the_pile(self):
+        state = self.state
+        state.entities.append(ArrowPile(11, 10))
+        state.handle_action('move_e')
+        self.assertEqual((state.player.x, state.player.y), (11, 10))
+        self.assertEqual(self.piles(), {(11, 10): 1})
+        self.assertIn('Your quiver is full.', state.messages)
+
+    def test_a_pile_bigger_than_the_room_is_split(self):
+        state = self.state
+        state.player.quiver = QUIVER_CAPACITY - 1
+        state.entities.append(ArrowPile(11, 10, count=3))
+        state.handle_action('move_e')
+        self.assertEqual(state.player.quiver, QUIVER_CAPACITY)
+        self.assertEqual(self.piles(), {(11, 10): 2})
+
+    def test_restock_adds_an_arrow_every_three_turns(self):
+        state = self.state
+        state.player.quiver = 5
+        self.assertEqual(state.restock_progress, 0)
+        seen = []
+        for _ in range(6):
+            state.handle_action('wait')
+            seen.append((state.restock_progress, state.player.quiver))
+        self.assertEqual(RESTOCK_TURNS, 3)
+        self.assertEqual(seen, [(1, 5), (2, 5), (3, 6), (1, 6), (2, 6), (3, 7)])
+
+    def test_restock_stops_at_capacity(self):
+        state = self.state
+        state.player.quiver = QUIVER_CAPACITY - 1
+        for _ in range(3):
+            state.handle_action('wait')
+        self.assertEqual((state.player.quiver, state.restock_progress), (QUIVER_CAPACITY, 3))
+        for _ in range(4):
+            state.handle_action('wait')
+        self.assertEqual((state.player.quiver, state.restock_progress), (QUIVER_CAPACITY, 0))
+
+    def test_restock_counts_player_turns_not_the_monster_phase(self):
+        state = self.state
+        state.player.quiver = 5
+        self.monster(40, 15)
+        state.handle_action('wait')
+        state.end_turn()
+        state.end_turn()
+        self.assertEqual(state.restock_progress, 1)
+
+    def test_warrior_has_no_quiver_and_its_arrow_keys_move(self):
+        random.seed(122)
+        state = GameState(50, 20, char_class='warrior')
+        state.entities = [state.player]
+        px, py = state.player.x, state.player.y
+        state.game_map[py][px + 1] = FLOOR
+        state.handle_action('shoot_e')
+        self.assertEqual((state.player.x, state.player.y), (px + 1, py))
+        self.assertIsNone(state.player.quiver)
+        self.assertEqual(state.restock_progress, 0)
+        self.assertFalse(any(isinstance(e, ArrowPile) for e in state.entities))
+        self.assertNotIn('You loose an arrow.', state.messages)
+
+
+class DescentHealTests(unittest.TestCase):
+    def _on_stairs(self):
+        random.seed(11)
+        state = GameState(50, 20)
+        state.player.x, state.player.y = state.rooms[-1].center()
+        return state
+
+    @staticmethod
+    def _line(n):
+        return f'You descend the stairs and rest for a while, restoring {n} HP.'
+
+    def test_full_hp_restores_nothing(self):
+        state = self._on_stairs()
+        top = state.player.max_hp
+        self.assertTrue(state.try_descend())
+        self.assertEqual(state.player.hp, top)
+        self.assertIn(self._line(0), state.messages)
+
+    def test_half_hp_restores_twenty_percent(self):
+        state = self._on_stairs()
+        state.player.hp = state.player.max_hp // 2
+        before = state.player.hp
+        expected = int(state.player.max_hp * DESCENT_HEAL_FRACTION)
+        state.try_descend()
+        self.assertEqual(state.player.hp, before + expected)
+        self.assertIn(self._line(expected), state.messages)
+
+    def test_near_max_caps_and_logs_capped_amount(self):
+        state = self._on_stairs()
+        state.player.hp = state.player.max_hp - 1
+        state.try_descend()
+        self.assertEqual(state.player.hp, state.player.max_hp)
+        self.assertIn(self._line(1), state.messages)
+
+    def test_refused_descent_heals_nothing(self):
+        state = self._on_stairs()
+        state.player.x, state.player.y = state.rooms[0].center()
+        state.player.hp = 1
+        self.assertFalse(state.try_descend())
+        self.assertEqual(state.player.hp, 1)
+        self.assertEqual(state.depth, 1)
+
+    def test_game_over_descent_heals_nothing(self):
+        state = self._on_stairs()
+        state.player.hp = 0
+        state.game_over = True
+        self.assertFalse(state.try_descend())
+        self.assertEqual(state.player.hp, 0)
+        self.assertEqual(state.depth, 1)
+
+
+class BossStairsTests(unittest.TestCase):
+    """On a boss floor the stairs down are in the boss room, off the boss's
+    tile and the arena's centre 3x3, on no entity, and reachable."""
+
+    BOSS_DEPTHS = (8, 16, 24)
+    SEEDS = range(25)
+
+    @staticmethod
+    def _floor(depth, seed):
+        random.seed(seed)
+        state = GameState(40, 20)
+        state.depth = depth - 1
+        state.next_level()
+        return state
+
+    @staticmethod
+    def _stairs(state):
+        found = [
+            (x, y)
+            for y, row in enumerate(state.game_map)
+            for x, ch in enumerate(row)
+            if ch == STAIRS_DOWN
+        ]
+        assert len(found) == 1, found
+        return found[0]
+
+    @staticmethod
+    def _reachable(state, start, goal):
+        seen = {start}
+        frontier = [start]
+        while frontier:
+            x, y = frontier.pop()
+            if (x, y) == goal:
+                return True
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                n = (x + dx, y + dy)
+                if n not in seen and is_walkable(state.game_map, *n):
+                    seen.add(n)
+                    frontier.append(n)
+        return False
+
+    def test_stairs_in_boss_room_and_clear_of_everything(self):
+        for depth in self.BOSS_DEPTHS:
+            for seed in self.SEEDS:
+                with self.subTest(depth=depth, seed=seed):
+                    state = self._floor(depth, seed)
+                    arena = state.boss_arena
+                    self.assertIsNotNone(arena)
+                    sx, sy = self._stairs(state)
+                    self.assertTrue(arena.x1 <= sx < arena.x2 and arena.y1 <= sy < arena.y2)
+                    boss = next(m for m in state.entities if getattr(m, 'is_boss', False))
+                    # The boss keeps its centre tile.
+                    self.assertEqual((boss.x, boss.y), arena.center())
+                    cx, cy = arena.center()
+                    self.assertGreater(max(abs(sx - cx), abs(sy - cy)), 1)
+                    self.assertGreaterEqual(
+                        max(abs(sx - boss.x), abs(sy - boss.y)), BOSS_STAIRS_MIN_DISTANCE
+                    )
+                    for e in state.entities:
+                        self.assertNotEqual((e.x, e.y), (sx, sy), e)
+                    self.assertTrue(is_walkable(state.game_map, sx, sy))
+                    self.assertTrue(
+                        self._reachable(state, (state.player.x, state.player.y), (sx, sy))
+                    )
+                    # The start room and the arrival are unchanged.
+                    self.assertEqual((state.player.x, state.player.y), state.rooms[0].center())
+
+    def test_non_boss_floor_keeps_last_room_centre(self):
+        for depth in (1, 7, 9, 17):
+            for seed in range(10):
+                with self.subTest(depth=depth, seed=seed):
+                    state = self._floor(depth, seed)
+                    self.assertIsNone(state.boss_arena)
+                    self.assertEqual(self._stairs(state), state.rooms[-1].center())
+
+    def test_descending_from_boss_floor_stairs(self):
+        state = self._floor(8, 0)
+        state.player.x, state.player.y = self._stairs(state)
+        state.try_descend()
+        self.assertEqual(state.depth, 9)
+        self.assertEqual((state.player.x, state.player.y), state.rooms[0].center())
+
+    def test_small_room_falls_back_to_outside_the_centre(self):
+        # A 4x4 room (tiles 1..4, centre (3, 3)) with the boss moved off the
+        # centre to (2, 2): the only free tile outside the centre 3x3, (1, 1),
+        # is next to the boss, so rule 2 takes it anyway.
+        game_map = make_empty_map(8, 8, fill=FLOOR)
+        arena = Rect(1, 1, 4, 4)
+        cx, cy = arena.center()
+        boss = (2, 2)
+        occupied = {(x, y) for x in range(1, 5) for y in range(1, 5)} - {(1, 1), (cx, cy)}
+        self.assertEqual(boss_stairs_tile(game_map, arena, boss, occupied), (1, 1))
+        # Only the centre left (and not the boss's tile): rule 3.
+        occupied.add((1, 1))
+        self.assertEqual(boss_stairs_tile(game_map, arena, (1, 1), occupied), (cx, cy))
+        occupied.add((cx, cy))
+        self.assertIsNone(boss_stairs_tile(game_map, arena, boss, occupied))
 
 
 if __name__ == '__main__':
