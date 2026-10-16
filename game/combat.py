@@ -10,6 +10,11 @@ already shown without mutating the state.
 Every shot also records a `Shot` in `GameState.shots` (same lifetime as
 combat_events): the cells each of its arrows flew through, so a renderer can
 draw them flying and land each on its Hits.
+
+A monster melee blow that the warrior's armed parry nullifies records no Hit
+(it does nothing); it records a `Parry` in `GameState.parries` instead (same
+lifetime as combat_events), so a renderer can still show the blow being
+turned aside before the riposte's own Hit.
 """
 
 from collections import namedtuple
@@ -35,3 +40,9 @@ Arrow = namedtuple('Arrow', 'path hits')
 # `serial` comes from the same counter as Hit.serial and is taken before any
 # arrow flies, so a Shot sorts before all of its Hits.
 Shot = namedtuple('Shot', 'serial path hits arrows')
+
+# A parried blow (GameState._monster_melee): `monster` swung at `player`, who
+# stood at (x, y), and the parry nullified it. `serial` comes from the same
+# counter as Hit.serial and is taken before the riposte's Hit, so a Parry
+# sorts right before the riposte it led to.
+Parry = namedtuple('Parry', 'serial monster player x y')

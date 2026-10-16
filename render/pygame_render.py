@@ -56,6 +56,8 @@ FOLLOW_MS = 90  # the exploring view's pan after a step (a Pan with follow)
 IMPACT_MS = camera.SHAKE_MS
 FLIGHT_MS = camera.FLIGHT_MS_PER_CELL  # per cell an arrow crosses
 SWING_MS = camera.SWING_MS  # a standard melee swing; other shapes in proportion
+GUARD_MS = camera.GUARD_MS  # the parry's shield outline
+PARRY_FADE_MS = camera.PARRY_FADE_MS  # the "Parry!" text fading after the riposte
 FRAME_MS = 16
 
 # Walking gait: an entity that just took a step leans this many degrees, the
@@ -97,6 +99,42 @@ SWING_RGB = (240, 244, 255)
 SWING_EDGE_RGB = (20, 24, 40)
 SWING_EDGE_ALPHA = 0.45  # of the arc's own alpha
 SWING_MIN_PX = 2  # the arc is never thinner than this
+
+# The parry (camera.Guard / camera.ParryText), drawn in code: a light
+# shield outline (no fill) over the warrior's cell, over a dark edge like the
+# swing's, fading out over the last SHIELD_FADE of its beat; and "Parry!" in a
+# clear blue with a dark outline, centred just above the warrior's cell.
+SHIELD_RGB = (225, 235, 255)
+SHIELD_EDGE_RGB = SWING_EDGE_RGB
+SHIELD_EDGE_ALPHA = 0.55
+SHIELD_FADE = 0.4  # of the Guard beat
+SHIELD_STROKE = 0.06  # of the cell's smaller side, at least SWING_MIN_PX
+PARRY_TEXT = 'Parry!'
+PARRY_RGB = (80, 160, 255)
+PARRY_OUTLINE_RGB = (8, 16, 40)
+
+
+def shield_outline(samples=6):
+    """A heater shield's outline in fractions of a cell (0..1 each way),
+    clockwise from the top-left corner: a top edge dipping a little at its
+    middle, straight sides, then two curves meeting at a point below."""
+    top, shoulder, tip = 0.2, 0.5, 0.84
+    left, right = 0.26, 0.74
+
+    def curve(a, ctrl, b):
+        return [
+            (
+                (1 - f) ** 2 * a[0] + 2 * (1 - f) * f * ctrl[0] + f * f * b[0],
+                (1 - f) ** 2 * a[1] + 2 * (1 - f) * f * ctrl[1] + f * f * b[1],
+            )
+            for f in (i / samples for i in range(1, samples + 1))
+        ]
+
+    points = [(left, top), (0.5, top + 0.05), (right, top), (right, shoulder)]
+    points += curve((right, shoulder), (right, 0.74), (0.5, tip))
+    points += curve((0.5, tip), (left, 0.74), (left, shoulder))[:-1]
+    return points + [(left, shoulder)]
+
 
 # Arrows, drawn rather than tiled (the bundled sheets have no arrow): the one
 # in flight and the ones lying in a pile. A bright shaft, a steel head and red
@@ -144,6 +182,8 @@ class PygameRenderer(Renderer):
         impact_ms=IMPACT_MS,
         flight_ms=FLIGHT_MS,
         swing_ms=SWING_MS,
+        guard_ms=GUARD_MS,
+        parry_fade_ms=PARRY_FADE_MS,
     ):
         """`width` x `height`: the base map size (MAP_WIDTH/MAP_HEIGHT). The
         map area is laid out for camera.view_size of it -- a fixed number of
@@ -159,7 +199,9 @@ class PygameRenderer(Renderer):
         the exploring view takes to catch up with a step; `flight_ms`: how long
         an arrow takes to cross one cell (0 = no animation, the frame just
         changes); `swing_ms`: how long a standard melee swing plays -- the
-        other swing shapes in proportion (0 = no swings)."""
+        other swing shapes in proportion (0 = no swings); `guard_ms` /
+        `parry_fade_ms`: how long a parry's shield shows / its "Parry!" takes
+        to fade once the riposte has landed (0 = skipped)."""
         pygame.display.init()
         pygame.display.set_caption('PyRogue')
         _set_window_icon()
@@ -191,6 +233,11 @@ class PygameRenderer(Renderer):
         self.impact_ms = impact_ms
         self.flight_ms = flight_ms
         self.swing_ms = swing_ms
+        self.guard_ms = guard_ms
+        self.parry_fade_ms = parry_fade_ms
+        # (Parry, alpha) while a parry's "Parry!" is up: from its Guard beat
+        # through its ParryText beat, over every beat between.
+        self._parry_text = None
         # The view being painted (None = the map at the layout's own grid,
         # only before the first draw),
         # its projection for the frame being painted, and whether a beat is
@@ -391,6 +438,21 @@ class PygameRenderer(Renderer):
         self._state = state
         tilts = self.track_steps(state.visible_entities())
         beats = self.director.plan(state)
+        try:
+            self._play_beats(state, beats)
+        finally:
+            self._parry_text = None
+        self._view = self.director.current(state)
+        if tilts:
+            self._tilts = tilts
+            try:
+                self._play(STEP_MS, lambda t: self._paint_game(state))
+            finally:
+                self._tilts = {}
+        self._show(lambda: self._paint_game(state))
+
+    def _play_beats(self, state, beats):
+        """Play the Director's `beats` in order (see draw)."""
         for i, beat in enumerate(beats):
             pending = [b.hit for b in beats[i + 1 :] if isinstance(b, camera.Impact)]
             if isinstance(beat, camera.Flight):
@@ -428,17 +490,26 @@ class PygameRenderer(Renderer):
                     ),
                     interruptible=False,
                 )
+            elif isinstance(beat, camera.Guard):
+                # "Parry!" goes up with the shield and stays until ParryText.
+                self._parry_text = (beat.parry, 1.0)
+                self._play(
+                    self.guard_ms,
+                    lambda t, parry=beat.parry, pending=pending: self._paint_game(
+                        state, guard=(parry, t), pending=pending
+                    ),
+                    interruptible=False,
+                )
+            elif isinstance(beat, camera.ParryText):
+                self._play(
+                    self.parry_fade_ms,
+                    lambda t, parry=beat.parry: self._paint_game(state, parry_text=(parry, 1 - t)),
+                    interruptible=False,
+                )
+                self._parry_text = None
             elif isinstance(beat, camera.Pan):
                 ms = self.follow_ms if beat.follow else self.zoom_ms
                 self._play(ms, lambda t, pan=beat: self._paint_pan(state, pan, t))
-        self._view = self.director.current(state)
-        if tilts:
-            self._tilts = tilts
-            try:
-                self._play(STEP_MS, lambda t: self._paint_game(state))
-            finally:
-                self._tilts = {}
-        self._show(lambda: self._paint_game(state))
 
     def track_steps(self, entities):
         """Compare `entities` with the last frame: {id(entity): degrees} for
@@ -539,6 +610,8 @@ class PygameRenderer(Renderer):
         flight=None,
         pending=(),
         swing=None,
+        guard=None,
+        parry_text=None,
     ):
         """The map at the current view, clipped to the map's area, then the
         panel. `impact`: (Hit, t) to draw a blow landing, t running 0 -> 1.
@@ -548,7 +621,10 @@ class PygameRenderer(Renderer):
         arrows in the air, over the map and the monsters, under an impact.
         `pending`: Hits not yet shown -- their monsters are drawn as they were
         before them (see _before_hits). `swing`: (Swing, t) to draw a melee
-        swing's arc over the map and the sprites."""
+        swing's arc over the map and the sprites. `guard`: (Parry, t) to draw
+        the parry's shield over the warrior. `parry_text`: (Parry, alpha) to
+        draw "Parry!" above the warrior; None -> the one up for this run of
+        beats (self._parry_text), if any."""
         surface = self.canvas.surface
         map_rect = self.layout.map_rect()
         if self._view is None:
@@ -610,8 +686,14 @@ class PygameRenderer(Renderer):
                 self._paint_flight(*flight)
             if impact is not None:
                 self._paint_impact(*impact)
+            if guard is not None:
+                self._paint_guard(*guard)
             if shake != (0, 0):
                 self._shift_map(map_rect, shake)
+            # After the shake: the text holds still while the map jolts.
+            text = parry_text or self._parry_text
+            if text is not None:
+                self._paint_parry_text(*text)
         finally:
             surface.set_clip(None)
             self._proj = None
@@ -1054,6 +1136,83 @@ class PygameRenderer(Renderer):
         stroke = max(1, number.get_height() // 14)
         self.canvas.surface.blit(number, spot)
         self.canvas.surface.blit(number, spot.move(stroke, 0))
+
+    # -- the parry ------------------------------------------------------------
+
+    def shield_pixels(self, parry):
+        """shield_outline in pixels over the warrior's cell (parry.x, parry.y)
+        at the view being painted."""
+        rect = self._map_cell_rect(parry.x, parry.y)
+        return [
+            (rect.left + fx * rect.width, rect.top + fy * rect.height)
+            for fx, fy in shield_outline()
+        ]
+
+    @staticmethod
+    def shield_alpha(t):
+        """The shield's opacity at t (0 -> 1 over the Guard beat): full,
+        then fading to nothing over the last SHIELD_FADE."""
+        if not 0 <= t < 1:
+            return 0.0
+        return 1.0 if t < 1 - SHIELD_FADE else (1 - t) / SHIELD_FADE
+
+    def _paint_guard(self, parry, t):
+        """The shield outline over the warrior's cell at t: a dark edge, then
+        the light stroke, closed and unfilled, at shield_alpha(t)."""
+        alpha = self.shield_alpha(t)
+        if alpha <= 0:
+            return
+        rect = self._map_cell_rect(parry.x, parry.y)
+        thick = max(SWING_MIN_PX, round(min(rect.size) * SHIELD_STROKE))
+        points = [(x - rect.left, y - rect.top) for x, y in self.shield_pixels(parry)]
+        art = pygame.Surface(rect.size, pygame.SRCALPHA)
+        for rgb, width, opacity in (
+            (SHIELD_EDGE_RGB, thick + 2, SHIELD_EDGE_ALPHA),
+            (SHIELD_RGB, thick, 1.0),
+        ):
+            layer = pygame.Surface(rect.size, pygame.SRCALPHA)
+            colour = (*rgb, round(255 * opacity))
+            pygame.draw.lines(layer, colour, True, points, width)
+            for point in points:  # round the joints
+                pygame.draw.circle(layer, colour, point, width / 2)
+            art.blit(layer, (0, 0))
+        art.set_alpha(round(255 * alpha))
+        clip = self._clip_to_map()
+        try:
+            self.canvas.surface.blit(art, rect)
+        finally:
+            self.canvas.surface.set_clip(clip)
+
+    def parry_text_rect(self, parry, size):
+        """Where "Parry!" (`size` px) goes: centred just above the warrior's
+        cell, pushed down inside the map where the cell is on its top row."""
+        rect = self._map_cell_rect(parry.x, parry.y)
+        gap = max(1, rect.height // 12)
+        spot = pygame.Rect((0, 0), size)
+        spot.midbottom = (rect.centerx, rect.top - gap)
+        top = self.layout.map_rect().top
+        if spot.top < top:
+            spot.top = top
+        return spot
+
+    def _paint_parry_text(self, parry, alpha):
+        """ "Parry!" in PARRY_RGB, bold, with a dark outline, at `alpha`."""
+        if alpha <= 0:
+            return
+        word = self._glyph(PARRY_TEXT, PARRY_RGB, bold=True)
+        outline = self._glyph(PARRY_TEXT, PARRY_OUTLINE_RGB, bold=True)
+        stroke = max(1, word.get_height() // 14)
+        size = (word.get_width() + 2 * stroke + 1, word.get_height() + 2 * stroke)
+        art = pygame.Surface(size, pygame.SRCALPHA)
+        for dx in (-stroke, 0, stroke):
+            for dy in (-stroke, 0, stroke):
+                if dx or dy:
+                    art.blit(outline, (stroke + dx, stroke + dy))
+                    art.blit(outline, (stroke + dx + 1, stroke + dy))
+        art.blit(word, (stroke, stroke))
+        art.blit(word, (stroke + 1, stroke))  # thicken pygame's thin bold
+        art.set_alpha(round(255 * min(1.0, alpha)))
+        self.canvas.surface.blit(art, self.parry_text_rect(parry, size))
 
     # -- map cells ------------------------------------------------------------
 

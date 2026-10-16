@@ -16,7 +16,7 @@ back out when the fight ends. Ranged combat (the archer) doesn't zoom for now:
 
 The camera is *staged*: `Director.plan(state)` turns what changed since the
 last frame into a list of beats, and the renderer plays them one after another
-before showing the frame. Today there are three kinds:
+before showing the frame. The kinds:
 
   Flight(paths, steps)
                      arrows flying together, cell to cell, for `steps`
@@ -55,6 +55,18 @@ before showing the frame. Today there are three kinds:
                      map shakes for the length of the beat (`Shake`: harder
                      and longer on a crit), and the beat always plays out:
                      keys pressed meanwhile wait in the queue until it ends
+  Guard(parry)       the warrior's parry turning a monster's blow aside
+                     (game/combat.py's Parry, from GameState.parries): a
+                     light shield outline over the warrior's cell for
+                     GUARD_MS, fading out at the end. A parried blow records
+                     no Hit, so its Parry stages the sequence: the monster's
+                     standard Swing (hit = the Parry) from its cell at the
+                     warrior, the Guard, then the riposte's own Swing and
+                     Impact (its Hit, staged as any melee blow), then a
+                     ParryText. Keys wait in the queue throughout.
+  ParryText(parry)   ends that sequence: the blue "Parry!" over the warrior
+                     appears with the Guard, stays over every beat up to
+                     here, and fades out over this one (PARRY_FADE_MS).
   Pan(start, end, follow)
                      the view moving: zooming in, out, or across to another
                      opponent; `follow` when it is only the exploring view
@@ -74,7 +86,7 @@ import math
 import random
 from collections import namedtuple
 
-from game.combat import Shot
+from game.combat import Parry, Shot
 
 # The exploring zoom -- the one knob for it. The map area is laid out for
 # base map / VIEW_ZOOM cells per axis (view_size), so tiles are VIEW_ZOOM
@@ -147,6 +159,15 @@ SWING_TRAIL = 0.6  # of the sweep: how far the fading trail reaches behind
 SWING_FADE = 0.35  # the last part of the beat, over which the whole arc fades
 Swing = namedtuple('Swing', 'hit origin target shape mirror')
 Swing.__new__.__defaults__ = (False,)
+
+# The parry (Guard, ParryText): the shield's beat, and the "Parry!" text's
+# fade once the riposte has landed -- it is shown from the Guard on, so it
+# lives GUARD_MS + the riposte's swing and impact + PARRY_FADE_MS (550 ms
+# with a standard weapon).
+GUARD_MS = 150
+PARRY_FADE_MS = 100
+Guard = namedtuple('Guard', 'parry')
+ParryText = namedtuple('ParryText', 'parry')
 
 
 def swing_shape_for(attacker):
@@ -383,18 +404,34 @@ class Director:
         beats = []
         new = [e for e in state.combat_events if e.serial > self._last_hit]
         new += [s for s in getattr(state, 'shots', ()) if s.serial > self._last_hit]
+        new += [p for p in getattr(state, 'parries', ()) if p.serial > self._last_hit]
         staged = set()  # serials of hits a shot has already staged
+        closing = {}  # a riposte's Hit serial -> the Parry whose ParryText follows it
         for event in sorted(new, key=lambda e: e.serial):
             self._last_hit = max(self._last_hit, event.serial)
             if isinstance(event, Shot):
                 beats += self._shot_beats(state, event)
                 staged.update(hit.serial for arrow in event.arrows for hit in arrow.hits)
+            elif isinstance(event, Parry):
+                if not state.visible[event.y][event.x]:
+                    continue
+                swing = self._swing(state, event)
+                if swing is not None:
+                    beats.append(swing)
+                beats.append(Guard(event))
+                riposte = self._riposte_of(state, event)
+                if riposte is not None and state.visible[riposte.y][riposte.x]:
+                    closing[riposte.serial] = event
+                else:
+                    beats.append(ParryText(event))
             elif event.serial not in staged and state.visible[event.y][event.x]:
                 # Not an arrow's (a shot staged those): a melee blow.
                 swing = self._swing(state, event)
                 if swing is not None:
                     beats.append(swing)
                 beats.append(Impact(event, shake_for(event)))
+                if event.serial in closing:
+                    beats.append(ParryText(closing.pop(event.serial)))
 
         self._track_turn(state)
         # A new floor: the old view belongs to another map, so no pan from it.
@@ -415,12 +452,34 @@ class Director:
         return beats
 
     @staticmethod
+    def _riposte_of(state, parry):
+        """The riposte's Hit that `parry` led to: the first after it of the
+        warrior's on that monster, or None."""
+        for hit in state.combat_events:
+            if (
+                hit.serial > parry.serial
+                and hit.attacker is parry.player
+                and hit.defender is parry.monster
+            ):
+                return hit
+        return None
+
+    @staticmethod
     def _swing(state, hit):
         """The Swing before melee `hit`: from where its attacker stands to
         the defender's cell, shaped by the attacker's weapon. None if the two
         aren't in a straight line one or two cells apart (melee is 4-way;
         a spear reaches two) -- nothing to swing across. A rapier's strikes
-        on the same target this action alternate direction."""
+        on the same target this action alternate direction. `hit` may be a
+        Parry instead (a blow nullified: no Hit): the monster's swing at the
+        warrior, the same as for any of its blows."""
+        if isinstance(hit, Parry):
+            monster = hit.monster
+            origin, target = (monster.x, monster.y), (hit.x, hit.y)
+            dx, dy = target[0] - origin[0], target[1] - origin[1]
+            if (dx and dy) or not 1 <= abs(dx) + abs(dy) <= 2:
+                return None
+            return Swing(hit, origin, target, swing_shape_for(monster))
         attacker = hit.attacker
         origin, target = (attacker.x, attacker.y), (hit.x, hit.y)
         dx, dy = target[0] - origin[0], target[1] - origin[1]

@@ -942,5 +942,86 @@ class SwingTest(unittest.TestCase):
         self.assertTrue(all(alpha < 0.1 for _, _, alpha in late))
 
 
+class ParryTest(unittest.TestCase):
+    """A parried blow records no Hit but a Parry, which stages the monster's
+    swing, the shield (Guard), the riposte's own swing and impact, then the
+    "Parry!" text's fade (ParryText)."""
+
+    def setUp(self):
+        patcher = mock.patch('game.state.BASE_CRIT_CHANCE', 0.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = mock.patch('game.state.dodge_chance', return_value=0)
+        self.dodge = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def parried(self, kind='great_sword', armed=True):
+        """The goblin east of the warrior swings at them; the beats staged."""
+        state = warrior_arena(kind)
+        goblin = add_goblin(state, 11, 10)
+        director = Director()
+        director.plan(state)
+        state.parry_armed = armed
+        hp = state.player.hp
+        state._monster_melee(goblin)
+        beats = [b for b in director.plan(state) if not isinstance(b, Pan)]
+        return state, goblin, hp, beats
+
+    def test_a_parried_blow_stages_swing_shield_riposte_then_the_text_fade(self):
+        state, goblin, _, beats = self.parried()
+        self.assertEqual(
+            [type(b) for b in beats], [Swing, camera.Guard, Swing, Impact, camera.ParryText]
+        )
+        (parry,) = state.parries
+        monster_swing, guard, riposte_swing, impact, text = beats
+        # 1. The monster's standard swing, from its cell at the warrior.
+        self.assertIs(monster_swing.hit, parry)
+        self.assertEqual(monster_swing.shape, camera.SWING_SHAPES['standard'])
+        self.assertEqual((monster_swing.origin, monster_swing.target), ((11, 10), (10, 10)))
+        # 2. The shield, and the text's span opening and closing on this parry.
+        self.assertIs(guard.parry, parry)
+        self.assertIs(text.parry, parry)
+        # 3. The riposte: the warrior's weapon's swing back, then its impact.
+        self.assertIs(riposte_swing.hit.attacker, state.player)
+        self.assertEqual(riposte_swing.shape.name, 'wide')  # the great sword's
+        self.assertEqual((riposte_swing.origin, riposte_swing.target), ((10, 10), (11, 10)))
+        self.assertIs(impact.hit, riposte_swing.hit)
+        self.assertIs(impact.hit.defender, goblin)
+
+    def test_the_parry_sorts_before_the_riposte_and_records_no_hit(self):
+        state, goblin, hp, _ = self.parried()
+        (parry,) = state.parries
+        (riposte,) = state.combat_events  # nothing for the parried blow
+        self.assertLess(parry.serial, riposte.serial)
+        self.assertIs(riposte.attacker, state.player)
+        self.assertEqual((parry.monster, parry.player), (goblin, state.player))
+        self.assertEqual((parry.x, parry.y), (10, 10))
+        self.assertEqual(state.player.hp, hp)  # no damage taken
+
+    def test_the_parry_is_staged_once(self):
+        state = warrior_arena()
+        goblin = add_goblin(state, 11, 10)
+        director = Director()
+        director.plan(state)
+        state.parry_armed = True
+        state._monster_melee(goblin)
+        director.plan(state)
+        self.assertEqual(director.plan(state), [])  # the same round, redrawn
+
+    def test_a_dodged_blow_shows_no_parry(self):
+        self.dodge.return_value = 100
+        state, _, _, beats = self.parried()
+        self.assertEqual(state.parries, [])
+        self.assertTrue(state.parry_armed)  # still armed for the next blow
+        self.assertEqual(beats, [])
+
+    def test_a_normal_blow_shows_its_swing_and_no_parry(self):
+        state, goblin, _, beats = self.parried(armed=False)
+        self.assertEqual(state.parries, [])
+        self.assertEqual([type(b) for b in beats], [Swing, Impact])
+        self.assertIs(beats[0].hit.attacker, goblin)
+        self.assertEqual(beats[0].shape, camera.SWING_SHAPES['standard'])
+
+
 if __name__ == '__main__':
     unittest.main()

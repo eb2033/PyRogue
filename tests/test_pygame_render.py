@@ -2111,6 +2111,191 @@ class MeleeSwingTest(unittest.TestCase):
         self.assertEqual(self.changed(state, swing, 1.0), [])
 
 
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
+class ParryAnimationTest(unittest.TestCase):
+    """A parried blow plays the monster's swing, the shield over the warrior,
+    the riposte's swing and impact, then "Parry!" fading -- the blue text up
+    from the shield on -- all to the end, keys left queued."""
+
+    def setUp(self):
+        from game.item import Item
+        from game.paths import resource_path
+        from render.tileset import Tileset
+
+        self.item = Item
+        self.renderer = PygameRenderer(WIDTH, HEIGHT, tileset=Tileset(resource_path('assets')))
+        self.renderer._set_mode((1600, 900), pygame.RESIZABLE)
+        self.renderer._relayout()
+        self.renderer.zoom_ms = self.renderer.follow_ms = 0
+        for target, value in (('BASE_CRIT_CHANCE', 0.0), ('dodge_chance', lambda _: 0)):
+            patcher = mock.patch(f'game.state.{target}', value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        pygame.event.clear()
+
+    def tearDown(self):
+        self.renderer.close()
+
+    def fight(self, armed=True):
+        """A warrior on open floor with a sturdy goblin east of them, drawn
+        once; then the goblin swings (parried if `armed`)."""
+        state = floor_level(WIDTH, HEIGHT)
+        state.player.weapon = self.item(0, 0, 'weapon', 'common')
+        p = state.player
+        goblin = Monster(p.x + 1, p.y, 'goblin')
+        goblin.hp = goblin.max_hp = 500
+        state.entities.append(goblin)
+        state.update_fov()
+        self.renderer.director = camera.Director(zoom=False)
+        self.renderer.draw(state)
+        state.parry_armed = armed
+        state._monster_melee(goblin)
+        return state, goblin
+
+    def played(self, state):
+        """(ms, interruptible, beat kind, attacker or None, text up) of every
+        beat draw() plays, from one frame of each painted mid-beat."""
+        calls = []
+        r = self.renderer
+
+        def play(ms, paint, interruptible=True):
+            frame = {}
+            with mock.patch.object(r, '_paint_game', side_effect=lambda s, **kw: frame.update(kw)):
+                paint(0.5)
+            attacker = None
+            if frame.get('swing'):
+                kind, attacker = 'swing', frame['swing'][0].origin
+            elif frame.get('guard'):
+                kind = 'guard'
+            elif frame.get('impact'):
+                kind = 'impact'
+            elif frame.get('parry_text'):
+                kind = 'text'
+            else:
+                kind = 'other'
+            text = bool(frame.get('parry_text') or r._parry_text)
+            calls.append((ms, interruptible, kind, attacker, text))
+
+        with mock.patch.object(r, '_play', side_effect=play):
+            r.draw(state)
+        return calls
+
+    def test_the_sequence_plays_in_order_uninterruptible(self):
+        state, goblin = self.fight()
+        p = state.player
+        calls = self.played(state)
+        self.assertEqual(
+            [c[2:] for c in calls],
+            [
+                ('swing', (goblin.x, goblin.y), False),  # the monster's, no text yet
+                ('guard', None, True),
+                ('swing', (p.x, p.y), True),  # the riposte, back from the warrior
+                ('impact', None, True),
+                ('text', None, True),  # the text's fade
+            ],
+        )
+        self.assertEqual(
+            [c[0] for c in calls],
+            [
+                camera.SWING_MS,
+                camera.GUARD_MS,
+                camera.SWING_MS,
+                self.renderer.impact_ms,
+                camera.PARRY_FADE_MS,
+            ],
+        )
+        self.assertTrue(all(not c[1] for c in calls))
+        self.assertIsNone(self.renderer._parry_text)  # gone once the sequence ends
+
+    def test_a_normal_blow_plays_its_swing_and_no_parry(self):
+        state, goblin = self.fight(armed=False)
+        calls = self.played(state)
+        self.assertEqual(
+            [c[2:4] for c in calls], [('swing', (goblin.x, goblin.y)), ('impact', None)]
+        )
+        self.assertFalse(any(c[4] for c in calls))
+
+    def test_a_dodged_blow_plays_nothing(self):
+        with mock.patch('game.state.dodge_chance', return_value=100):
+            state, _ = self.fight()
+        self.assertEqual(self.played(state), [])
+
+    def test_keys_pressed_during_the_parry_are_not_consumed(self):
+        state, _ = self.fight()
+        typed = [key(pygame.K_d, 'd'), key(pygame.K_s, 's')]
+        real_show = self.renderer._show
+        shown = []
+
+        def show(paint):
+            if not shown:
+                for event in typed:
+                    pygame.event.post(event)
+            shown.append(1)
+            real_show(paint)
+
+        start = pygame.time.get_ticks()
+        with mock.patch.object(self.renderer, '_show', side_effect=show):
+            self.renderer.draw(state)
+        elapsed = pygame.time.get_ticks() - start
+        total = 2 * camera.SWING_MS + camera.GUARD_MS + self.renderer.impact_ms
+        self.assertGreaterEqual(elapsed, total + camera.PARRY_FADE_MS - 60)
+        self.assertEqual(self.renderer.get_action(), Action.MOVE_E)
+        self.assertEqual(self.renderer.get_action(), Action.MOVE_S)
+
+    def parry_frame(self, state, **kw):
+        """The pixels of the map area changed by painting with `kw`."""
+        r = self.renderer
+        r._view = r.director.current(state)
+        r.canvas.clear()
+        r._paint_game(state)
+        before = r.canvas.surface.copy()
+        r.canvas.clear()
+        r._paint_game(state, **kw)
+        after = r.canvas.surface
+        rect = r.layout.map_rect()
+        return {
+            (x, y): tuple(after.get_at((x, y)))[:3]
+            for y in range(rect.top, rect.bottom)
+            for x in range(rect.left, rect.right)
+            if after.get_at((x, y)) != before.get_at((x, y))
+        }
+
+    def test_the_shield_is_drawn_over_the_warriors_cell_and_fades(self):
+        state, _ = self.fight()
+        (parry,) = state.parries
+        cell = self.renderer._map_cell_rect(state.player.x, state.player.y)
+        early = self.parry_frame(state, guard=(parry, 0.3))
+        self.assertGreater(len(early), 20)
+        self.assertTrue(all(cell.collidepoint(p) for p in early))  # on the cell, nowhere else
+        light = [p for p, rgb in early.items() if min(rgb) > 200]
+        self.assertGreater(len(light), 10)  # the light outline itself
+        # An outline, not a fill: the shield's middle is left as it was.
+        self.assertNotIn(cell.center, early)
+        late = self.parry_frame(state, guard=(parry, 0.9))
+        self.assertLess(len([rgb for rgb in late.values() if min(rgb) > 200]), len(light))
+        self.assertEqual(self.parry_frame(state, guard=(parry, 1.0)), {})
+
+    def test_parry_text_is_blue_above_the_warriors_cell(self):
+        state, _ = self.fight()
+        (parry,) = state.parries
+        cell = self.renderer._map_cell_rect(state.player.x, state.player.y)
+        changed = self.parry_frame(state, parry_text=(parry, 1.0))
+        self.assertGreater(len(changed), 30)
+        self.assertTrue(all(y < cell.top for _, y in changed))  # above the cell
+        xs = [x for x, _ in changed]
+        self.assertLess(abs((min(xs) + max(xs)) / 2 - cell.centerx), 3)  # centred on it
+        bright = [rgb for rgb in changed.values() if max(rgb) > 120]
+        self.assertTrue(bright)
+        # Blue dominates the text's lit pixels.
+        blue = [rgb for rgb in bright if rgb[2] > rgb[1] > rgb[0]]
+        self.assertGreater(len(blue), 0.8 * len(bright))
+        self.assertIn((80, 160, 255), set(changed.values()))
+        # Fading: dimmer at half alpha, gone at none.
+        half = self.parry_frame(state, parry_text=(parry, 0.5))
+        self.assertLess(max(rgb[2] for rgb in half.values()), max(rgb[2] for rgb in bright))
+        self.assertEqual(self.parry_frame(state, parry_text=(parry, 0.0)), {})
+
+
 def cell_pixels(renderer, rect, as_list=False):
     screen = renderer.canvas.surface
     pixels = [

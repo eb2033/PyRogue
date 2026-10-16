@@ -24,7 +24,7 @@ import random
 from typing import Any
 
 from game import archery
-from game.combat import Arrow, Hit, Shot
+from game.combat import Arrow, Hit, Parry, Shot
 from game.damage import mitigate, round_damage
 from game.dungeon import generate_level, map_size, place_stairs
 from game.entity import Player
@@ -138,6 +138,9 @@ class GameState:
         # This round's arrows (game.combat.Shot), oldest first: their paths,
         # for a renderer to draw them flying. Cleared with combat_events.
         self.shots = []
+        # This round's parried blows (game.combat.Parry), oldest first, for a
+        # renderer to show the parry. Cleared with combat_events.
+        self.parries = []
         self._hit_serial = 0
         # Player actions taken so far (+1 per turn-consuming action in
         # handle_action; never per frame or per monster). The combat zoom's
@@ -250,6 +253,7 @@ class GameState:
         self.resolve_player_phase()
         self.combat_events = []
         self.shots = []
+        self.parries = []
         self._free_turn = False
 
         if action == 'quit':
@@ -418,13 +422,17 @@ class GameState:
         """`monster`'s melee blow at the player. With a parry armed, the
         dodge is rolled first (a dodged blow does nothing and leaves the
         parry armed); a blow that would land is parried instead: no damage,
-        no Hit, and the monster takes the riposte (_riposte). Unarmed, it is
+        no Hit (a Parry in self.parries instead, for the renderer), and the
+        monster takes the riposte (_riposte). Unarmed, it is
         an ordinary attack()."""
         if not self.parry_armed or self.player.hp <= 0:
             self.attack(monster, self.player)
             return
         if self._dodged(monster):
             return
+        # Recorded before the riposte, so its serial sorts before the riposte's Hit.
+        player = self.player
+        self.parries.append(Parry(self.next_event_serial(), monster, player, player.x, player.y))
         self._riposte(monster)
 
     def _riposte(self, monster):
