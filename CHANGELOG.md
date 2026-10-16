@@ -6,6 +6,39 @@ GitHub Release notes.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-16
+
+A second playable build: a new archer class, a parry for the warrior, shrines, a boss that calls
+for help, and bigger, more varied floors.
+
+### Added
+- The archer: a bow-carrying class with six bows (longbow, heavy crossbow, volley bow, sling,
+  hunter's bow, quickdraw shortbow), each with its own mechanic. Arrows are recoverable from a
+  quiver of 12 that restocks one arrow every three turns. Q hops two tiles back from a nearby
+  monster, with a four-turn cooldown, and the next shot after a hop always crits.
+- Leather armour, which gives defence and dodge. Archers only find leather armour.
+- The warrior's Q arms a parry. The next monster hit that lands is nullified and returns the
+  warrior's crit damage. It has a four-turn cooldown, shown by a bar under the warrior.
+- Goblin archers from floor 4: ranged goblins that keep their distance and shoot along a clear
+  row or column.
+- Shrines (about 40% of non-boss floors): step onto one to take a permanent boon with a cost, such
+  as Blood pact (+3 power, -15 max HP) or Quick hands (a fourth belt slot, potions heal less).
+- A potion belt: potions found at full health are kept in three slots, and `h` drinks the first.
+- The boss can enrage at half health and summon goblins. Its arena has a darker centre and blood
+  spatters, and the stairs down are always in the boss room.
+- Melee swings for every blow, drawn in code and shaped by the weapon. The struck sprite shakes,
+  and enemies have health bars.
+- Resting on the stairs: each descent heals 20% of max HP.
+- Death screen: R restarts from the title screen.
+- Floors grow with depth: rooms and the map get bigger, and the window follows the player.
+
+### Changed
+- Space waits a turn. Q is the class ability key and no longer quits; quit is on the death screen.
+- Early orcs (floors 1 to 8) have 20% less HP, so the first gear drops matter less.
+- Heavy armour gives defence only; leather trades some defence for dodge.
+- Ranged weapons were rebalanced, and an archer starts with a longbow.
+- The curses terminal build and save/load are gone. PyRogue is the window only.
+
 ### Removed
 - The terminal (curses) version. PyRogue is now the window only; `--renderer` and the `RENDERER`
   setting are gone, and `windows-curses` is no longer needed anywhere.
