@@ -1002,6 +1002,34 @@ class GameStateIntegrationTests(unittest.TestCase):
         state.handle_action('quit')
         self.assertFalse(state.running)
 
+    def test_restart_does_nothing_during_play(self):
+        random.seed(13)
+        state = GameState(50, 20)
+        pos, turn, log = (state.player.x, state.player.y), state.turn, list(state.messages)
+        self.assertFalse(state.handle_action('restart'))
+        self.assertTrue(state.running)
+        self.assertFalse(state.restart_requested)
+        self.assertEqual(state.turn, turn)
+        self.assertEqual((state.player.x, state.player.y), pos)
+        self.assertEqual(state.messages, log)
+        self.assertFalse(state.monster_phase_pending())
+
+    def test_restart_on_game_over_ends_the_run_and_asks_for_a_restart(self):
+        random.seed(13)
+        state = GameState(50, 20)
+        state.game_over = True
+        self.assertFalse(state.handle_action('restart'))
+        self.assertFalse(state.running)
+        self.assertTrue(state.restart_requested)
+
+    def test_quit_on_game_over_is_not_a_restart(self):
+        random.seed(13)
+        state = GameState(50, 20)
+        state.game_over = True
+        state.handle_action('ability')  # 'press q to quit'
+        self.assertFalse(state.running)
+        self.assertFalse(state.restart_requested)
+
 
 class TurnPhaseTests(unittest.TestCase):
     """The round is two halves: the player's, then the monsters' one at a

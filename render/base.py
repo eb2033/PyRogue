@@ -23,6 +23,10 @@ class Action:
     WAIT = 'wait'
     DESCEND = 'descend'
     QUIT = 'quit'
+    # 'r': only on the game-over screen ('press r to restart'), where it ends
+    # the run and sends the player back to the title screen. Mid-game it does
+    # nothing.
+    RESTART = 'restart'
     # 'q': the class ability (the archer's hop, the warrior's move -- not yet
     # wired). On the game-over screen GameState treats it as "quit".
     ABILITY = 'ability'

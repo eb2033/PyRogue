@@ -132,6 +132,9 @@ class GameState:
         self.fov_radius = fov_radius
         self.running = True
         self.game_over = False
+        # Set by 'restart' on the game-over screen: the run has ended and the
+        # caller (main.play) goes back to the title screen instead of quitting.
+        self.restart_requested = False
         self.depth = 1
         self.messages = []
         # This round's blows, oldest first -- see game/combat.py. Cleared when
@@ -255,6 +258,13 @@ class GameState:
     def handle_action(self, action):
         """Apply one semantic action. Returns True if a turn was consumed."""
         if action is None:
+            return False
+        if action == 'restart':
+            # Only on the death screen ('press r to restart'); mid-game it
+            # does nothing at all and takes no turn.
+            if self.game_over:
+                self.restart_requested = True
+                self.running = False
             return False
         # A strike left over from the last action (a headless caller that
         # never stepped it) lands first: the player's half of that round is

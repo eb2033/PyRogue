@@ -419,7 +419,27 @@ class PygameRenderer(Renderer):
                 return None
 
     def show_title_screen(self):
+        # The title is where every run starts -- the first, and each one after
+        # 'press r to restart' -- so forget the last run before the next.
+        self._forget_run()
         return self._run_menu(render_banner('PyRogue'), screens.TITLE_OPTIONS) == 'Start'
+
+    def _forget_run(self):
+        """Drop everything remembered about the run last drawn. A new
+        GameState's event serials start again from zero, so a Director that
+        remembered the old run's last hit would never stage the new run's;
+        the camera view, gaits, shakes and arena blood belong to the old run's
+        entities and levels too."""
+        self.director = camera.Director(zoom=self.director.zoom, view_size=self.view_size)
+        self._state = None
+        self._parry_text = None
+        self._view = None
+        self._proj = None
+        self._gait = {}
+        self._tilts = {}
+        self._jolt = None
+        self._decal_layouts = {}
+        self._occupied = set()
 
     def choose_class(self):
         choice = self._run_menu(
@@ -1326,7 +1346,10 @@ class PygameRenderer(Renderer):
             if event is None:
                 return Action.QUIT
             if event.type == pygame.KEYDOWN:
-                return input_map.lookup(event)
+                action = input_map.lookup(event)
+                if action == Action.RESTART and not (state is not None and state.game_over):
+                    return None  # 'r' only means something on the death screen
+                return action
             if event.type == pygame.MOUSEBUTTONDOWN:
                 hit = screens.choice_card_at(self.layout, state, event.pos)
                 if hit is not None and hit < len(choice.CHOOSE_ACTIONS):

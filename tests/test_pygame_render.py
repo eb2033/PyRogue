@@ -26,7 +26,7 @@ from game.state import GameState
 from render.base import Action
 
 if pygame is not None:
-    from render import camera, screens
+    from render import camera, palette, screens
     from render.palette import BACKGROUND
     from render.pygame_render import PygameRenderer
 
@@ -368,6 +368,155 @@ class PygameRendererTest(unittest.TestCase):
         main.run(self.renderer, state, delay_ms=1)
         self.assertTrue(state.game_over)
         self.assertFalse(state.running)
+
+    def test_r_mid_game_is_ignored(self):
+        state = GameState(WIDTH, HEIGHT)
+        self.renderer.draw(state)
+        self.post(key(pygame.K_r, 'r'), key(pygame.K_PERIOD, '.'))
+        self.assertIsNone(self.renderer.get_action())
+        self.assertEqual(self.renderer.get_action(), Action.WAIT)
+
+    def test_r_on_the_game_over_screen_is_restart(self):
+        state = GameState(WIDTH, HEIGHT)
+        state.game_over = True
+        self.renderer.draw(state)
+        self.post(key(pygame.K_r, 'r'))
+        self.assertEqual(self.renderer.get_action(), Action.RESTART)
+
+    def test_r_on_the_title_screen_does_nothing(self):
+        # 'r' neither picks an option nor moves the highlight: enter still
+        # takes Start.
+        self.post(key(pygame.K_r, 'r'), key(pygame.K_RETURN, '\r'))
+        self.assertTrue(self.renderer.show_title_screen())
+
+    def play_with_a_death(self, *events, second_run=()):
+        """main.play with `events` queued and the first run's player one
+        blow from death, carrying what a run collects (a belt potion, a boon,
+        hop and parry cooldowns). `second_run` is posted once a second class
+        select returns -- a window close queued from the start would be seen
+        by the first run's pauses. Returns (states built, [states built when
+        each title screen opened], [... when each class select opened])."""
+        from game.item import Item
+
+        real_state = GameState
+        states, at_title, at_class = [], [], []
+
+        def build(*args, **kwargs):
+            state = real_state(*args, **kwargs)
+            if not states:
+                kill_player_next_turn(state)
+                state.belt = [Item(0, 0, 'potion', 'common')]
+                state.player.boons = ['iron_skin']
+                state.last_hop_turn = state.last_parry_turn = 0
+            states.append(state)
+            return state
+
+        real_title, real_class = self.renderer.show_title_screen, self.renderer.choose_class
+
+        def title():
+            at_title.append(len(states))
+            return real_title()
+
+        def choose():
+            at_class.append(len(states))
+            char_class = real_class()
+            if len(at_class) == 2:
+                self.post(*second_run)
+            return char_class
+
+        self.renderer.show_title_screen = title
+        self.renderer.choose_class = choose
+        self.post(*events)
+        with mock.patch.object(main, 'GameState', side_effect=build):
+            main.play(self.renderer, WIDTH, HEIGHT, delay_ms=1)
+        return states, at_title, at_class
+
+    def test_r_on_the_death_screen_goes_back_to_the_title_and_a_fresh_run(self):
+        enter = key(pygame.K_RETURN, '\r')
+        states, at_title, at_class = self.play_with_a_death(
+            enter,  # title: Start
+            enter,  # class: Warrior
+            key(pygame.K_PERIOD, '.'),  # the goblin kills us
+            key(pygame.K_r, 'r'),  # death screen: restart
+            enter,  # title again: Start
+            key(pygame.K_s, 's'),
+            enter,  # class: Archer
+            second_run=[pygame.event.Event(pygame.QUIT)],
+        )
+        self.assertEqual(len(states), 2)
+        dead, fresh = states
+        self.assertTrue(dead.game_over)
+        self.assertTrue(dead.restart_requested)
+        # The title opened twice; the second run's GameState was built only
+        # after its class was chosen.
+        self.assertEqual(at_title, [0, 1])
+        self.assertEqual(at_class, [0, 1])
+        self.assertIsNot(fresh, dead)
+        self.assertEqual(fresh.player.char_class, 'archer')
+        self.assertFalse(fresh.game_over)
+        self.assertFalse(fresh.restart_requested)
+        self.assertEqual(fresh.depth, 1)
+        self.assertEqual(fresh.turn, 0)
+        self.assertEqual(fresh.player.hp, fresh.player.max_hp)
+        self.assertEqual(fresh.belt, [])
+        self.assertEqual(fresh.player.boons, [])
+        self.assertFalse(fresh.parry_armed)
+        self.assertIsNone(fresh.last_parry_turn)
+        self.assertIsNone(fresh.last_hop_turn)
+        self.assertFalse(fresh.hop_crit)
+        from game.quiver import QUIVER_CAPACITY
+
+        self.assertEqual(fresh.player.quiver, QUIVER_CAPACITY)
+        # The renderer forgot the dead run too: its Director would otherwise
+        # skip the new run's hits (their serials start again from zero).
+        self.assertEqual(self.renderer.director._last_hit, 0)
+
+    def test_q_on_the_death_screen_still_quits_from_play(self):
+        enter = key(pygame.K_RETURN, '\r')
+        states, at_title, _ = self.play_with_a_death(
+            enter, enter, key(pygame.K_PERIOD, '.'), key(pygame.K_q, 'q')
+        )
+        self.assertEqual(len(states), 1)
+        self.assertEqual(at_title, [0])  # never back to the title
+        self.assertTrue(states[0].game_over)
+        self.assertFalse(states[0].restart_requested)
+
+    def test_window_close_on_the_death_screen_still_quits_from_play(self):
+        enter = key(pygame.K_RETURN, '\r')
+        states, at_title, _ = self.play_with_a_death(
+            enter, enter, key(pygame.K_PERIOD, '.'), pygame.event.Event(pygame.QUIT)
+        )
+        self.assertEqual(len(states), 1)
+        self.assertEqual(at_title, [0])
+
+    def test_death_screen_shows_both_hints(self):
+        self.assertEqual(screens.GAME_OVER_HINTS, ('press q to quit', 'press r to restart'))
+        state = GameState(WIDTH, HEIGHT)
+        state.game_over = True
+        self.renderer.draw(state)
+        layout = self.renderer.layout
+        box = screens.game_over_rect(layout)
+        title_font, hint_font = screens.game_over_fonts(layout)
+        self.assertGreaterEqual(
+            box.height,
+            title_font.get_linesize() + 2 * hint_font.get_linesize(),
+        )
+        self.assertGreaterEqual(box.width, hint_font.size('press r to restart')[0])
+        self.assertTrue(layout.map_rect().contains(box))
+        # Each hint's line inside the box has red ink on it.
+        screen = self.renderer.canvas.surface
+        top = box.top + layout.cell_h // 2 + title_font.get_linesize()
+        for i in range(2):
+            # Inset half a cell, clear of the box's red frame.
+            line = pygame.Rect(
+                box.left + layout.cell_w // 2,
+                top + i * hint_font.get_linesize(),
+                box.width - layout.cell_w,
+                hint_font.get_height(),
+            )
+            pixels = pygame.image.tobytes(screen.subsurface(line), 'RGB')
+            colours = {pixels[j : j + 3] for j in range(0, len(pixels), 3)}
+            self.assertIn(bytes(palette.DANGER), colours, f'hint line {i}')
 
     def test_complete_run_title_class_descend_death_quit(self):
         """Plan WS-A acceptance: a complete run, in-window, through main.run.

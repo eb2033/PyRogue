@@ -40,6 +40,9 @@ class ParityTest(unittest.TestCase):
         # Space still confirms in menus.
         self.assertIn(input_map.pygame.K_SPACE, input_map.CONFIRM_KEYS)
 
+    def test_r_restarts(self):
+        self.assertEqual(input_map.CHAR_ACTIONS['r'], Action.RESTART)
+
     def test_window_keys_never_shadow_game_keys(self):
         # F11 is the renderer's own (fullscreen); it must not also be an Action.
         for k in input_map.FULLSCREEN_KEYS:
