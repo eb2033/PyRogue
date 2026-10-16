@@ -9,7 +9,7 @@ from game.monster import Monster
 from game.state import GameState
 from game.tiles import FLOOR, WALL
 from render import camera
-from render.camera import Director, Flight, Impact, Pan, View
+from render.camera import Director, Flight, Impact, Pan, Swing, View
 
 WIDTH, HEIGHT = 40, 20
 
@@ -90,9 +90,9 @@ class DirectorTest(unittest.TestCase):
         goblin.hp = 1
         state.attack(state.player, goblin)  # the killing blow
         beats = director.plan(state)
-        self.assertEqual([type(b) for b in beats], [Impact, Pan])
-        self.assertTrue(beats[0].hit.killed)
-        self.assertEqual(beats[1].end, camera.full_view(state.width, state.height))  # fight over
+        self.assertEqual([type(b) for b in beats], [Swing, Impact, Pan])
+        self.assertTrue(beats[1].hit.killed)
+        self.assertEqual(beats[2].end, camera.full_view(state.width, state.height))  # fight over
         self.assertIsNone(director.view)
 
     def test_each_hit_is_staged_once(self):
@@ -100,14 +100,14 @@ class DirectorTest(unittest.TestCase):
         director = Director()
         director.plan(state)
         state.attack(goblin, state.player)
-        self.assertEqual(len(director.plan(state)), 1)
+        self.assertEqual([type(b) for b in director.plan(state)], [Swing, Impact])
         self.assertEqual(director.plan(state), [])  # the same round, redrawn
 
     def test_archer_does_not_zoom(self):
         state, goblin = lone_fight('archer')
         state.attack(goblin, state.player)
         beats = Director().plan(state)
-        self.assertEqual([type(b) for b in beats], [Impact])  # hit shown, no zoom
+        self.assertEqual([type(b) for b in beats], [Swing, Impact])  # hit shown, no zoom
 
     def test_zoom_can_be_switched_off(self):
         state, _ = lone_fight()
@@ -435,7 +435,7 @@ class HitShakeTest(unittest.TestCase):
         director = Director()
         director.plan(state)
         state.attack(goblin, state.player)
-        beats = director.plan(state)
+        beats = [b for b in director.plan(state) if not isinstance(b, Swing)]
         self.assertIsInstance(beats[0], Impact)
         self.assertEqual(beats[0].shake, camera.shake_for(beats[0].hit))
 
@@ -773,6 +773,173 @@ class FollowViewTest(unittest.TestCase):
         view = director.current(state)
         self.assertEqual((view.width, view.height), self.SIZE)
         self.assertTrue(view.left <= state.player.x < view.left + view.width)
+
+
+def warrior_arena(kind='weapon'):
+    """A warrior at (10, 10) on open floor holding a common `kind`, alone on
+    the level."""
+    state = GameState(WIDTH, HEIGHT, char_class='warrior')
+    for y in range(1, HEIGHT - 1):
+        for x in range(1, WIDTH - 1):
+            state.game_map[y][x] = FLOOR
+    state.player.x, state.player.y = 10, 10
+    state.player.weapon = Item(0, 0, kind, 'common')
+    state.entities = [state.player]
+    state.update_fov()
+    return state
+
+
+class SwingTest(unittest.TestCase):
+    """Every melee blow is staged as a Swing right before its Impact, shaped
+    by the attacker's weapon; arrows and dodges get none."""
+
+    def setUp(self):
+        patcher = mock.patch('game.state.BASE_CRIT_CHANCE', 0.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def blow(self, kind, at=(11, 10)):
+        """The beats staged for the player's blow with `kind` on a goblin at `at`."""
+        state = warrior_arena(kind)
+        goblin = add_goblin(state, *at)
+        director = Director()
+        director.plan(state)
+        state.attack(state.player, goblin)
+        return director.plan(state)
+
+    @staticmethod
+    def swings(beats):
+        return [b for b in beats if isinstance(b, Swing)]
+
+    @staticmethod
+    def extent(swing, steps=40):
+        """(furthest along, widest across) the arc gets from the attacker's
+        cell centre over the whole beat, for a blow pointing east."""
+        cx, cy = swing.origin[0] + 0.5, swing.origin[1] + 0.5
+        pts = [p for i in range(steps) for p in camera.swing_points(swing, i / steps)]
+        return max(x - cx for x, _, _ in pts), max(abs(y - cy) for _, y, _ in pts)
+
+    def test_each_weapon_kind_gets_its_swing(self):
+        expected = {
+            'weapon': ('standard', 120),
+            'sword_shield': ('standard', 120),
+            'dagger': ('short', 90),
+            'rapier': ('skinny', 80),
+            'great_sword': ('wide', 150),
+            'war_axe': ('wide', 150),
+            'spear': ('long', 200),
+        }
+        for kind, (name, ms) in expected.items():
+            with self.subTest(kind=kind):
+                (swing,) = self.swings(self.blow(kind))
+                self.assertEqual((swing.shape.name, swing.shape.ms), (name, ms))
+                self.assertEqual((swing.origin, swing.target), ((10, 10), (11, 10)))
+
+    def test_the_spear_swings_across_two_tiles(self):
+        (swing,) = self.swings(self.blow('spear', at=(12, 10)))
+        self.assertEqual((swing.origin, swing.target), ((10, 10), (12, 10)))
+        along, _ = self.extent(swing)
+        self.assertTrue(1.5 < along < 2.0, along)  # past the cell between, into the target's
+
+    def test_shapes_differ_in_length_and_width(self):
+        kinds = ('weapon', 'dagger', 'rapier', 'great_sword', 'spear')
+        shapes = {kind: self.swings(self.blow(kind))[0] for kind in kinds}
+        along = {k: self.extent(s)[0] for k, s in shapes.items()}
+        across = {k: self.extent(s)[1] for k, s in shapes.items()}
+        self.assertLess(along['dagger'], along['weapon'])  # shorter
+        self.assertGreater(across['great_sword'], across['weapon'])  # wider
+        self.assertGreater(across['weapon'], across['rapier'])  # skinny
+        self.assertLess(shapes['rapier'].shape.thickness, shapes['weapon'].shape.thickness)
+        self.assertGreater(along['spear'], 1.5 * along['weapon'])  # long
+
+    def test_the_rapier_strikes_get_two_skinny_swings_one_after_the_other(self):
+        state = warrior_arena('rapier')
+        goblin = add_goblin(state, 11, 10)
+        director = Director()
+        director.plan(state)
+        state.melee(goblin)  # the first strike; the second is owed
+        first = director.plan(state)
+        self.assertTrue(state.strike_pending())
+        self.assertTrue(state.step_strike())
+        second = director.plan(state)
+        for beats in (first, second):
+            self.assertEqual([type(b) for b in beats[:2]], [Swing, Impact])
+            self.assertEqual(beats[0].shape.name, 'skinny')
+            self.assertIs(beats[0].hit, beats[1].hit)
+        self.assertNotEqual(first[0].hit.serial, second[0].hit.serial)
+        # The second arc is traced the other way.
+        self.assertFalse(first[0].mirror)
+        self.assertTrue(second[0].mirror)
+        lead_a = camera.swing_points(first[0], 0.1)[-1]
+        lead_b = camera.swing_points(second[0], 0.1)[-1]
+        self.assertLess((lead_a[1] - 10.5) * (lead_b[1] - 10.5), 0)
+
+    def test_a_monster_blow_gets_a_standard_swing_from_its_cell(self):
+        state = warrior_arena('spear')  # the player's weapon is not the monster's
+        goblin = add_goblin(state, 10, 11)
+        director = Director()
+        director.plan(state)
+        state.attack(goblin, state.player)
+        swing = director.plan(state)[0]
+        self.assertIsInstance(swing, Swing)
+        self.assertEqual(swing.shape, camera.SWING_SHAPES['standard'])
+        self.assertEqual((swing.origin, swing.target), ((10, 11), (10, 10)))
+        self.assertIs(swing.hit.attacker, goblin)
+
+    def test_a_swing_is_planned_right_before_its_impact(self):
+        beats = self.blow('great_sword')
+        self.assertEqual([type(b) for b in beats[:2]], [Swing, Impact])
+        self.assertIs(beats[0].hit, beats[1].hit)
+
+    def test_an_arrow_gets_no_swing(self):
+        state = archer_arena()
+        add_goblin(state, 11, 10)  # point blank, even
+        director = Director()
+        director.plan(state)
+        self.assertTrue(state.shoot_arrow(1, 0))
+        beats = director.plan(state)
+        self.assertTrue(any(isinstance(b, Impact) for b in beats))
+        self.assertEqual(self.swings(beats), [])
+
+    def test_a_goblin_archers_arrow_gets_no_swing(self):
+        state = warrior_arena()
+        archer = add_goblin(state, 14, 10)
+        director = Director()
+        director.plan(state)
+        state._monster_shot(archer)
+        beats = director.plan(state)
+        self.assertTrue(any(isinstance(b, Impact) for b in beats))
+        self.assertEqual(self.swings(beats), [])
+
+    def test_a_dodge_gets_no_swing(self):
+        state = warrior_arena()
+        goblin = add_goblin(state, 11, 10)
+        director = Director()
+        director.plan(state)
+        with mock.patch('game.state.dodge_chance', return_value=100):
+            state.attack(goblin, state.player)
+        self.assertEqual(state.combat_events, [])
+        self.assertEqual(self.swings(director.plan(state)), [])
+
+    def test_the_arc_lies_in_the_direction_of_the_blow(self):
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            with self.subTest(direction=(dx, dy)):
+                (swing,) = self.swings(self.blow('weapon', at=(10 + dx, 10 + dy)))
+                cx, cy = 10.5, 10.5
+                pts = [p for i in range(20) for p in camera.swing_points(swing, i / 20)]
+                self.assertTrue(pts)
+                for x, y, _ in pts:
+                    self.assertGreater((x - cx) * dx + (y - cy) * dy, 0)
+                # Mid-swing the leading edge is out in front, over the target.
+                x, y, alpha = camera.swing_points(swing, 0.5)[-1]
+                self.assertAlmostEqual((x - cx) * dx + (y - cy) * dy, swing.shape.forward, 1)
+                self.assertGreater(alpha, 0.5)
+
+    def test_the_arc_fades_out_by_the_end(self):
+        (swing,) = self.swings(self.blow('weapon'))
+        self.assertEqual(camera.swing_points(swing, 1.0), [])
+        late = camera.swing_points(swing, 0.97)
+        self.assertTrue(all(alpha < 0.1 for _, _, alpha in late))
 
 
 if __name__ == '__main__':

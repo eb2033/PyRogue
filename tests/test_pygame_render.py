@@ -682,7 +682,8 @@ class HitShakeAndHealthBarTest(unittest.TestCase):
     def test_a_hit_plays_an_uninterruptible_shake_and_a_crit_plays_longer(self):
         state, goblin = self.fight()
         state.attack(goblin, state.player)
-        normal = self.played(state)
+        swing, *normal = self.played(state)  # the monster's swing, then the hit
+        self.assertEqual(swing, (camera.SWING_MS, False))
         self.assertEqual(len(normal), 1)
         normal_ms, interruptible = normal[0]
         self.assertFalse(interruptible)
@@ -692,7 +693,7 @@ class HitShakeAndHealthBarTest(unittest.TestCase):
         with mock.patch('game.state.BASE_CRIT_CHANCE', 1.0):
             state.attack(state.player, goblin)
         self.assertTrue(state.combat_events[-1].crit)
-        (crit_ms, interruptible), *_ = self.played(state)
+        _, (crit_ms, interruptible), *_ = self.played(state)
         self.assertFalse(interruptible)
         self.assertTrue(normal_ms < crit_ms <= 350, crit_ms)
 
@@ -1834,6 +1835,176 @@ class GlyphModeArcherVisualsTest(ArcherVisualsTest):
         tint = round(230 * PILE_BACKDROP_ALPHA / 255)
         tinted = [p for p in pixels if p[0] == p[1] == p[2] and abs(p[0] - tint) <= 2]
         self.assertGreater(len(tinted), len(pixels) // 4)
+
+
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
+class MeleeSwingTest(unittest.TestCase):
+    """A melee blow's Swing beat (render/camera.py) plays before its Impact,
+    always to the end, and draws a light arc towards the struck cell."""
+
+    def setUp(self):
+        from game.item import Item
+        from game.paths import resource_path
+        from render.tileset import Tileset
+
+        self.item = Item
+        self.renderer = PygameRenderer(WIDTH, HEIGHT, tileset=Tileset(resource_path('assets')))
+        self.renderer._set_mode((1600, 900), pygame.RESIZABLE)
+        self.renderer._relayout()
+        self.renderer.zoom_ms = self.renderer.follow_ms = 0
+        self.renderer.director = camera.Director(zoom=False)
+        patcher = mock.patch('game.state.BASE_CRIT_CHANCE', 0.0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        pygame.event.clear()
+
+    def tearDown(self):
+        self.renderer.close()
+
+    def fight(self, kind='weapon', offset=(1, 0)):
+        """The player on open floor holding `kind`, a sturdy goblin `offset`
+        away, drawn once (so nothing old is left to stage)."""
+        state = floor_level(WIDTH, HEIGHT)
+        state.player.weapon = self.item(0, 0, kind, 'common')
+        p = state.player
+        goblin = Monster(p.x + offset[0], p.y + offset[1], 'goblin')
+        goblin.hp = goblin.max_hp = 500
+        state.entities.append(goblin)
+        state.update_fov()
+        # A fresh director: a new GameState's hit serials start again at 1.
+        self.renderer.director = camera.Director(zoom=False)
+        self.renderer.draw(state)
+        return state, goblin
+
+    def played(self, state):
+        """(ms, interruptible, beat kind) of every beat draw() plays."""
+        calls = []
+
+        def play(ms, paint, interruptible=True):
+            frame = {}  # the keywords one frame of the beat is painted with
+            with mock.patch.object(
+                self.renderer, '_paint_game', side_effect=lambda s, **kw: frame.update(kw)
+            ):
+                paint(0.5)
+            kind = 'swing' if frame.get('swing') else 'impact' if frame.get('impact') else 'other'
+            calls.append((ms, interruptible, kind))
+
+        with mock.patch.object(self.renderer, '_play', side_effect=play):
+            self.renderer.draw(state)
+        return calls
+
+    def test_the_swing_plays_first_uninterruptible_then_the_impact(self):
+        for kind, ms in (('weapon', 120), ('dagger', 90), ('great_sword', 150), ('spear', 200)):
+            with self.subTest(kind=kind):
+                state, goblin = self.fight(kind)
+                state.attack(state.player, goblin)
+                calls = self.played(state)
+                self.assertEqual([c[2] for c in calls], ['swing', 'impact'])
+                self.assertEqual(calls[0][:2], (ms, False))
+                self.assertFalse(calls[1][1])
+
+    def test_a_monster_blow_plays_the_standard_swing(self):
+        state, goblin = self.fight('spear')
+        state.attack(goblin, state.player)
+        calls = self.played(state)
+        self.assertEqual([c[2] for c in calls], ['swing', 'impact'])
+        self.assertEqual(calls[0][0], camera.SWING_MS)
+
+    def test_an_arrow_plays_no_swing(self):
+        state, goblin = self.fight()
+        state._monster_shot(goblin)
+        kinds = [c[2] for c in self.played(state)]
+        self.assertIn('impact', kinds)
+        self.assertNotIn('swing', kinds)
+
+    def test_keys_pressed_during_the_swing_are_not_consumed(self):
+        state, goblin = self.fight()
+        state.attack(state.player, goblin)
+        typed = [key(pygame.K_d, 'd'), key(pygame.K_s, 's')]
+        real_show = self.renderer._show
+        shown = []
+
+        def show(paint):
+            if not shown:  # the swing's first frame: the player types ahead
+                for event in typed:
+                    pygame.event.post(event)
+            shown.append(1)
+            real_show(paint)
+
+        start = pygame.time.get_ticks()
+        with mock.patch.object(self.renderer, '_show', side_effect=show):
+            self.renderer.draw(state)
+        elapsed = pygame.time.get_ticks() - start
+        # Neither the swing nor the impact was cut short by the keys.
+        self.assertGreaterEqual(elapsed, camera.SWING_MS + self.renderer.impact_ms - 40)
+        self.assertTrue(pygame.event.peek(pygame.KEYDOWN))
+        self.assertEqual(self.renderer.get_action(), Action.MOVE_E)
+        self.assertEqual(self.renderer.get_action(), Action.MOVE_S)
+
+    def changed(self, state, swing, t):
+        """Pixels the swing's arc changes at t: (x, y) list."""
+        r = self.renderer
+        r.canvas.clear()
+        r._paint_game(state)
+        before = r.canvas.surface.copy()
+        r.canvas.clear()
+        r._paint_game(state, swing=(swing, t))
+        after = r.canvas.surface
+        rect = r.layout.map_rect()
+        return [
+            (x, y)
+            for y in range(rect.top, rect.bottom)
+            for x in range(rect.left, rect.right)
+            if after.get_at((x, y)) != before.get_at((x, y))
+        ]
+
+    def test_the_swing_is_drawn_in_the_direction_of_the_blow(self):
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            with self.subTest(direction=(dx, dy)):
+                state, goblin = self.fight(offset=(dx, dy))
+                state.attack(state.player, goblin)
+                (swing,) = [
+                    b for b in self.renderer.director.plan(state) if isinstance(b, camera.Swing)
+                ]
+                self.renderer._view = self.renderer.director.current(state)
+                pixels = self.changed(state, swing, 0.5)
+                self.assertGreater(len(pixels), 20)
+                r = self.renderer
+                r._proj = camera.project(r._view, r.layout.map_rect(), r.layout.map_cell_size())
+                try:
+                    origin = r._map_cell_rect(state.player.x, state.player.y)
+                    struck = r._map_cell_rect(goblin.x, goblin.y)
+                finally:
+                    r._proj = None
+                cx, cy = origin.center
+                ahead = [(x - cx) * dx + (y - cy) * dy for x, y in pixels]
+                self.assertTrue(all(a > 0 for a in ahead))  # nothing behind the attacker
+                self.assertTrue(any(struck.collidepoint(p) for p in pixels))  # over the target
+                # Light pixels: the arc itself.
+                surface = r.canvas.surface
+                light = [p for p in pixels if min(surface.get_at(p)[:3]) > 200]
+                self.assertTrue(light)
+
+    def test_the_spear_swing_reaches_the_cell_two_away(self):
+        state, goblin = self.fight('spear', offset=(2, 0))
+        state.attack(state.player, goblin)
+        (swing,) = [b for b in self.renderer.director.plan(state) if isinstance(b, camera.Swing)]
+        self.renderer._view = self.renderer.director.current(state)
+        pixels = self.changed(state, swing, 0.5)
+        r = self.renderer
+        r._proj = camera.project(r._view, r.layout.map_rect(), r.layout.map_cell_size())
+        try:
+            struck = r._map_cell_rect(goblin.x, goblin.y)
+        finally:
+            r._proj = None
+        self.assertTrue(any(struck.collidepoint(p) for p in pixels))
+
+    def test_the_swing_is_gone_once_it_ends(self):
+        state, goblin = self.fight()
+        state.attack(state.player, goblin)
+        (swing,) = [b for b in self.renderer.director.plan(state) if isinstance(b, camera.Swing)]
+        self.renderer._view = self.renderer.director.current(state)
+        self.assertEqual(self.changed(state, swing, 1.0), [])
 
 
 def cell_pixels(renderer, rect, as_list=False):

@@ -17,7 +17,8 @@ Division of labour with the other render modules:
   camera.Director        the camera: what part of the map to show (the
                          exploring view that follows the player, or the
                          combat zoom), and the beats (arrow flights,
-                         impacts, pans) staged before each frame
+                         melee swings, impacts, pans) staged before each
+                         frame
 """
 
 import copy
@@ -53,6 +54,7 @@ ZOOM_MS = 220
 FOLLOW_MS = 90  # the exploring view's pan after a step (a Pan with follow)
 IMPACT_MS = camera.SHAKE_MS
 FLIGHT_MS = camera.FLIGHT_MS_PER_CELL  # per cell an arrow crosses
+SWING_MS = camera.SWING_MS  # a standard melee swing; other shapes in proportion
 FRAME_MS = 16
 
 # Walking gait: an entity that just took a step leans this many degrees, the
@@ -86,6 +88,14 @@ RESTOCK_TRACK = (45, 45, 45)
 RESTOCK_BAR_WIDTH = 1.05  # of the cell's width: overhangs its sides a little
 RESTOCK_BAR_HEIGHT = 0.15  # of the cell's height, at least 3 px; the track
 # (a 1 px dark rim round the bar) keeps it readable over the sprite's feet
+
+# Melee swings (camera.Swing), drawn rather than tiled -- the bundled sheets
+# have no slash or swing effect: a light arc, tapering and fading towards its
+# tail, over a dark edge so it reads on a light floor too.
+SWING_RGB = (240, 244, 255)
+SWING_EDGE_RGB = (20, 24, 40)
+SWING_EDGE_ALPHA = 0.45  # of the arc's own alpha
+SWING_MIN_PX = 2  # the arc is never thinner than this
 
 # Arrows, drawn rather than tiled (the bundled sheets have no arrow): the one
 # in flight and the ones lying in a pile. A bright shaft, a steel head and red
@@ -132,6 +142,7 @@ class PygameRenderer(Renderer):
         follow_ms=FOLLOW_MS,
         impact_ms=IMPACT_MS,
         flight_ms=FLIGHT_MS,
+        swing_ms=SWING_MS,
     ):
         """`width` x `height`: the base map size (MAP_WIDTH/MAP_HEIGHT). The
         map area is laid out for camera.view_size of it -- a fixed number of
@@ -146,7 +157,8 @@ class PygameRenderer(Renderer):
         shake play -- a crit's in proportion longer; `follow_ms`: how long
         the exploring view takes to catch up with a step; `flight_ms`: how long
         an arrow takes to cross one cell (0 = no animation, the frame just
-        changes)."""
+        changes); `swing_ms`: how long a standard melee swing plays -- the
+        other swing shapes in proportion (0 = no swings)."""
         pygame.display.init()
         pygame.display.set_caption('PyRogue')
         _set_window_icon()
@@ -177,6 +189,7 @@ class PygameRenderer(Renderer):
         self.follow_ms = follow_ms
         self.impact_ms = impact_ms
         self.flight_ms = flight_ms
+        self.swing_ms = swing_ms
         # The view being painted (None = the map at the layout's own grid,
         # only before the first draw),
         # its projection for the frame being painted, and whether a beat is
@@ -387,6 +400,15 @@ class PygameRenderer(Renderer):
                     ),
                     interruptible=False,
                 )
+            elif isinstance(beat, camera.Swing):
+                # The swing first; its blow's Impact (next) is still pending.
+                self._play(
+                    self.swing_ms_for(beat),
+                    lambda t, swing=beat, pending=pending: self._paint_game(
+                        state, swing=(swing, t), pending=pending
+                    ),
+                    interruptible=False,
+                )
             elif isinstance(beat, camera.Impact):
                 shake = beat.shake or camera.shake_for(beat.hit)
                 # Arrows still flying hang where they are while it lands.
@@ -439,6 +461,11 @@ class PygameRenderer(Renderer):
         """How long an impact beat with `shake` plays: `impact_ms` for a
         normal hit, scaled up for a crit's longer shake."""
         return round(self.impact_ms * shake.ms / camera.SHAKE_MS)
+
+    def swing_ms_for(self, swing):
+        """How long `swing` plays: its shape's ms, scaled by swing_ms over
+        the standard swing's."""
+        return round(self.swing_ms * swing.shape.ms / camera.SWING_MS)
 
     def shake_offset(self, shake, t):
         """The map's (dx, dy) in pixels at t. Sized off the unzoomed cell, so
@@ -503,7 +530,14 @@ class PygameRenderer(Renderer):
     # -- game frame -----------------------------------------------------------
 
     def _paint_game(
-        self, state, impact=None, shake=(0, 0), sprite_shake=None, flight=None, pending=()
+        self,
+        state,
+        impact=None,
+        shake=(0, 0),
+        sprite_shake=None,
+        flight=None,
+        pending=(),
+        swing=None,
     ):
         """The map at the current view, clipped to the map's area, then the
         panel. `impact`: (Hit, t) to draw a blow landing, t running 0 -> 1.
@@ -512,7 +546,8 @@ class PygameRenderer(Renderer):
         health bar) inside its cell as well. `flight`: (Flight, t) to draw its
         arrows in the air, over the map and the monsters, under an impact.
         `pending`: Hits not yet shown -- their monsters are drawn as they were
-        before them (see _before_hits)."""
+        before them (see _before_hits). `swing`: (Swing, t) to draw a melee
+        swing's arc over the map and the sprites."""
         surface = self.canvas.surface
         map_rect = self.layout.map_rect()
         if self._view is None:
@@ -566,6 +601,8 @@ class PygameRenderer(Renderer):
                     self._paint_health_bar(entity, state.player, map_rect)
             if getattr(state.player, 'quiver', None) is not None:
                 self._paint_restock_bar(state, map_rect)
+            if swing is not None:
+                self._paint_swing(*swing)
             if flight is not None:
                 self._paint_flight(*flight)
             if impact is not None:
@@ -675,6 +712,50 @@ class PygameRenderer(Renderer):
                 surface.fill(RESTOCK_FILL, (bar.left, bar.top, fill, bar.height))
         finally:
             surface.set_clip(clip)
+
+    # -- melee swings ---------------------------------------------------------
+
+    def swing_pixels(self, swing, t):
+        """camera.swing_points in pixels at the view being painted: a list of
+        (x, y, alpha), from the trail's tail to the leading edge."""
+        cell = self._map_cell_rect(*swing.origin)
+        ox, oy = swing.origin
+        return [
+            (cell.left + (x - ox) * cell.width, cell.top + (y - oy) * cell.height, a)
+            for x, y, a in camera.swing_points(swing, t)
+        ]
+
+    def _paint_swing(self, swing, t):
+        """The swing's arc at t: segment by segment from its tail, each as
+        opaque and as thick as its alpha (so it tapers into the trail), over
+        a dark edge, clipped to the map."""
+        points = self.swing_pixels(swing, t)
+        if len(points) < 2:
+            return
+        cell = self._map_cell_rect(*swing.origin)
+        thick = max(SWING_MIN_PX, round(min(cell.size) * swing.shape.thickness))
+        pad = thick + 2
+        left = math.floor(min(p[0] for p in points)) - pad
+        top = math.floor(min(p[1] for p in points)) - pad
+        width = math.ceil(max(p[0] for p in points)) + pad - left
+        height = math.ceil(max(p[1] for p in points)) + pad - top
+        art = pygame.Surface((width, height), pygame.SRCALPHA)
+        segments = list(zip(points, points[1:]))
+        for rgb, extra, scale in ((SWING_EDGE_RGB, 2, SWING_EDGE_ALPHA), (SWING_RGB, 0, 1.0)):
+            for (x0, y0, a0), (x1, y1, a1) in segments:
+                alpha = (a0 + a1) / 2
+                if alpha <= 0:
+                    continue
+                w = max(1, round(thick * (0.5 + 0.5 * alpha))) + extra
+                colour = (*rgb, round(255 * alpha * scale))
+                a, b = (x0 - left, y0 - top), (x1 - left, y1 - top)
+                pygame.draw.line(art, colour, a, b, w)
+                pygame.draw.circle(art, colour, b, w / 2)
+        clip = self._clip_to_map()
+        try:
+            self.canvas.surface.blit(art, (left, top))
+        finally:
+            self.canvas.surface.set_clip(clip)
 
     # -- arrows ---------------------------------------------------------------
 

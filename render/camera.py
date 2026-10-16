@@ -34,6 +34,19 @@ before showing the frame. Today there are three kinds:
                      whose path ends inside a stretch (it landed, or left
                      sight) is gone from then on. Plays out like an Impact:
                      keys wait in the queue until it ends.
+  Swing(hit, origin, target, shape, mirror)
+                     a melee weapon's swing, played right before that blow's
+                     Impact: a light arc traced from the attacker's cell
+                     (`origin`) towards the cell it strikes (`target`),
+                     fading behind its leading edge. `shape` is one of
+                     SWING_SHAPES, picked from the attacker's weapon
+                     (swing_shape_for): standard, short (dagger), skinny
+                     (rapier -- each of its two strikes gets its own, the
+                     second traced the other way, `mirror`), wide (great
+                     sword, war axe) or long (spear: it spans two tiles).
+                     Monsters swing the standard arc. Never staged for an
+                     arrow's hit (a Flight shows it) or a dodge (no Hit).
+                     Plays out like an Impact: keys wait in the queue.
   Impact(hit, shake, held)
                      a blow landing -- played at the current view, so a
                      killing blow is seen before the camera pulls back.
@@ -57,6 +70,7 @@ which are short and always finish), so it never holds the player up for long.
 Pure geometry, no pygame: views are in map cells (floats while animating).
 """
 
+import math
 import random
 from collections import namedtuple
 
@@ -105,6 +119,76 @@ SHAKE_STEP_MS = 30  # the jitter picks a new offset this often
 # applied to the sprite's cell at the current view: 0.09 of a cell for a
 # normal hit, 0.19 for a crit (4 / 8 px on a 40 px tile, 12 / 24 zoomed to 128).
 SPRITE_SHAKE_RATIO = 0.75
+
+
+# Melee swings. A shape is an arc of an ellipse round the centre of the
+# attacker's cell: `forward` cells along the blow (times the distance to the
+# target, at least `reach`) and `lateral` cells across it, swept through
+# `sweep` degrees centred on the blow, `thickness` of a cell wide, over `ms`.
+SwingShape = namedtuple('SwingShape', 'name ms reach forward lateral sweep thickness')
+SWING_SHAPES = {
+    'standard': SwingShape('standard', 120, 1, 0.9, 0.45, 140, 0.11),
+    'short': SwingShape('short', 90, 1, 0.65, 0.3, 120, 0.09),
+    'skinny': SwingShape('skinny', 80, 1, 0.95, 0.22, 100, 0.045),
+    'wide': SwingShape('wide', 150, 1, 1.0, 0.85, 170, 0.15),
+    'long': SwingShape('long', 200, 2, 0.95, 0.35, 150, 0.1),
+}
+SWING_MS = SWING_SHAPES['standard'].ms
+# Weapon kind (game/item.py) -> its swing; anything else (the plain weapon,
+# sword & shield, a bow used up close, a monster's claws) swings 'standard'.
+WEAPON_SWINGS = {
+    'dagger': 'short',
+    'rapier': 'skinny',
+    'great_sword': 'wide',
+    'war_axe': 'wide',
+    'spear': 'long',
+}
+SWING_TRAIL = 0.6  # of the sweep: how far the fading trail reaches behind
+SWING_FADE = 0.35  # the last part of the beat, over which the whole arc fades
+Swing = namedtuple('Swing', 'hit origin target shape mirror')
+Swing.__new__.__defaults__ = (False,)
+
+
+def swing_shape_for(attacker):
+    """The SwingShape of `attacker`'s melee blow: its weapon's, read from
+    `attacker.weapon.kind`, else the standard one."""
+    weapon = getattr(attacker, 'weapon', None)
+    kind = getattr(weapon, 'kind', '')
+    return SWING_SHAPES[WEAPON_SWINGS.get(kind, 'standard')]
+
+
+def swing_points(swing, t, samples=16):
+    """The arc of `swing` at t (0 -> 1 over the beat), in map cells: a list of
+    (x, y, alpha) from the trail's tail to the leading edge, alpha 0-1. The
+    leading edge sweeps from one end of the arc to the other (eased); the
+    trail behind it fades to nothing, and over the last SWING_FADE of the beat
+    the whole arc fades out. Empty at t >= 1."""
+    if not 0 <= t < 1:
+        return []
+    shape = swing.shape
+    (ox, oy), (tx, ty) = swing.origin, swing.target
+    dx, dy = tx - ox, ty - oy
+    dist = max(1e-9, (dx * dx + dy * dy) ** 0.5)
+    ux, uy = dx / dist, dy / dist  # along the blow
+    px, py = -uy, ux  # across it
+    forward = shape.forward * max(dist, shape.reach)
+    half = shape.sweep / 2
+    side = -1 if swing.mirror else 1
+    start, end = -half * side, half * side
+    lead = start + (end - start) * ease(t)
+    trail = shape.sweep * SWING_TRAIL
+    fade = 1.0 if t < 1 - SWING_FADE else (1 - t) / SWING_FADE
+    cx, cy = ox + 0.5, oy + 0.5
+    points = []
+    for i in range(samples + 1):
+        f = i / samples  # 0 = tail, 1 = leading edge
+        angle = lead - side * trail * (1 - f)
+        if (angle - start) * side < 0:
+            continue  # the trail can't reach back past where the swing began
+        rad = math.radians(angle)
+        along, across = forward * math.cos(rad), shape.lateral * math.sin(rad)
+        points.append((cx + ux * along + px * across, cy + uy * along + py * across, f * fade))
+    return points
 
 
 def shake_for(hit):
@@ -306,6 +390,10 @@ class Director:
                 beats += self._shot_beats(state, event)
                 staged.update(hit.serial for arrow in event.arrows for hit in arrow.hits)
             elif event.serial not in staged and state.visible[event.y][event.x]:
+                # Not an arrow's (a shot staged those): a melee blow.
+                swing = self._swing(state, event)
+                if swing is not None:
+                    beats.append(swing)
                 beats.append(Impact(event, shake_for(event)))
 
         self._track_turn(state)
@@ -325,6 +413,30 @@ class Director:
         self.view = view
         self._shown = target
         return beats
+
+    @staticmethod
+    def _swing(state, hit):
+        """The Swing before melee `hit`: from where its attacker stands to
+        the defender's cell, shaped by the attacker's weapon. None if the two
+        aren't in a straight line one or two cells apart (melee is 4-way;
+        a spear reaches two) -- nothing to swing across. A rapier's strikes
+        on the same target this action alternate direction."""
+        attacker = hit.attacker
+        origin, target = (attacker.x, attacker.y), (hit.x, hit.y)
+        dx, dy = target[0] - origin[0], target[1] - origin[1]
+        if (dx and dy) or not 1 <= abs(dx) + abs(dy) <= 2:
+            return None
+        shape = swing_shape_for(attacker)
+        mirror = False
+        if shape.name == 'skinny':
+            earlier = 0
+            for other in state.combat_events:
+                if other.serial >= hit.serial:
+                    break
+                if other.attacker is attacker and other.defender is hit.defender:
+                    earlier += 1
+            mirror = earlier % 2 == 1
+        return Swing(hit, origin, target, shape, mirror)
 
     @staticmethod
     def _shot_beats(state, shot):
