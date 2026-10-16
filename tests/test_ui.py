@@ -14,6 +14,7 @@ except ImportError:  # pragma: no cover - terminal-only checkout
     pygame = None
 
 from typing import cast
+from unittest import mock
 
 from game.item import BELT_SLOTS, Item, belt_slot_label
 from game.shrine import BOON_COLOR
@@ -108,6 +109,33 @@ class TileLayoutTest(unittest.TestCase):
         desktop_w, desktop_h = ui._desktop_size()
         self.assertLessEqual(width, desktop_w)
         self.assertLessEqual(height, desktop_h)
+
+    def test_first_window_is_1920x1080_on_a_big_desktop(self):
+        for desktop in [(1920, 1080), (2560, 1440), (3840, 2160), (1920, 1200)]:
+            with self.subTest(desktop=desktop):
+                self.assertEqual(ui.first_window_size(desktop), (1920, 1080))
+        with mock.patch.object(ui, '_desktop_size', return_value=(2560, 1440)):
+            self.assertEqual(self.layout.preferred_window_size(), (1920, 1080))
+
+    def test_first_window_is_capped_16_9_on_a_small_desktop(self):
+        # A 1536x864 desktop is 1920x1080 at Windows' 125% scaling, seen by
+        # a process that isn't DPI-aware.
+        for desktop in [(1536, 864), (1366, 768), (1280, 800), (1024, 768), (1920, 1000)]:
+            with self.subTest(desktop=desktop):
+                width, height = ui.first_window_size(desktop)
+                self.assertLessEqual(width, desktop[0] * ui.DESKTOP_SHARE)
+                self.assertLessEqual(height, desktop[1] * ui.DESKTOP_SHARE)
+                self.assertEqual(width * 9 // 16, height)
+        # The largest 16:9 size inside 85%: bound by height on a 16:9 or wide
+        # desktop (1536x864 -> 1305x734 usable), by width on a 4:3 one.
+        self.assertEqual(ui.first_window_size((1536, 864)), (1304, 733))
+        self.assertEqual(ui.first_window_size((1920, 1000)), (1511, 849))
+        self.assertEqual(ui.first_window_size((1024, 768)), (870, 489))
+
+    def test_a_1920x1080_window_fits_the_layout(self):
+        self.layout.fit(ui.first_window_size((1920, 1080)))
+        self.assertFitsInside((1920, 1080))
+        self.assertIn(self.layout.tile, ui.TILE_SIZES)
 
 
 # Window sizes every layout test sweeps: landscape, 4K, portrait, narrow, tiny.
@@ -224,7 +252,8 @@ class MessageLogTest(unittest.TestCase):
 
     def test_preferred_glyph_window_shows_a_longer_log(self):
         layout = ui.Layout(WIDTH, HEIGHT)
-        layout.fit(layout.preferred_window_size())
+        with mock.patch.object(ui, '_desktop_size', return_value=(1920, 1080)):
+            layout.fit(layout.preferred_window_size())
         self.assertGreater(layout.log_lines(), ui.MIN_LOG_LINES)
 
     def test_log_rows_keeps_the_newest_whole_messages(self):

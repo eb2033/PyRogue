@@ -2720,5 +2720,103 @@ class FollowCameraTest(unittest.TestCase):
         self.assertIsNotNone(self.renderer.director.view)  # zoomed on the fight
 
 
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
+class FirstWindowTest(unittest.TestCase):
+    """The first window is 1920x1080 (capped on a smaller desktop), and on
+    Windows the process is made DPI-aware before any display call."""
+
+    def open_on(self, desktop, tiles=True):
+        from game.paths import resource_path
+        from render import ui
+        from render.tileset import Tileset
+
+        tileset = Tileset(resource_path('assets')) if tiles else Tileset()
+        with mock.patch.object(ui, '_desktop_size', return_value=desktop):
+            renderer = PygameRenderer(WIDTH, HEIGHT, tileset=tileset)
+        self.addCleanup(renderer.close)
+        return renderer
+
+    def test_big_desktop_gets_a_1920x1080_window(self):
+        for tiles in (True, False):
+            with self.subTest(tiles=tiles):
+                renderer = self.open_on((2560, 1440), tiles)
+                self.assertEqual(renderer.canvas.surface.get_size(), (1920, 1080))
+                self.assertTrue(pygame.display.get_surface().get_flags() & pygame.RESIZABLE)
+
+    def test_small_desktop_caps_the_window(self):
+        renderer = self.open_on((1366, 768))
+        width, height = renderer.canvas.surface.get_size()
+        self.assertLessEqual(width, 1366 * 0.85)
+        self.assertLessEqual(height, 768 * 0.85)
+        self.assertEqual(width * 9 // 16, height)
+
+    def test_dpi_awareness_is_set_before_the_display_starts(self):
+        from render import pygame_render
+
+        calls = []
+        real_init = pygame.display.init
+
+        def init():
+            calls.append('init')
+            real_init()
+
+        with (
+            mock.patch.object(
+                pygame_render, '_make_dpi_aware', side_effect=lambda: calls.append('dpi')
+            ),
+            mock.patch('pygame.display.init', side_effect=init),
+        ):
+            renderer = PygameRenderer(WIDTH, HEIGHT)
+        self.addCleanup(renderer.close)
+        self.assertEqual(calls, ['dpi', 'init'])
+
+
+class DpiAwarenessTest(unittest.TestCase):
+    """render.pygame_render._make_dpi_aware, with sys.platform and ctypes.windll
+    mocked: only Windows makes a call, and no failure escapes."""
+
+    def setUp(self):
+        if pygame is None:
+            self.skipTest('pygame-ce not installed')
+
+    def run_on(self, platform, windll):
+        import ctypes
+
+        from render import pygame_render
+
+        with (
+            mock.patch.object(pygame_render, 'sys', mock.Mock(platform=platform)),
+            mock.patch.object(ctypes, 'windll', windll, create=True),
+        ):
+            return pygame_render._make_dpi_aware()
+
+    def test_not_windows_makes_no_call(self):
+        for platform in ('linux', 'darwin'):
+            with self.subTest(platform=platform):
+                windll = mock.Mock()
+                self.assertFalse(self.run_on(platform, windll))
+                self.assertEqual(windll.mock_calls, [])
+
+    def test_windows_asks_for_per_monitor_awareness(self):
+        windll = mock.Mock()
+        self.assertTrue(self.run_on('win32', windll))
+        windll.shcore.SetProcessDpiAwareness.assert_called_once_with(2)
+        windll.user32.SetProcessDPIAware.assert_not_called()
+
+    def test_old_windows_falls_back_to_system_awareness(self):
+        windll = mock.Mock()
+        windll.shcore.SetProcessDpiAwareness.side_effect = OSError('no shcore')
+        self.assertTrue(self.run_on('win32', windll))
+        windll.user32.SetProcessDPIAware.assert_called_once_with()
+
+    def test_every_failure_is_harmless(self):
+        windll = mock.Mock()
+        windll.shcore.SetProcessDpiAwareness.side_effect = OSError('no shcore')
+        windll.user32.SetProcessDPIAware.side_effect = AttributeError('no user32')
+        self.assertFalse(self.run_on('win32', windll))
+        # A Python without ctypes.windll at all.
+        self.assertFalse(self.run_on('win32', None))
+
+
 if __name__ == '__main__':
     unittest.main()
