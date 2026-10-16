@@ -75,7 +75,9 @@ TILE_SIZES = (64, 56, 48, 44, 40, 36, 32, 28, 24, 20, 16)
 # A bigger tile is only worth it while the panel text stays readable.
 MIN_TILE_FONT_SIZE = 12
 MAX_TILE_FONT_SIZE = 20
-# The first window takes at most this share of the desktop.
+# The first window: this size on any desktop that holds it, else the largest
+# 16:9 size within this share of a smaller desktop.
+FIRST_WINDOW = (1920, 1080)
 DESKTOP_SHARE = 0.85
 FALLBACK_DESKTOP = (1280, 800)
 
@@ -320,17 +322,9 @@ class Layout:
     # -- public geometry ------------------------------------------------------
 
     def preferred_window_size(self):
-        """Glyph mode: the side-by-side grid with a full log, at the starting
-        font size. Tile mode: map and panel at the biggest tile that fits most
-        of the desktop."""
-        if self.tiles:
-            desktop_w, desktop_h = _desktop_size()
-            win_w, win_h = int(desktop_w * DESKTOP_SHARE), int(desktop_h * DESKTOP_SHARE)
-            stacked, tile, size = self._choose_tiles(win_w, win_h)
-            return self._block_size(tile, self._cell_size(self._font(size)), stacked)
-        cols, _, max_rows = self._glyph_grid(False)[:3]
-        cell_w, cell_h = self._cell_size(self._font(START_FONT_SIZE))
-        return cell_w * cols, cell_h * max_rows
+        """The first window's size (`first_window_size`), in either mode: the
+        font or tile then follows from fit()."""
+        return first_window_size()
 
     def fit(self, window_size):
         """Recompute font, cell size, panel placement and letterbox origin
@@ -604,6 +598,19 @@ def _gear_lines(label, item, stat_label):
         f'     {item.bonus:+d} {stat_label}  [{item.rarity}]',
         palette.ink(item.color),
     )
+
+
+def first_window_size(desktop=None):
+    """FIRST_WINDOW (1920x1080) when the desktop (`desktop`, else the primary
+    one) is at least that big; otherwise the largest 16:9 size inside
+    DESKTOP_SHARE of it."""
+    desktop_w, desktop_h = desktop or _desktop_size()
+    target_w, target_h = FIRST_WINDOW
+    if desktop_w >= target_w and desktop_h >= target_h:
+        return FIRST_WINDOW
+    usable_w, usable_h = int(desktop_w * DESKTOP_SHARE), int(desktop_h * DESKTOP_SHARE)
+    width = max(16, min(usable_w, usable_h * target_w // target_h))
+    return width, width * target_h // target_w
 
 
 def _desktop_size():

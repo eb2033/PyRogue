@@ -25,6 +25,7 @@ import copy
 import math
 import os
 import random
+import sys
 import warnings
 from typing import cast
 
@@ -217,6 +218,9 @@ class PygameRenderer(Renderer):
         other swing shapes in proportion (0 = no swings); `guard_ms` /
         `parry_fade_ms`: how long a parry's shield shows / its "Parry!" takes
         to fade once the riposte has landed (0 = skipped)."""
+        # Before any display call: the window and desktop sizes are then real
+        # pixels, not Windows' scaled ones.
+        _make_dpi_aware()
         pygame.display.init()
         pygame.display.set_caption('PyRogue')
         _set_window_icon()
@@ -1416,6 +1420,31 @@ class PygameRenderer(Renderer):
 
     def close(self):
         pygame.quit()
+
+
+def _make_dpi_aware():
+    """Windows only: declare the process DPI-aware, so that at 125% or 150%
+    display scaling the desktop size is reported in physical pixels and the
+    window isn't stretched by Windows. Per-monitor awareness (8.1+), else
+    system awareness (Vista+); any failure leaves things as they were.
+    Returns whether a call succeeded."""
+    if sys.platform != 'win32':
+        return False
+    import ctypes
+
+    windll = getattr(ctypes, 'windll', None)
+    if windll is None:
+        return False
+    try:
+        windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+        return True
+    except (AttributeError, OSError):
+        pass
+    try:
+        windll.user32.SetProcessDPIAware()
+        return True
+    except (AttributeError, OSError):
+        return False
 
 
 def _set_window_icon():

@@ -6,6 +6,24 @@ GitHub Release notes.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-16
+
+A playable fix-up on top of 0.2.0: a Windows window that opens at full size, and a round of
+archer and combat changes from playtesting.
+
+### Added
+- Skip a chest or shrine choice with key 4 or Space: a bad roll no longer forces a worse weapon.
+- The archer's Q primes a hop, and the next movement key picks its direction. It no longer needs
+  an enemy nearby.
+- The archer sees two tiles further than the warrior.
+
+### Changed
+- Chasing monsters line up with you (in your row or column, with a clear line) before closing in,
+  so they can't sit beside an arrow's lane and go untargeted.
+- Holding a movement key doesn't keep walking while an enemy is on screen.
+- The window opens at 1920x1080 (or the largest 16:9 size that fits a smaller desktop), on every
+  platform. On Windows the process is DPI-aware, so display scaling doesn't shrink the window.
+
 ## [0.2.0] - 2026-10-16
 
 A second playable build: a new archer class, a parry for the warrior, shrines, a boss that calls
