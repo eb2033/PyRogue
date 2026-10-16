@@ -77,9 +77,9 @@ from game.monster import (
     SHOOT_RANGE,
     Monster,
     is_boss_level,
+    lane_tiles,
     scale_stats,
     spawn_boss,
-    lane_tiles,
     spawn_monsters,
     tier_for_depth,
 )
