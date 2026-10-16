@@ -1,7 +1,10 @@
 """Monsters (spec §6, stretch goal #3), plus difficulty scaling and a boss.
 
-Monster.take_turn mirrors the spec's naive AI: chase when the player is
-within range, otherwise wander randomly. It returns 'attack' rather than
+Monster.take_turn mirrors the spec's AI: chase when the player is within
+range, otherwise wander randomly. The chase heads for the nearest tile in
+line with the player (same row or column, clear line between) so it stands
+in the archer's line of fire as early as it can -- see _chase_step. It
+returns 'attack' rather than
 stepping onto the player's tile; the caller (GameState's monster phase)
 resolves the damage, so combat math lives in one place.
 
@@ -57,6 +60,7 @@ ORTHOGONAL_STEPS = ((0, -1), (0, 1), (-1, 0), (1, 0))
 WANDER_STEPS = ORTHOGONAL_STEPS + ((0, 0),)
 
 CHASE_RANGE = 8
+LANE_SEARCH_LIMIT = 12  # moves a chaser searches for a tile in line with the player
 GIVE_UP_AFTER = 3  # blind chasing turns before a monster gives up
 TIER_SIZE = 3  # floors per difficulty tier
 TIER_HP_MULT = 1.2
@@ -238,6 +242,70 @@ class Monster(Entity):
         return best
 
     def _chase_step(self, player, game_map, occupied=()):
+        """Pick a chasing monster's step: get in line with the player first.
+
+        The player's arrows fly along rows and columns, so a chaser that
+        closed in greedily could slide diagonally past an archer and never
+        stand in a lane. Instead, in order:
+
+        1. Already on the player's row or column with a clear line between
+           (lane_tiles): step along the line toward the player. It never
+           steps out of a clear line.
+        2. Otherwise walk the shortest route (_route_to_lane, a breadth-first
+           search of at most LANE_SEARCH_LIMIT moves, other creatures being
+           obstacles) to the nearest tile with a clear line to the player.
+        3. No such tile within the limit: the old greedy step (_greedy_step).
+
+        Returns None when no step is possible.
+        """
+        lanes = lane_tiles(player, game_map, occupied)
+        here = (self.x, self.y)
+        if here in lanes:
+            sx = (player.x > self.x) - (player.x < self.x)
+            sy = (player.y > self.y) - (player.y < self.y)
+            return (sx, sy)  # the next tile is on the clear line, so free
+        step = self._route_to_lane(lanes, game_map, occupied)
+        if step is not None:
+            return step
+        return self._greedy_step(player, game_map, occupied)
+
+    def _route_to_lane(self, lanes, game_map, occupied):
+        """First step of a shortest walk (at most LANE_SEARCH_LIMIT moves)
+        to a tile in `lanes`, or None if none is that close.
+
+        Breadth-first over walkable tiles that are not in `occupied`. Among
+        the lane tiles at the smallest walking distance the one nearest the
+        monster by Manhattan distance wins, then the lowest (y, x), so the
+        choice depends only on the position. Expansion follows
+        ORTHOGONAL_STEPS, which fixes which of several shortest paths is
+        taken."""
+        if not lanes:
+            return None
+        start = (self.x, self.y)
+        # tile -> first step taken to reach it
+        first: dict[tuple[int, int], tuple[int, int] | None] = {start: None}
+        frontier = [start]
+        for _ in range(LANE_SEARCH_LIMIT):
+            nxt = []
+            for x, y in frontier:
+                for sx, sy in ORTHOGONAL_STEPS:
+                    t = (x + sx, y + sy)
+                    if t in first or t in occupied or not is_walkable(game_map, *t):
+                        continue
+                    first[t] = first[(x, y)] or (sx, sy)
+                    nxt.append(t)
+            reached = [t for t in nxt if t in lanes]
+            if reached:
+                best = min(
+                    reached, key=lambda t: (abs(t[0] - self.x) + abs(t[1] - self.y), t[1], t[0])
+                )
+                return first[best]
+            if not nxt:
+                return None
+            frontier = nxt
+        return None
+
+    def _greedy_step(self, player, game_map, occupied=()):
         """Pick a greedy 4-way step toward the player.
 
         Closes the larger of the two gaps first and falls back to the other
@@ -246,11 +314,12 @@ class Monster(Entity):
         cut off by a corner just stopped; trying the second axis gets it
         moving again.
 
-        This is still the spec's naive chase, not pathfinding: a monster
-        lined up with the player on one axis has no second axis to fall back
-        to, so a wall (or another monster) directly between them stalls it
-        until the way clears. Returns None in that case, and whenever both
-        candidates are blocked.
+        This is the spec's naive chase, now only _chase_step's fallback for
+        when no tile in line with the player is within LANE_SEARCH_LIMIT
+        moves: a monster lined up with the player on one axis has no second
+        axis to fall back to, so a wall (or another monster) directly
+        between them stalls it until the way clears. Returns None in that
+        case, and whenever both candidates are blocked.
         """
         dx = (player.x > self.x) - (player.x < self.x)
         dy = (player.y > self.y) - (player.y < self.y)
@@ -264,6 +333,24 @@ class Monster(Entity):
             if (sx or sy) and is_walkable(game_map, tx, ty) and (tx, ty) not in occupied:
                 return (sx, sy)
         return None
+
+
+def lane_tiles(player, game_map, occupied=()):
+    """The tiles a monster can stand on to be in the player's line of fire:
+    on the player's row or column, walkable, not in `occupied`, with nothing
+    between it and the player that blocks sight (a wall or a closed door,
+    see tiles.is_transparent) or holds a creature. Walks out from the player
+    in the four directions until something blocks; a door can be a lane
+    tile itself but nothing beyond it is."""
+    lanes = set()
+    for sx, sy in ORTHOGONAL_STEPS:
+        x, y = player.x + sx, player.y + sy
+        while is_walkable(game_map, x, y) and (x, y) not in occupied:
+            lanes.add((x, y))
+            if not is_transparent(game_map, x, y):
+                break
+            x, y = x + sx, y + sy
+    return lanes
 
 
 def spawn_monsters(rooms, depth=1, rng: Rng = random):

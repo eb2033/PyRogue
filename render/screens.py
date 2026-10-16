@@ -145,25 +145,39 @@ def _choice_text_w(layout, lines):
 
 
 def choice_rects(layout, state):
-    """(box, card rects, compact) for state.pending_choice: a box centred on
-    the map with a title row, the cards, and a hint row (half a line of
-    margin round each). Cards go side by side
+    """(box, card rects, compact) for state.pending_choice -- see
+    _choice_geometry, which also gives the skip line's rect."""
+    box, cards, compact, _ = _choice_geometry(layout, state)
+    return box, cards, compact
+
+
+def choice_skip_rect(layout, state):
+    """The skip line's rect (under the cards) for state.pending_choice."""
+    return _choice_geometry(layout, state)[3]
+
+
+def _choice_geometry(layout, state):
+    """(box, card rects, compact, skip rect) for state.pending_choice: a box
+    centred on the map with a title row, the cards, the skip line and a hint
+    row (half a line of margin round each). Cards go side by side
     when three fit across the map, else they stack in two-line compact form.
-    paint_choice and choice_card_at both use this."""
+    paint_choice, choice_card_at and choice_skip_at all use this."""
     items = state.pending_choice or []
     numbered = choice.cards(items)
     line_h = layout.font.get_linesize()
     pad = layout.cell_w
     area = layout.map_rect()
     title = choice.title(items)
-    frame_w = max(layout.font.size(title)[0], layout.font.size(choice.HINT)[0])
+    skip_w = layout.font.size(choice.skip_line(items))[0] + 2 * pad
+    skip_h = line_h + line_h // 2  # the skip line and its margin above
+    frame_w = max(layout.font.size(title)[0], layout.font.size(choice.HINT)[0], skip_w)
 
     full = [line for n, item in numbered for line in choice.card_lines(n, item)]
     card_w = _choice_text_w(layout, full) + 2 * pad
     card_h = (len(full) // max(1, len(items))) * line_h + line_h
     gap = pad
     box_w = max(len(items) * card_w + (len(items) - 1) * gap, frame_w) + 2 * pad
-    box_h = card_h + 4 * line_h
+    box_h = card_h + 4 * line_h + skip_h
     compact = box_w > area.width or box_h > area.height
     if compact:
         lines = [line for n, item in numbered for line in choice.compact_lines(n, item)]
@@ -171,7 +185,7 @@ def choice_rects(layout, state):
         card_h = 2 * line_h + line_h // 2
         gap = max(1, line_h // 4)
         box_w = max(card_w, frame_w) + 2 * pad
-        box_h = len(items) * card_h + (len(items) - 1) * gap + 4 * line_h
+        box_h = len(items) * card_h + (len(items) - 1) * gap + 4 * line_h + skip_h
 
     box = pygame.Rect(0, 0, box_w, box_h)
     box.center = area.center
@@ -188,7 +202,10 @@ def choice_rects(layout, state):
         cards = [
             pygame.Rect(left + i * (card_w + gap), top, card_w, card_h) for i in range(len(items))
         ]
-    return box, cards, compact
+    cards_bottom = max((rect.bottom for rect in cards), default=top)
+    skip = pygame.Rect(0, cards_bottom + line_h // 2, skip_w, line_h)
+    skip.centerx = box.centerx
+    return box, cards, compact, skip
 
 
 def choice_card_at(layout, state, pixel):
@@ -203,6 +220,13 @@ def choice_card_at(layout, state, pixel):
     return None
 
 
+def choice_skip_at(layout, state, pixel):
+    """True if window pixel `pixel` is on the skip line of a pending choice."""
+    if state is None or not state.is_choosing:
+        return False
+    return choice_skip_rect(layout, state).collidepoint(pixel)
+
+
 def paint_choice(canvas, state):
     """Overlay for a pending choice: a dark framed box over the map, TEXT
     for the title and hint, and each card a parchment page (the panel's
@@ -210,7 +234,7 @@ def paint_choice(canvas, state):
     the boon's colour (render/choice.py has every card's text)."""
     layout = canvas.layout
     surface = canvas.surface
-    box, cards, compact = choice_rects(layout, state)
+    box, cards, compact, skip = _choice_geometry(layout, state)
     border = max(1, layout.cell_h // 12)
     line_h = layout.font.get_linesize()
     surface.fill(palette.BACKGROUND, box)
@@ -220,6 +244,8 @@ def paint_choice(canvas, state):
     surface.blit(title, title.get_rect(centerx=box.centerx, top=box.top + line_h // 2))
     hint = canvas.text_surface(choice.HINT, palette.TEXT)
     surface.blit(hint, hint.get_rect(centerx=box.centerx, bottom=box.bottom - line_h // 2))
+    skip_text = canvas.text_surface(choice.skip_line(state.pending_choice), palette.TEXT)
+    surface.blit(skip_text, skip_text.get_rect(center=skip.center))
 
     for (number, item), rect in zip(choice.cards(state.pending_choice), cards):
         surface.fill(palette.PAGE, rect)

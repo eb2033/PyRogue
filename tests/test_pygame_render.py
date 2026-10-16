@@ -746,6 +746,58 @@ class TileModeTest(unittest.TestCase):
         self.assertIn(CRIT_RGB, pixels)
         self.assertIn(CRIT_OUTLINE_RGB, pixels)
 
+    def _drawn_state(self, with_monster):
+        state = GameState(WIDTH, HEIGHT)
+        state.entities = [state.player]
+        if with_monster:
+            state.entities.append(Monster(state.player.x + 2, state.player.y, 'goblin'))
+        state.update_fov()
+        self.renderer.draw(state)
+        return state
+
+    def _first_action(self, *events):
+        for event in events:
+            pygame.event.post(event)
+        return self.renderer.get_action()
+
+    def test_repeated_movement_is_ignored_while_a_monster_is_visible(self):
+        self._drawn_state(True)
+        w = key(pygame.K_w, 'w')
+        # A second press with no release in between is an auto-repeat; the
+        # 'wait' after it proves the repeat was skipped, not queued.
+        self.assertEqual(self._first_action(w), Action.MOVE_N)
+        self.assertEqual(self._first_action(w, key(pygame.K_PERIOD, '.')), Action.WAIT)
+
+    def test_repeat_flag_movement_is_ignored_with_a_monster_visible(self):
+        self._drawn_state(True)
+        rep = pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_d, unicode='d', mod=0, scancode=0, repeat=True
+        )
+        self.assertEqual(self._first_action(rep, key(pygame.K_PERIOD, '.')), Action.WAIT)
+
+    def test_repeated_movement_passes_with_no_monster_visible(self):
+        self._drawn_state(False)
+        w = key(pygame.K_w, 'w')
+        self.assertEqual(self._first_action(w), Action.MOVE_N)
+        self.assertEqual(self._first_action(w), Action.MOVE_N)
+
+    def test_repeated_wait_and_drink_pass_with_a_monster_visible(self):
+        self._drawn_state(True)
+        for k, char, action in (
+            (pygame.K_PERIOD, '.', Action.WAIT),
+            (pygame.K_h, 'h', Action.DRINK),
+        ):
+            ev = key(k, char)
+            self.assertEqual(self._first_action(ev), action)
+            self.assertEqual(self._first_action(ev), action)
+
+    def test_released_then_pressed_movement_always_passes(self):
+        self._drawn_state(True)
+        w = key(pygame.K_w, 'w')
+        up = pygame.event.Event(pygame.KEYUP, key=pygame.K_w, mod=0, scancode=0)
+        self.assertEqual(self._first_action(w), Action.MOVE_N)
+        self.assertEqual(self._first_action(up, w), Action.MOVE_N)
+
     def test_char_without_a_tile_is_drawn_as_its_glyph(self):
         state = GameState(WIDTH, HEIGHT)
         stranger = Monster(state.player.x + 1, state.player.y, 'goblin')
@@ -1255,6 +1307,42 @@ class ChestChoiceScreenTest(unittest.TestCase):
         pygame.event.post(key(pygame.K_d, 'd'))
         self.assertEqual(self.renderer.get_action(), Action.MOVE_E)
 
+    def test_key_4_and_space_skip_the_choice(self):
+        self.renderer.draw(self.state)
+        weapon = self.state.player.weapon
+        pygame.event.post(key(pygame.K_4, '4'))
+        self.assertEqual(self.renderer.get_action(), Action.SKIP)
+        pygame.event.post(key(pygame.K_SPACE, ' '))
+        action = self.renderer.get_action()
+        self.assertEqual(action, Action.SKIP)
+        self.assertFalse(self.state.handle_action(action))  # no turn
+        self.assertFalse(self.state.is_choosing)
+        self.assertIs(self.state.player.weapon, weapon)
+        self.assertIsNone(self.state.player.armor)
+        # With no choice on screen, Space is the wait key again.
+        self.renderer.draw(self.state)
+        pygame.event.post(key(pygame.K_SPACE, ' '))
+        self.assertEqual(self.renderer.get_action(), Action.WAIT)
+
+    def test_skip_line_sits_in_the_box_under_the_cards_and_is_painted(self):
+        box, cards, _ = screens.choice_rects(self.renderer.layout, self.state)
+        skip = screens.choice_skip_rect(self.renderer.layout, self.state)
+        self.assertTrue(box.contains(skip))
+        for card in cards:
+            self.assertFalse(skip.colliderect(card))
+            self.assertLessEqual(card.bottom, skip.top)
+        self.renderer.draw(self.state)
+        self.assertGreater(len(cell_pixels(self.renderer, skip)), 1)  # text drawn
+
+    def test_clicking_the_skip_line_skips(self):
+        self.renderer.draw(self.state)
+        self.click(screens.choice_skip_rect(self.renderer.layout, self.state).center)
+        action = self.renderer.get_action()
+        self.assertEqual(action, Action.SKIP)
+        self.state.handle_action(action)
+        self.assertFalse(self.state.is_choosing)
+        self.assertIsNone(self.state.player.armor)
+
     def test_narrow_map_stacks_the_cards(self):
         renderer = self.renderer
         renderer._set_mode((420, 700), pygame.RESIZABLE)
@@ -1262,6 +1350,9 @@ class ChestChoiceScreenTest(unittest.TestCase):
         box, cards, compact = screens.choice_rects(renderer.layout, self.state)
         if compact:
             self.assertTrue(cards[0].bottom <= cards[1].top <= cards[1].bottom <= cards[2].top)
+        skip = screens.choice_skip_rect(renderer.layout, self.state)
+        self.assertLessEqual(cards[-1].bottom, skip.top)
+        self.assertLessEqual(skip.bottom, box.bottom)
         renderer.draw(self.state)  # paints without error either way
 
 
@@ -1336,6 +1427,13 @@ class BoonChoiceScreenTest(unittest.TestCase):
         self.assertFalse(self.state.handle_action(action))  # no turn
         self.assertFalse(self.state.is_choosing)
         self.assertEqual(self.state.player.boons, ['iron_skin'])
+
+    def test_space_skips_a_boon_choice(self):
+        self.renderer.draw(self.state)
+        pygame.event.post(key(pygame.K_SPACE, ' '))
+        self.state.handle_action(self.renderer.get_action())
+        self.assertFalse(self.state.is_choosing)
+        self.assertEqual(self.state.player.boons, [])
 
     def test_keyboard_3_takes_the_third_boon(self):
         self.renderer.draw(self.state)
@@ -1478,6 +1576,18 @@ class ChoiceCardTextTest(unittest.TestCase):
             choice.card_lines(1, item), ['[1]', item.name, 'rare', '+3 damage, +15% crit']
         )
         self.assertIn('+15% crit', choice.compact_lines(1, item)[1])
+
+    def test_skip_line_for_a_chest_and_for_a_shrine(self):
+        from game.item import Item
+        from game.shrine import BOONS
+        from render import choice
+        from render.base import Action
+
+        self.assertEqual(choice.skip_line([Item(0, 0, 'weapon')]), '[4] Skip: leave the chest')
+        self.assertEqual(choice.skip_line([BOONS['iron_skin']]), '[4] Skip: leave the shrine')
+        self.assertEqual(choice.SKIP_ACTION, Action.SKIP)
+        self.assertIn('4', choice.HINT)
+        self.assertIn('space', choice.HINT)
 
 
 # -- helpers -----------------------------------------------------------------

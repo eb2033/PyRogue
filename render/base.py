@@ -27,14 +27,18 @@ class Action:
     # the run and sends the player back to the title screen. Mid-game it does
     # nothing.
     RESTART = 'restart'
-    # 'q': the class ability (the archer's hop, the warrior's move -- not yet
-    # wired). On the game-over screen GameState treats it as "quit".
+    # 'q': the class ability (the archer primes a hop, whose direction the
+    # next movement key picks; the warrior parries). On the game-over screen
+    # GameState treats it as "quit".
     ABILITY = 'ability'
     # Keys 1-3: take that card of an opened chest's choice (GameState.choose).
     # Outside a choice they do nothing.
     CHOOSE_1 = 'choose_1'
     CHOOSE_2 = 'choose_2'
     CHOOSE_3 = 'choose_3'
+    # Key 4 (and Space, but only while a choice is on screen): leave the
+    # chest's or shrine's offers and take nothing (GameState.skip_choice).
+    SKIP = 'skip'
     # 'h': drink the first potion on the belt (GameState.drink_from_belt).
     DRINK = 'drink'
 

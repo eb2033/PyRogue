@@ -1,7 +1,8 @@
 """What the "choose one of three" screen says. Standard library only.
 
 The window draws a pending choice (GameState.pending_choice) from the text
-here: three cards, numbered in pending_choice order. The offers are a chest's Items or a shrine's
+here: three cards, numbered in pending_choice order, and a skip line under
+them (key 4 or Space). The offers are a chest's Items or a shrine's
 Boons (game/shrine.py); every function here takes either, and a boon card
 reads its name, its benefit and its cost where an item card reads its name,
 rarity and stat. Geometry (in pixels) is render/screens.py's business.
@@ -13,9 +14,13 @@ from render.base import Action
 
 TITLE = 'Choose one'
 BOON_TITLE = 'Choose a boon'
-HINT = 'press 1, 2 or 3'
+HINT = 'press 1, 2 or 3; 4 or space skips'
 # Action -> index into pending_choice; GameState.handle_action uses the same order.
 CHOOSE_ACTIONS = (Action.CHOOSE_1, Action.CHOOSE_2, Action.CHOOSE_3)
+# The line under the cards that takes nothing (Action.SKIP: key 4 or Space).
+SKIP_ACTION = Action.SKIP
+SKIP_LINE = '[4] Skip: leave the chest'
+BOON_SKIP_LINE = '[4] Skip: leave the shrine'
 
 JUNK_STAT = 'nothing useful'
 JUNK_RARITY = 'junk'
@@ -53,6 +58,11 @@ def _effect_text(item):
 def title(offers):
     """The box's title: BOON_TITLE for a shrine's boons, else TITLE."""
     return BOON_TITLE if offers and isinstance(offers[0], Boon) else TITLE
+
+
+def skip_line(offers):
+    """The skip option's line: BOON_SKIP_LINE for a shrine, else SKIP_LINE."""
+    return BOON_SKIP_LINE if offers and isinstance(offers[0], Boon) else SKIP_LINE
 
 
 def stat_text(item):
