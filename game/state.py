@@ -66,9 +66,8 @@ SHOOT_DELTAS = {
     'shoot_e': (1, 0),
 }
 
-# The archer's hop (Q): reach, trigger radius, and turns before the next one.
+# The archer's hop (Q, then a direction): reach, and turns before the next one.
 HOP_DISTANCE = 2
-HOP_TRIGGER_RANGE = 3
 HOP_COOLDOWN = 4
 # The warrior's parry (Q): turns from arming one before the next can be armed.
 PARRY_COOLDOWN = 4
@@ -159,6 +158,10 @@ class GameState:
         # True after a successful hop until the archer's next shot, which
         # always crits (archery.shoot spends it, hit or miss). Not saved.
         self.hop_crit = False
+        # True after the archer's Q primed a hop: the next movement key (WASD
+        # or an arrow) picks its direction; any other key cancels it. Priming
+        # takes no turn. Not saved.
+        self.hop_primed = False
         # The warrior's parry (Q): armed until the next monster melee hit that
         # would land on the player, which it nullifies (see _monster_melee);
         # parry_progress() is its recharge for the bar. last_parry_turn is
@@ -292,21 +295,39 @@ class GameState:
             if self.is_choosing:
                 return False
             if self.player.char_class == 'archer':
-                if not self.hop():
-                    return False
-                self._spend_turn()
-                self.last_hop_turn = self.turn
-                self.hop_crit = True
-            else:
-                if not self.arm_parry():
-                    return False
-                self._spend_turn()
-                self.last_parry_turn = self.turn
+                # Q primes the hop (or, pressed again, cancels it): no turn
+                # either way. The direction key that follows is the hop.
+                if self.hop_primed:
+                    self._cancel_hop()
+                else:
+                    self.prime_hop()
+                return False
+            if not self.arm_parry():
+                return False
+            self._spend_turn()
+            self.last_parry_turn = self.turn
             self.end_player_phase()
             return True
 
         if self.game_over:
             return False
+
+        if self.hop_primed:
+            # The archer primed a hop: a movement key (WASD or an arrow) is
+            # its direction; anything else cancels it. Neither moves the
+            # player the ordinary way or shoots.
+            delta = MOVE_DELTAS.get(action) or SHOOT_DELTAS.get(action)
+            if delta is None:
+                self._cancel_hop()
+                return False
+            if not self.hop(*delta):
+                return False  # nowhere to go that way: still primed
+            self.hop_primed = False
+            self._spend_turn()
+            self.last_hop_turn = self.turn
+            self.hop_crit = True
+            self.end_player_phase()
+            return True
 
         if action in CHOOSE_INDEX:
             # Only means something on a choice screen; never takes a turn.
@@ -377,37 +398,37 @@ class GameState:
 
         return False
 
-    def hop(self):
-        """The archer's backward hop: up to HOP_DISTANCE tiles straight away
-        from the nearest living monster within HOP_TRIGGER_RANGE, along the
-        axis where it is farther (vertical on a tie), stopping at a wall or
-        anything standing in the way. Returns False, with a log line and no
-        position change, if it is refused; the caller spends the turn."""
+    def prime_hop(self):
+        """The archer's Q: ready a hop, whose direction the next movement key
+        picks (handle_action). Refused, with the cooldown's log line, until
+        HOP_COOLDOWN turns have passed since the last hop. Takes no turn.
+        Returns True if the hop is now primed."""
         if self.last_hop_turn is not None:
             left = HOP_COOLDOWN - (self.turn - self.last_hop_turn)
             if left > 0:
                 self.log(f'Hop recovering ({left} turns).')
                 return False
+        self.hop_primed = True
+        self.log('Hop ready: pick a direction.')
+        return True
+
+    def _cancel_hop(self):
+        self.hop_primed = False
+        self.log('Hop cancelled.')
+
+    def hop(self, dx, dy):
+        """The archer's hop: up to HOP_DISTANCE tiles in direction (dx, dy),
+        one tile at a time, stopping at a wall, a door, a living monster, a
+        chest or a shrine. Returns False, with a log line and no position
+        change, if it is refused (not even one tile free); the caller spends
+        the turn and starts the cooldown."""
         player = self.player
-        near = [
-            e
-            for e in self.entities
-            if isinstance(e, Monster) and e.alive and player.distance_to(e) <= HOP_TRIGGER_RANGE
-        ]
-        if not near:
-            self.log('Nothing to hop from.')
-            return False
-        foe = min(near, key=player.distance_to)
-        ddx, ddy = player.x - foe.x, player.y - foe.y
-        if abs(ddx) > abs(ddy):
-            dx, dy = (1 if ddx > 0 else -1), 0
-        else:
-            dx, dy = 0, (1 if ddy >= 0 else -1)
         hopped = 0
         for _ in range(HOP_DISTANCE):
             nx, ny = player.x + dx, player.y + dy
             if (
                 not is_walkable(self.game_map, nx, ny)
+                or self.game_map[ny][nx] == DOOR
                 or self.monster_at(nx, ny) is not None
                 or self.chest_at(nx, ny) is not None
                 or self.shrine_at(nx, ny) is not None

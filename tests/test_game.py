@@ -1378,52 +1378,130 @@ class ArcherHopTests(unittest.TestCase):
         state.update_fov()
         return state, mon
 
-    def test_hop_moves_two_tiles_away(self):
+    def hop(self, state, direction='move_e'):
+        """Q, then `direction`: the directional hop. Returns what the
+        direction key's handle_action returned."""
+        self.assertFalse(state.handle_action('ability'))  # priming: no turn
+        return state.handle_action(direction)
+
+    def test_q_primes_the_hop_and_takes_no_turn(self):
+        state, mon = self._arena()
+        turn = state.turn
+        self.assertFalse(state.handle_action('ability'))
+        self.assertTrue(state.hop_primed)
+        self.assertEqual(state.turn, turn)
+        self.assertFalse(state.monster_phase_pending())
+        self.assertEqual((state.player.x, state.player.y), (10, 10))
+        self.assertEqual((mon.x, mon.y), (8, 10))
+        self.assertEqual(state.messages[-1], 'Hop ready: pick a direction.')
+
+    def test_hop_moves_two_tiles_in_the_chosen_direction(self):
         state, _ = self._arena()
-        self.assertTrue(state.handle_action('ability'))
+        self.assertTrue(self.hop(state, 'move_e'))
         self.assertEqual((state.player.x, state.player.y), (12, 10))
+        self.assertFalse(state.hop_primed)
+        state, _ = self._arena()
+        self.assertTrue(self.hop(state, 'move_n'))
+        self.assertEqual((state.player.x, state.player.y), (10, 8))
+
+    def test_hop_toward_the_monster_stops_in_front_of_it(self):
+        state, mon = self._arena(-3, 0)
+        self.assertTrue(self.hop(state, 'move_w'))
+        self.assertEqual((state.player.x, state.player.y), (8, 10))
+        self.assertEqual((mon.x, mon.y), (7, 10))
+
+    def test_an_arrow_key_picks_the_direction_and_shoots_nothing(self):
+        state, mon = self._arena()
+        hp = mon.hp
+        quiver = state.player.quiver
+        self.assertTrue(self.hop(state, 'shoot_s'))
+        self.assertEqual((state.player.x, state.player.y), (10, 12))
+        self.assertEqual((mon.hp, state.player.quiver), (hp, quiver))
+        self.assertEqual(state.shots, [])
 
     def test_hop_takes_a_turn_and_monsters_act(self):
         state, mon = self._arena()
         turn = state.turn
-        state.handle_action('ability')
+        self.hop(state)
         self.assertEqual(state.turn, turn + 1)
         while state.step_monster_phase():
             pass
         self.assertNotEqual((mon.x, mon.y), (8, 10))  # it acted after the hop
 
-    def test_hop_vertical_on_tie(self):
-        state, _ = self._arena(-2, -2)
-        state.handle_action('ability')
-        self.assertEqual((state.player.x, state.player.y), (10, 12))
-
     def test_hop_stops_at_wall(self):
         state, _ = self._arena()
         state.game_map[10][12] = WALL
-        state.handle_action('ability')
+        self.hop(state)
         self.assertEqual((state.player.x, state.player.y), (11, 10))
 
-    def test_no_monster_in_range_refuses(self):
+    def test_hop_stops_at_a_door_a_chest_and_a_shrine(self):
+        state, _ = self._arena()
+        state.game_map[10][12] = DOOR
+        self.hop(state)
+        self.assertEqual((state.player.x, state.player.y), (11, 10))
+        state, _ = self._arena()
+        chest = Chest(12, 10, kind='gear')
+        state.entities.append(chest)
+        self.hop(state)
+        self.assertEqual((state.player.x, state.player.y), (11, 10))
+        self.assertIn(chest, state.entities)  # not opened
+        state, _ = self._arena()
+        state.entities.append(Shrine(12, 10))
+        self.hop(state)
+        self.assertEqual((state.player.x, state.player.y), (11, 10))
+        self.assertFalse(state.is_choosing)
+
+    def test_priming_needs_no_monster_in_range(self):
         state, _ = self._arena(-5, 0)
+        state.entities = [state.player]  # nobody at all
+        self.assertFalse(state.handle_action('ability'))
+        self.assertTrue(state.hop_primed)
+        self.assertNotIn('Nothing to hop from.', state.messages)
+        self.assertTrue(state.handle_action('move_e'))
+        self.assertEqual(state.player.x, 12)
+
+    def test_a_non_movement_key_cancels_the_prime_with_no_turn(self):
+        for action in ('wait', 'drink', 'descend', 'choose_1', 'skip'):
+            state, mon = self._arena()
+            state.handle_action('ability')
+            turn = state.turn
+            self.assertFalse(state.handle_action(action))
+            self.assertFalse(state.hop_primed)
+            self.assertEqual(state.turn, turn)
+            self.assertFalse(state.monster_phase_pending())
+            self.assertEqual(state.messages[-1], 'Hop cancelled.')
+            self.assertEqual((state.player.x, state.player.y), (10, 10))
+            # The key after that is an ordinary move again.
+            self.assertTrue(state.handle_action('move_e'))
+            self.assertEqual(state.player.x, 11)
+
+    def test_q_twice_cancels(self):
+        state, _ = self._arena()
         turn = state.turn
         self.assertFalse(state.handle_action('ability'))
+        self.assertFalse(state.handle_action('ability'))
+        self.assertFalse(state.hop_primed)
         self.assertEqual(state.turn, turn)
-        self.assertEqual(state.messages[-1], 'Nothing to hop from.')
+        self.assertEqual(state.messages[-1], 'Hop cancelled.')
+        self.assertIsNone(state.last_hop_turn)  # no cooldown started
+        self.assertTrue(self.hop(state))  # and Q primes again
 
     def test_cooldown_four_turns(self):
         state, mon = self._arena()
-        state.handle_action('ability')
+        self.hop(state)
         state.cancel_monster_phase()
-        mon.x, mon.y = state.player.x - 2, state.player.y
         for left in (4, 3, 2, 1):
+            turn = state.turn
             self.assertFalse(state.handle_action('ability'))
             self.assertEqual(state.messages[-1], f'Hop recovering ({left} turns).')
+            self.assertFalse(state.hop_primed)
+            self.assertEqual(state.turn, turn)
             state.handle_action('wait')
             state.cancel_monster_phase()
-            mon.x, mon.y = state.player.x - 2, state.player.y
+            mon.x, mon.y = 1, 1  # out of the way
         px = state.player.x
-        self.assertTrue(state.handle_action('ability'))
-        self.assertEqual(state.player.x, px + 2)
+        self.assertTrue(self.hop(state, 'move_w'))
+        self.assertEqual(state.player.x, px - 2)
 
     def test_warrior_q_parries_instead_of_hopping(self):
         state, _ = self._arena()
@@ -1433,6 +1511,9 @@ class ArcherHopTests(unittest.TestCase):
         self.assertEqual((state.turn, state.player.x), (turn + 1, 10))
         self.assertTrue(state.parry_armed)
         self.assertFalse(state.hop_crit)
+        self.assertFalse(state.hop_primed)
+        self.assertTrue(state.handle_action('move_e'))  # an ordinary step
+        self.assertEqual(state.player.x, 11)
 
     def test_successful_hop_arms_a_crit_for_the_next_shot_only(self):
         state, mon = self._arena()
@@ -1444,7 +1525,9 @@ class ArcherHopTests(unittest.TestCase):
             mock.patch('game.state.BASE_CRIT_CHANCE', 0.0),
             mock.patch('random.random', return_value=0.0),
         ):
-            self.assertTrue(state.handle_action('ability'))
+            self.assertFalse(state.handle_action('ability'))
+            self.assertFalse(state.hop_crit)  # primed, not hopped yet
+            self.assertTrue(state.handle_action('move_e'))
             self.assertTrue(state.hop_crit)
             state.cancel_monster_phase()
             power = state.player.power
@@ -1463,7 +1546,7 @@ class ArcherHopTests(unittest.TestCase):
         state, mon = self._arena()
         mon.hp = mon.max_hp = 1000
         with mock.patch('game.state.BASE_CRIT_CHANCE', 0.0):
-            state.handle_action('ability')
+            self.hop(state)
             state.cancel_monster_phase()
             state.handle_action('shoot_n')  # into the wall: nothing hit
             self.assertEqual(state.combat_events, [])
@@ -1474,35 +1557,41 @@ class ArcherHopTests(unittest.TestCase):
             self.assertFalse(hit.crit)
 
     def test_refused_hop_does_not_arm_the_crit(self):
-        state, _ = self._arena(-5, 0)  # nothing to hop from
-        self.assertFalse(state.handle_action('ability'))
-        self.assertFalse(state.hop_crit)
         state, _ = self._arena()
-        state.game_map[10][11] = WALL  # nowhere to hop
-        self.assertFalse(state.handle_action('ability'))
+        state.game_map[10][11] = WALL  # nowhere to hop east
+        self.assertFalse(self.hop(state))
         self.assertFalse(state.hop_crit)
+        state.handle_action('ability')  # cancel
         state, mon = self._arena()
-        state.handle_action('ability')
+        self.hop(state)
         state.cancel_monster_phase()
         state.handle_action('shoot_w')  # spends it
         state.cancel_monster_phase()
-        mon.x, mon.y = state.player.x - 2, state.player.y
         self.assertFalse(state.handle_action('ability'))  # on cooldown
+        self.assertFalse(state.hop_primed)
         self.assertFalse(state.hop_crit)
 
-    def test_nowhere_to_hop_refuses(self):
+    def test_a_refused_direction_keeps_the_prime(self):
         state, _ = self._arena()
         state.game_map[10][11] = WALL
         turn = state.turn
-        self.assertFalse(state.handle_action('ability'))
+        self.assertFalse(self.hop(state, 'move_e'))
         self.assertEqual(state.turn, turn)
+        self.assertFalse(state.monster_phase_pending())
         self.assertEqual(state.messages[-1], 'Nowhere to hop.')
         self.assertEqual(state.player.x, 10)
+        self.assertTrue(state.hop_primed)
+        self.assertIsNone(state.last_hop_turn)
+        # Another direction still hops.
+        self.assertTrue(state.handle_action('move_s'))
+        self.assertEqual((state.player.x, state.player.y), (10, 12))
+        self.assertFalse(state.hop_primed)
 
     def test_pending_choice_blocks_hop(self):
         state, _ = self._arena()
         state.pending_choice = [Item(0, 0, 'weapon', 'common')]
         self.assertFalse(state.handle_action('ability'))
+        self.assertFalse(state.hop_primed)
         self.assertEqual(state.player.x, 10)
 
 
