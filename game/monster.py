@@ -62,6 +62,12 @@ TIER_SIZE = 3  # floors per difficulty tier
 TIER_HP_MULT = 1.2
 TIER_POWER_BONUS = 1
 
+# Early-game ease: regular orcs (never the boss, never goblins) have 20% less
+# HP on floors 1..EARLY_ORC_MAX_DEPTH, applied after the tier scaling. From the
+# next floor on they scale normally.
+EARLY_ORC_HP_MULT = 0.8
+EARLY_ORC_MAX_DEPTH = 8
+
 BOSS_LEVEL_INTERVAL = 8
 BOSS_REFERENCE_KIND = 'orc'  # the toughest regular kind; boss stats scale off it
 BOSS_HP_MULT = 2.0
@@ -90,6 +96,8 @@ class Monster(Entity):
     def __init__(self, x, y, kind='goblin', depth=1, is_boss=False):
         char, color, base_hp, base_power = MONSTER_TYPES[kind]
         hp, power = scale_stats(base_hp, base_power, depth)
+        if kind == 'orc' and not is_boss and depth <= EARLY_ORC_MAX_DEPTH:
+            hp = max(1, round(hp * EARLY_ORC_HP_MULT))
         if is_boss:
             hp = max(1, round(hp * BOSS_HP_MULT))
             power = max(1, round(power * BOSS_POWER_MULT))

@@ -1543,6 +1543,28 @@ class DifficultyScalingTests(unittest.TestCase):
         m = Monster(0, 0, 'goblin', depth=10)
         self.assertEqual((m.hp, m.power), (expected_hp, expected_power))
 
+    def test_early_orcs_have_20_percent_less_hp(self):
+        base, power = MONSTER_TYPES['orc'][2], MONSTER_TYPES['orc'][3]
+        for depth in (1, 8):
+            full, _ = scale_stats(base, power, depth)
+            self.assertEqual(Monster(0, 0, 'orc', depth=depth).hp, round(full * 0.8))
+        self.assertEqual(Monster(0, 0, 'orc', depth=1).hp, 22)
+        self.assertEqual(Monster(0, 0, 'orc', depth=8).hp, 31)
+
+    def test_orc_hp_is_normal_from_floor_nine(self):
+        full, _ = scale_stats(MONSTER_TYPES['orc'][2], MONSTER_TYPES['orc'][3], 9)
+        self.assertEqual(Monster(0, 0, 'orc', depth=9).hp, full)
+        self.assertEqual(full, 39)
+
+    def test_goblin_hp_unchanged_by_orc_reduction(self):
+        base, power = MONSTER_TYPES['goblin'][2], MONSTER_TYPES['goblin'][3]
+        for depth in (1, 9):
+            full, _ = scale_stats(base, power, depth)
+            self.assertEqual(Monster(0, 0, 'goblin', depth=depth).hp, full)
+
+    def test_boss_hp_on_floor_eight_ignores_orc_reduction(self):
+        self.assertEqual(spawn_boss(Rect(1, 1, 10, 10), 8).hp, 78)
+
     def test_is_boss_level_every_eighth_floor(self):
         for d in (8, 16, 24):
             self.assertTrue(is_boss_level(d))
