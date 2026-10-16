@@ -8,6 +8,7 @@ Run with:
 import os
 import random
 import sys
+import time
 import unittest
 from typing import cast
 from unittest import mock
@@ -70,6 +71,7 @@ from game.monster import (
     BOSS_REFERENCE_KIND,
     CHASE_RANGE,
     GIVE_UP_AFTER,
+    LANE_SEARCH_LIMIT,
     MONSTER_TYPES,
     ORTHOGONAL_STEPS,
     SHOOT_RANGE,
@@ -77,6 +79,7 @@ from game.monster import (
     is_boss_level,
     scale_stats,
     spawn_boss,
+    lane_tiles,
     spawn_monsters,
     tier_for_depth,
 )
@@ -103,6 +106,7 @@ from game.spawn import (
     spawn_level,
 )
 from game.state import (
+    ARCHER_FOV_BONUS,
     BASE_CRIT_CHANCE,
     CRIT_MULTIPLIER,
     DESCENT_HEAL_FRACTION,
@@ -783,9 +787,10 @@ class MonsterCollisionTests(unittest.TestCase):
             self.assertEqual(len(spots), len(set(spots)))
         self.assertTrue(a.is_adjacent(state.player))
         self.assertTrue(offset.is_adjacent(state.player))
-        # The naive chase has no second axis when lined up with the player,
-        # so the one behind queues up against a rather than overlapping it.
-        self.assertEqual((behind.x, behind.y), (a.x + 1, a.y))
+        # With its line blocked by a, the one behind walks round to another
+        # lane (the lane chase) instead of queueing up behind a, and gets a
+        # side of the player too -- without ever overlapping anyone.
+        self.assertTrue(behind.is_adjacent(state.player))
 
     def test_no_two_monsters_spawn_on_one_tile(self):
         for seed in range(100):
@@ -901,6 +906,166 @@ class ChaseGiveUpTests(unittest.TestCase):
         self.assertTrue(m.chasing)
         self.assertEqual(m.lost_sight, 0)
         self.assertEqual(m.x, state.player.x + 4)
+
+
+def room_with(w, h, walls=()):
+    """A w x h map: wall border, floor inside, plus `walls` (x, y) tiles."""
+    game_map = make_empty_map(w, h, WALL)
+    for y in range(1, h - 1):
+        for x in range(1, w - 1):
+            game_map[y][x] = FLOOR
+    for x, y in walls:
+        game_map[y][x] = WALL
+    return game_map
+
+
+class LaneChaseTests(unittest.TestCase):
+    """A chaser heads for the nearest tile on the player's row or column with
+    a clear line to the player (where the archer's arrows fly), rather than
+    closing in greedily and sliding past diagonally."""
+
+    def in_clear_line(self, m, player, game_map, occupied=()):
+        return (m.x, m.y) in lane_tiles(player, game_map, occupied)
+
+    def test_off_line_monster_gets_in_line_first_and_stays_there(self):
+        game_map = room_with(15, 11)
+        player = Entity(4, 3, '@')
+        m = Monster(8, 6, 'goblin')  # 4 across, 3 down: nearest lane is 3 moves
+        for _ in range(3):
+            m.take_turn(player, game_map)
+        self.assertEqual((m.x, m.y), (8, 3), "on the player's row after 3 moves")
+        while not m.is_adjacent(player):
+            self.assertTrue(self.in_clear_line(m, player, game_map))
+            m.take_turn(player, game_map)
+        self.assertEqual(m.take_turn(player, game_map), 'attack')
+
+    def test_two_diagonal_gets_in_line_within_two_moves(self):
+        for dx, dy in ((2, 2), (2, -2), (-2, 2), (-2, -2)):
+            game_map = room_with(11, 11)
+            player = Entity(5, 5, '@')
+            m = Monster(5 + dx, 5 + dy, 'goblin')
+            m.take_turn(player, game_map)
+            m.take_turn(player, game_map)
+            self.assertTrue(m.x == player.x or m.y == player.y, (dx, dy))
+            self.assertTrue(self.in_clear_line(m, player, game_map), (dx, dy))
+
+    def test_greedy_closing_would_not_have_lined_up(self):
+        """The bug this fixes: greedily, a monster 3 across and 2 down closes
+        x first and stays off the player's lanes until it is adjacent."""
+        game_map = room_with(11, 11)
+        player = Entity(5, 5, '@')
+        m = Monster(8, 7, 'goblin')
+        self.assertEqual(m._greedy_step(player, game_map), (-1, 0))
+        self.assertEqual(m._chase_step(player, game_map), (0, -1))
+
+    def test_routes_round_a_wall_by_the_shortest_way(self):
+        """A wall right between the monster and the player used to stall the
+        greedy chase; now it walks round to the nearest lane tile."""
+        # Wall on row 5 from x=3 to x=9; player below it, monster above.
+        game_map = room_with(15, 11, [(x, 5) for x in range(3, 10)])
+        player = Entity(6, 8, '@')
+        m = Monster(6, 2, 'goblin')
+        # Lane tiles (2, 8) and (10, 8) are both 10 moves away; (2, 8) has
+        # the lower x, the last tie-break.
+        for turn in range(10):
+            before = (m.x, m.y)
+            self.assertIsNone(m.take_turn(player, game_map))
+            self.assertNotEqual((m.x, m.y), before, f'stalled on turn {turn}')
+            self.assertEqual(abs(m.x - before[0]) + abs(m.y - before[1]), 1)
+        self.assertEqual((m.x, m.y), (2, 8))
+        self.assertTrue(self.in_clear_line(m, player, game_map))
+
+    def test_search_is_bounded_and_falls_back_to_the_greedy_step(self):
+        # Wall on row 5 except a gap at x=13: the nearest lane tile, (13, 8),
+        # is 13 moves away -- one past the search limit.
+        game_map = room_with(15, 11, [(x, 5) for x in range(1, 13)])
+        player = Entity(6, 8, '@')
+        m = Monster(6, 2, 'goblin')
+        self.assertEqual(LANE_SEARCH_LIMIT, 12)
+        lanes = lane_tiles(player, game_map, {(6, 8)})
+        self.assertIsNone(m._route_to_lane(lanes, game_map, {(6, 8)}))
+        self.assertEqual(m._chase_step(player, game_map, {(6, 8)}), (0, 1), 'greedy: south')
+        with mock.patch('game.monster.LANE_SEARCH_LIMIT', 13):
+            self.assertIsNotNone(m._route_to_lane(lanes, game_map, {(6, 8)}))
+
+    def test_adjacent_monster_attacks_and_does_not_move(self):
+        game_map = room_with(11, 11)
+        player = Entity(5, 5, '@')
+        for dx, dy in ORTHOGONAL_STEPS:
+            m = Monster(5 + dx, 5 + dy, 'goblin')
+            self.assertEqual(m.take_turn(player, game_map, occupied={(5, 5)}), 'attack')
+            self.assertEqual((m.x, m.y), (5 + dx, 5 + dy))
+
+    def test_a_lane_stops_at_walls_doors_and_creatures(self):
+        game_map = room_with(11, 11, [(5, 2)])
+        game_map[5][8] = DOOR
+        player = Entity(5, 5, '@')
+        lanes = lane_tiles(player, game_map, {(5, 5), (2, 5)})
+        self.assertEqual(
+            lanes,
+            {(5, 4), (5, 3)}  # north, up to the wall at (5, 2)
+            | {(5, 6), (5, 7), (5, 8), (5, 9)}  # south, to the border
+            | {(4, 5), (3, 5)}  # west, up to the monster at (2, 5)
+            | {(6, 5), (7, 5), (8, 5)},  # east: the door, and nothing past it
+        )
+
+    def test_converging_monsters_never_share_a_tile(self):
+        state = open_floor_state(68)
+        state.player.hp = state.player.max_hp = 10**6
+        monsters = []
+        for x, y in ((13, 13), (14, 13), (13, 14), (7, 7), (6, 7), (7, 13), (13, 7), (12, 12)):
+            m = Monster(x, y, 'goblin')
+            m.power = 1
+            monsters.append(m)
+        state.entities += monsters
+        for turn in range(20):
+            state.handle_action('wait')
+            while state.step_monster_phase():
+                spots = [(m.x, m.y) for m in monsters]
+                self.assertEqual(len(spots), len(set(spots)), f'stacked on turn {turn}')
+                self.assertNotIn((state.player.x, state.player.y), spots)
+        self.assertEqual(sum(m.is_adjacent(state.player) for m in monsters), 4)
+
+    def test_still_gives_up_after_three_blind_turns(self):
+        game_map = room_with(15, 11)
+        player = Entity(3, 3, '@')
+        m = Monster(9, 7, 'goblin')
+        m.take_turn(player, game_map, sees_player=True)
+        for miss in range(1, GIVE_UP_AFTER):
+            m.take_turn(player, game_map, sees_player=False)
+            self.assertTrue(m.chasing)
+            self.assertEqual(m.lost_sight, miss)
+        m.take_turn(player, game_map, sees_player=False)
+        self.assertFalse(m.chasing)
+        self.assertEqual((m.x, m.y), (9, 3), 'the blind turns were lane-chase steps')
+
+    def test_twenty_chasers_on_a_big_map_stay_fast(self):
+        rng = random.Random(69)
+        w, h = 120, 60
+        pillars = {(rng.randrange(2, w - 2), rng.randrange(2, h - 2)) for _ in range(900)}
+        player = Entity(60, 30, '@')
+        pillars -= {(player.x, player.y)}
+        game_map = room_with(w, h, pillars)
+        monsters = []
+        while len(monsters) < 20:
+            x, y = rng.randrange(40, 81), rng.randrange(15, 46)
+            if game_map[y][x] == FLOOR and (x, y) != (player.x, player.y):
+                if all((m.x, m.y) != (x, y) for m in monsters):
+                    monsters.append(Monster(x, y, 'goblin'))
+        start = time.perf_counter()
+        for turn in range(50):
+            dx, dy = ORTHOGONAL_STEPS[turn % 4]
+            player.move(dx, dy, game_map)
+            for m in monsters:
+                # Keep every one chasing, even beyond CHASE_RANGE.
+                m.chasing, m.lost_sight = True, 0
+                occupied = {(player.x, player.y)} | {(o.x, o.y) for o in monsters if o is not m}
+                m.take_turn(player, game_map, occupied=occupied, sees_player=True)
+            spots = [(m.x, m.y) for m in monsters]
+            self.assertEqual(len(spots), len(set(spots)))
+        self.assertTrue(all(m.chasing for m in monsters))
+        elapsed = time.perf_counter() - start
+        self.assertLess(elapsed, 2.0, f'1000 monster turns took {elapsed:.3f}s')
 
 
 class GameStateIntegrationTests(unittest.TestCase):
@@ -1156,6 +1321,13 @@ class ClassAndArcherTests(unittest.TestCase):
         archer = GameState(50, 20, char_class='archer')
         self.assertNotEqual(warrior.player.max_hp, archer.player.max_hp)
         self.assertNotEqual(warrior.player.power, archer.player.power)
+
+    def test_archer_sees_two_farther_than_warrior(self):
+        random.seed(22)
+        self.assertEqual(GameState(50, 20, fov_radius=6).fov_radius, 6)
+        archer = GameState(50, 20, fov_radius=6, char_class='archer')
+        self.assertEqual(archer.fov_radius, 6 + ARCHER_FOV_BONUS)
+        self.assertEqual(ARCHER_FOV_BONUS, 2)
 
     def test_warriors_shoot_action_just_moves(self):
         random.seed(23)
@@ -2994,7 +3166,22 @@ class GoblinArcherTests(unittest.TestCase):
         self.assertFalse(state.is_visible(10, 10))
         state.end_turn()
         self.assertEqual(self._hits_by(state, shooter), [])
-        self.assertEqual((shooter.x, shooter.y), (9, 10), 'stepped toward the player')
+        # The lane chase heads round the wall (x=8, y 5..15) for the player's
+        # column: (5, 4) and (5, 16) are both 11 moves off; (5, 4) wins on
+        # the (y, x) tie-break, so the first step is north.
+        self.assertEqual((shooter.x, shooter.y), (10, 9), 'heads round the wall')
+
+    def test_off_line_it_gets_in_line_then_shoots(self):
+        state = self._arena()
+        shooter = self._add(state, 9, 13)  # 4 off, no straight line
+        with mock.patch('game.state.dodge_chance', return_value=0):
+            for _ in range(3):
+                state.end_turn()
+                self.assertEqual(self._hits_by(state, shooter), [])
+            self.assertEqual((shooter.x, shooter.y), (9, 10), "on the player's row")
+            state.end_turn()
+        self.assertEqual((shooter.x, shooter.y), (9, 10), 'a shooter stands still')
+        self.assertEqual(len(self._hits_by(state, shooter)), 1)
 
     def test_spawns_alone_per_room_from_depth_four(self):
         for depth in (1, 2, 3):

@@ -169,6 +169,21 @@ CRIT_OUTLINE_RGB = (0, 0, 0)
 DecalLayout = dict[tuple[int, int], tuple[int, int, float]]
 
 
+# Movement a held key must not repeat while an enemy is in view.
+REPEAT_BLOCKED_ACTIONS = frozenset(
+    {
+        Action.MOVE_N,
+        Action.MOVE_S,
+        Action.MOVE_W,
+        Action.MOVE_E,
+        Action.SHOOT_N,
+        Action.SHOOT_S,
+        Action.SHOOT_W,
+        Action.SHOOT_E,
+    }
+)
+
+
 class PygameRenderer(Renderer):
     def __init__(
         self,
@@ -249,6 +264,10 @@ class PygameRenderer(Renderer):
         # The state last drawn: get_action needs to know whether a chest's
         # choice is on screen, the one time a mouse click means something.
         self._state = None
+        # Keys pressed and not yet released, so a KEYDOWN for one is an
+        # auto-repeat (pygame-ce's emulated repeat sets no `repeat` flag).
+        self._held = set()
+        self._last_was_repeat = False
         # Walking gait: id(entity) -> (last position, steps taken) for every
         # entity seen last frame, the lean (degrees) each entity has in the
         # frame being painted, and rotated tiles keyed by (char, colour, size,
@@ -368,7 +387,16 @@ class PygameRenderer(Renderer):
                 if event.key in input_map.FULLSCREEN_KEYS:
                     self.toggle_fullscreen()
                     continue
+                self._last_was_repeat = bool(getattr(event, 'repeat', False)) or (
+                    event.key in self._held
+                )
+                self._held.add(event.key)
                 return event
+            if event.type == pygame.KEYUP:
+                self._held.discard(event.key)
+                continue
+            if event.type == pygame.WINDOWFOCUSLOST:
+                self._held.clear()
             if mouse and (
                 event.type == pygame.MOUSEMOTION
                 or (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1)
@@ -1347,6 +1375,13 @@ class PygameRenderer(Renderer):
                 return Action.QUIT
             if event.type == pygame.KEYDOWN:
                 action = input_map.lookup(event)
+                if (
+                    self._last_was_repeat
+                    and action in REPEAT_BLOCKED_ACTIONS
+                    and state is not None
+                    and any(isinstance(e, Monster) for e in state.visible_entities())
+                ):
+                    continue  # held movement stops while an enemy is in view
                 if action == Action.RESTART and not (state is not None and state.game_over):
                     return None  # 'r' only means something on the death screen
                 return action

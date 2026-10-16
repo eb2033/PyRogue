@@ -746,6 +746,58 @@ class TileModeTest(unittest.TestCase):
         self.assertIn(CRIT_RGB, pixels)
         self.assertIn(CRIT_OUTLINE_RGB, pixels)
 
+    def _drawn_state(self, with_monster):
+        state = GameState(WIDTH, HEIGHT)
+        state.entities = [state.player]
+        if with_monster:
+            state.entities.append(Monster(state.player.x + 2, state.player.y, 'goblin'))
+        state.update_fov()
+        self.renderer.draw(state)
+        return state
+
+    def _first_action(self, *events):
+        for event in events:
+            pygame.event.post(event)
+        return self.renderer.get_action()
+
+    def test_repeated_movement_is_ignored_while_a_monster_is_visible(self):
+        self._drawn_state(True)
+        w = key(pygame.K_w, 'w')
+        # A second press with no release in between is an auto-repeat; the
+        # 'wait' after it proves the repeat was skipped, not queued.
+        self.assertEqual(self._first_action(w), Action.MOVE_N)
+        self.assertEqual(self._first_action(w, key(pygame.K_PERIOD, '.')), Action.WAIT)
+
+    def test_repeat_flag_movement_is_ignored_with_a_monster_visible(self):
+        self._drawn_state(True)
+        rep = pygame.event.Event(
+            pygame.KEYDOWN, key=pygame.K_d, unicode='d', mod=0, scancode=0, repeat=True
+        )
+        self.assertEqual(self._first_action(rep, key(pygame.K_PERIOD, '.')), Action.WAIT)
+
+    def test_repeated_movement_passes_with_no_monster_visible(self):
+        self._drawn_state(False)
+        w = key(pygame.K_w, 'w')
+        self.assertEqual(self._first_action(w), Action.MOVE_N)
+        self.assertEqual(self._first_action(w), Action.MOVE_N)
+
+    def test_repeated_wait_and_drink_pass_with_a_monster_visible(self):
+        self._drawn_state(True)
+        for k, char, action in (
+            (pygame.K_PERIOD, '.', Action.WAIT),
+            (pygame.K_h, 'h', Action.DRINK),
+        ):
+            ev = key(k, char)
+            self.assertEqual(self._first_action(ev), action)
+            self.assertEqual(self._first_action(ev), action)
+
+    def test_released_then_pressed_movement_always_passes(self):
+        self._drawn_state(True)
+        w = key(pygame.K_w, 'w')
+        up = pygame.event.Event(pygame.KEYUP, key=pygame.K_w, mod=0, scancode=0)
+        self.assertEqual(self._first_action(w), Action.MOVE_N)
+        self.assertEqual(self._first_action(up, w), Action.MOVE_N)
+
     def test_char_without_a_tile_is_drawn_as_its_glyph(self):
         state = GameState(WIDTH, HEIGHT)
         stranger = Monster(state.player.x + 1, state.player.y, 'goblin')

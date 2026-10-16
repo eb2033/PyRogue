@@ -87,6 +87,9 @@ CLASS_STATS = {
     'archer': (45, 3),
 }
 DEFAULT_CLASS = 'warrior'
+# The archer sees this many tiles farther than the base fov_radius (a warrior
+# sees exactly the base): a ranged class needs to spot targets earlier.
+ARCHER_FOV_BONUS = 2
 
 
 def _describe(item):
@@ -129,7 +132,7 @@ class GameState:
         self.base_width = width
         self.base_height = height
         self.width, self.height = map_size(width, height, 1)
-        self.fov_radius = fov_radius
+        self.fov_radius = fov_radius + (ARCHER_FOV_BONUS if char_class == 'archer' else 0)
         self.running = True
         self.game_over = False
         # Set by 'restart' on the game-over screen: the run has ended and the
