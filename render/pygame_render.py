@@ -82,15 +82,15 @@ HEALTH_BAR_COLORS = frozenset({HEALTH_GREEN, HEALTH_AMBER, HEALTH_RED, HEALTH_TR
 HEALTH_BAR_WIDTH = 0.7  # of the cell's width; a boss's spans the whole cell
 HEALTH_BAR_HEIGHT = 0.08  # of the cell's height, at least 2 px
 
-# The archer's restock bar: a light grey bar along the bottom edge of the
-# player's own cell (never meeting a monster's health bar, which sits on top),
-# a touch wider than the cell and kept inside the map, filled in proportion to
+# The archer's restock bar (and the warrior's parry bar): a light grey bar
+# just below the player's cell, under its feet (never meeting a monster's
+# health bar, which sits on top), a touch wider than the cell and kept inside the map, filled in proportion to
 # restock_progress / RESTOCK_TURNS.
 RESTOCK_FILL = (205, 205, 205)
 RESTOCK_TRACK = (45, 45, 45)
 RESTOCK_BAR_WIDTH = 1.05  # of the cell's width: overhangs its sides a little
 RESTOCK_BAR_HEIGHT = 0.15  # of the cell's height, at least 3 px; the track
-# (a 1 px dark rim round the bar) keeps it readable over the sprite's feet
+# (a 1 px dark rim round the bar) keeps it readable on any floor
 
 # Melee swings (camera.Swing), drawn rather than tiled -- the bundled sheets
 # have no slash or swing effect: a light arc, tapering and fading towards its
@@ -766,16 +766,16 @@ class PygameRenderer(Renderer):
         return drawn
 
     def restock_bar_rect(self, player):
-        """Pixel rect of the archer's restock bar: centred on the player's
-        cell, just above its bottom edge, a little wider than the cell, and
-        moving with a shaking sprite. Pushed back inside the map (its 1 px rim
-        too) where the cell's overhang would cross the map's edge, zoomed or
-        not."""
+        """Pixel rect of the ability bar (the archer's restock, the warrior's
+        parry): centred under the player's cell, its 1 px rim on the first row
+        below the sprite's feet, a little wider than the cell, and moving with
+        a shaking sprite. Pushed back inside the map (its rim too) where it
+        would cross the map's edge, zoomed or not; on the bottom row that
+        means it overlaps the cell's foot by the smallest amount that fits."""
         rect = self._map_cell_rect(player.x, player.y)
         width = max(4, round(rect.width * RESTOCK_BAR_WIDTH))
         height = max(3, round(rect.height * RESTOCK_BAR_HEIGHT))
-        gap = max(1, rect.height // 20)
-        bar = pygame.Rect(rect.centerx - width // 2, rect.bottom - gap - height, width, height)
+        bar = pygame.Rect(rect.centerx - width // 2, rect.bottom + 1, width, height)
         bar = bar.move(self._jolt_of(player))
         return bar.clamp(self.layout.map_rect().inflate(-2, -2))
 

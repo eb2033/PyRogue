@@ -1724,8 +1724,9 @@ class ArcherVisualsTest(unittest.TestCase):
         r = self.renderer
         cell = r._map_cell_rect(self.state.player.x, self.state.player.y)
         bar = r.restock_bar_rect(self.state.player)
-        self.assertGreater(bar.top, cell.centery)  # along the bottom edge
-        self.assertLess(bar.bottom, cell.bottom)
+        # Just below the sprite's feet: its rim is the first row under the cell.
+        self.assertEqual(bar.top - 1, cell.bottom)
+        self.assertFalse(bar.inflate(2, 2).colliderect(cell.inflate(0, -1)))
         self.assertEqual(bar.centerx, cell.centerx)
         # A little wider than the cell: it overhangs both sides evenly.
         self.assertGreaterEqual(bar.width, cell.width)
@@ -1801,7 +1802,7 @@ class ArcherVisualsTest(unittest.TestCase):
             r._proj = None
         self.assertTrue(map_rect.contains(bar.inflate(2, 2)))
         self.assertEqual(bar.centerx, cell.centerx)
-        self.assertTrue(cell.top < bar.top and bar.bottom < cell.bottom)
+        self.assertEqual(bar.top - 1, cell.bottom)  # below the zoomed sprite
         self.assertEqual(bar.width, round(cell.width * 1.05))
         self.assertGreater(bar.width, unzoomed.width)
         self.state.restock_progress = 2
@@ -1844,7 +1845,7 @@ class ArcherVisualsTest(unittest.TestCase):
         r._paint_game(state)
         bar = r.restock_bar_rect(state.player)
         cell = r._map_cell_rect(state.player.x, state.player.y)
-        self.assertTrue(cell.centery < bar.top and bar.bottom < cell.bottom)
+        self.assertEqual(bar.top - 1, cell.bottom)
         self.assertEqual(bar.width, round(cell.width * 1.05))
         self.assertEqual(bar.height, max(3, round(cell.height * 0.15)))
         screen = r.canvas.surface
