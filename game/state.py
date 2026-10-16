@@ -26,7 +26,7 @@ from typing import Any
 from game import archery
 from game.combat import Arrow, Hit, Parry, Shot
 from game.damage import mitigate, round_damage
-from game.dungeon import generate_level, map_size, place_stairs
+from game.dungeon import generate_level, map_size, place_boss_stairs, place_stairs
 from game.entity import Player
 from game.fov import update_visibility
 from game.item import (
@@ -232,12 +232,19 @@ class GameState:
 
     def _populate_level(self):
         """The player, then this floor's monsters, chests and (maybe) shrine.
-        The shrine avoids the stairs and every tile already taken."""
+        The shrine avoids the stairs and every tile already taken. On a boss
+        floor the stairs are placed here, in the boss room, after the boss
+        and every other entity (_build_map leaves them out there)."""
         monsters = self._spawn_level_monsters()
         chests = spawn_chests(self.rooms, depth=self.depth)
         taken = {(e.x, e.y) for e in monsters + chests}
-        taken.add(self.rooms[-1].center())  # the stairs (place_stairs)
         taken.add((self.player.x, self.player.y))
+        if self.boss_arena is not None:
+            boss = next((m for m in monsters if m.is_boss), None)
+            boss_pos = (boss.x, boss.y) if boss is not None else self.boss_arena.center()
+            taken.add(place_boss_stairs(self.game_map, self.boss_arena, boss_pos, taken))
+        else:
+            taken.add(self.rooms[-1].center())  # the stairs (place_stairs)
         shrine = place_shrine(self.rooms, self.depth, taken, self.boss_arena)
         # The shrine goes before the monsters so one standing on it is drawn
         # on top (renderers paint in entity order).
@@ -812,7 +819,8 @@ class GameState:
         floor's size (dungeon.map_size: it grows with depth)."""
         self.width, self.height = map_size(self.base_width, self.base_height, self.depth)
         self.game_map, self.rooms = generate_level(self.base_width, self.base_height, self.depth)
-        place_stairs(self.game_map, self.rooms)
+        if not is_boss_level(self.depth):  # boss floors: _populate_level
+            place_stairs(self.game_map, self.rooms)
         self.visible = [[False] * self.width for _ in range(self.height)]
         self.seen = [[False] * self.width for _ in range(self.height)]
 

@@ -16,6 +16,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from game.damage import mitigate, round_damage
 from game.dungeon import (
+    BOSS_STAIRS_MIN_DISTANCE,
+    boss_stairs_tile,
     generate_dungeon,
     generate_level,
     make_empty_map,
@@ -3922,6 +3924,105 @@ class DescentHealTests(unittest.TestCase):
         self.assertFalse(state.try_descend())
         self.assertEqual(state.player.hp, 0)
         self.assertEqual(state.depth, 1)
+
+
+class BossStairsTests(unittest.TestCase):
+    """On a boss floor the stairs down are in the boss room, off the boss's
+    tile and the arena's centre 3x3, on no entity, and reachable."""
+
+    BOSS_DEPTHS = (8, 16, 24)
+    SEEDS = range(25)
+
+    @staticmethod
+    def _floor(depth, seed):
+        random.seed(seed)
+        state = GameState(40, 20)
+        state.depth = depth - 1
+        state.next_level()
+        return state
+
+    @staticmethod
+    def _stairs(state):
+        found = [
+            (x, y)
+            for y, row in enumerate(state.game_map)
+            for x, ch in enumerate(row)
+            if ch == STAIRS_DOWN
+        ]
+        assert len(found) == 1, found
+        return found[0]
+
+    @staticmethod
+    def _reachable(state, start, goal):
+        seen = {start}
+        frontier = [start]
+        while frontier:
+            x, y = frontier.pop()
+            if (x, y) == goal:
+                return True
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                n = (x + dx, y + dy)
+                if n not in seen and is_walkable(state.game_map, *n):
+                    seen.add(n)
+                    frontier.append(n)
+        return False
+
+    def test_stairs_in_boss_room_and_clear_of_everything(self):
+        for depth in self.BOSS_DEPTHS:
+            for seed in self.SEEDS:
+                with self.subTest(depth=depth, seed=seed):
+                    state = self._floor(depth, seed)
+                    arena = state.boss_arena
+                    self.assertIsNotNone(arena)
+                    sx, sy = self._stairs(state)
+                    self.assertTrue(arena.x1 <= sx < arena.x2 and arena.y1 <= sy < arena.y2)
+                    boss = next(m for m in state.entities if getattr(m, 'is_boss', False))
+                    # The boss keeps its centre tile.
+                    self.assertEqual((boss.x, boss.y), arena.center())
+                    cx, cy = arena.center()
+                    self.assertGreater(max(abs(sx - cx), abs(sy - cy)), 1)
+                    self.assertGreaterEqual(
+                        max(abs(sx - boss.x), abs(sy - boss.y)), BOSS_STAIRS_MIN_DISTANCE
+                    )
+                    for e in state.entities:
+                        self.assertNotEqual((e.x, e.y), (sx, sy), e)
+                    self.assertTrue(is_walkable(state.game_map, sx, sy))
+                    self.assertTrue(
+                        self._reachable(state, (state.player.x, state.player.y), (sx, sy))
+                    )
+                    # The start room and the arrival are unchanged.
+                    self.assertEqual((state.player.x, state.player.y), state.rooms[0].center())
+
+    def test_non_boss_floor_keeps_last_room_centre(self):
+        for depth in (1, 7, 9, 17):
+            for seed in range(10):
+                with self.subTest(depth=depth, seed=seed):
+                    state = self._floor(depth, seed)
+                    self.assertIsNone(state.boss_arena)
+                    self.assertEqual(self._stairs(state), state.rooms[-1].center())
+
+    def test_descending_from_boss_floor_stairs(self):
+        state = self._floor(8, 0)
+        state.player.x, state.player.y = self._stairs(state)
+        state.try_descend()
+        self.assertEqual(state.depth, 9)
+        self.assertEqual((state.player.x, state.player.y), state.rooms[0].center())
+
+    def test_small_room_falls_back_to_outside_the_centre(self):
+        # A 4x4 room (tiles 1..4, centre (3, 3)) with the boss moved off the
+        # centre to (2, 2): the only free tile outside the centre 3x3, (1, 1),
+        # is next to the boss, so rule 2 takes it anyway.
+        game_map = make_empty_map(8, 8, fill=FLOOR)
+        arena = Rect(1, 1, 4, 4)
+        cx, cy = arena.center()
+        boss = (2, 2)
+        occupied = {(x, y) for x in range(1, 5) for y in range(1, 5)} - {(1, 1), (cx, cy)}
+        self.assertEqual(boss_stairs_tile(game_map, arena, boss, occupied), (1, 1))
+        # Only the centre left (and not the boss's tile): rule 3.
+        occupied.add((1, 1))
+        self.assertEqual(boss_stairs_tile(game_map, arena, (1, 1), occupied), (cx, cy))
+        occupied.add((cx, cy))
+        self.assertIsNone(boss_stairs_tile(game_map, arena, boss, occupied))
 
 
 if __name__ == '__main__':

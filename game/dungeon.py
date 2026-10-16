@@ -291,3 +291,53 @@ def place_stairs(game_map, rooms):
     sx, sy = rooms[-1].center()
     game_map[sy][sx] = STAIRS_DOWN
     return sx, sy
+
+
+# On a boss floor the stairs keep at least this Chebyshev distance from the
+# boss when the room allows it, so the boss never starts beside them.
+BOSS_STAIRS_MIN_DISTANCE = 2
+
+
+def boss_stairs_tile(game_map, arena, boss_pos, occupied=(), rng: Rng = random):
+    """Where the stairs go on a boss floor: a floor tile of `arena` (the boss
+    room) that is not in `occupied` (the player, monsters, chests), not on
+    `boss_pos`, and not in the arena's centre 3x3 (the tiles within 1 of
+    arena.center(), where the boss stands). Picked at random among, in order:
+
+    1. such tiles at least BOSS_STAIRS_MIN_DISTANCE from the boss;
+    2. failing that, such tiles at any distance (rule 1 always holds while
+       the boss is at the centre: every tile outside the 3x3 is then >= 2
+       away, so this only matters if the boss was moved off it);
+    3. failing that, any free floor tile of the room other than the boss's.
+
+    Returns None only if the room has no free floor tile at all."""
+    cx, cy = arena.center()
+
+    def chebyshev(t, o):
+        return max(abs(t[0] - o[0]), abs(t[1] - o[1]))
+
+    free = [
+        (x, y)
+        for y in range(arena.y1, arena.y2)
+        for x in range(arena.x1, arena.x2)
+        if game_map[y][x] == FLOOR and (x, y) not in occupied and (x, y) != tuple(boss_pos)
+    ]
+    outside = [t for t in free if chebyshev(t, (cx, cy)) > 1]
+    far = [t for t in outside if chebyshev(t, boss_pos) >= BOSS_STAIRS_MIN_DISTANCE]
+    if far:
+        return rng.choice(far)
+    if outside:
+        return rng.choice(outside)
+    return rng.choice(free) if free else None
+
+
+def place_boss_stairs(game_map, arena, boss_pos, occupied=(), rng: Rng = random):
+    """Stairs down inside the boss room (boss_stairs_tile has the rules).
+    Falls back to place_stairs' rule if the room has no free floor at all.
+    Returns the stairs' (x, y)."""
+    tile = boss_stairs_tile(game_map, arena, boss_pos, occupied, rng)
+    if tile is None:
+        return place_stairs(game_map, [arena])
+    sx, sy = tile
+    game_map[sy][sx] = STAIRS_DOWN
+    return sx, sy
