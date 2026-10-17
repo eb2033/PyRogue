@@ -28,3 +28,7 @@ going_graphical.md
 !CHANGELOG.md
 !packaging/NOTES.md
 !assets/ASSETS.md
+!docs/superpowers/**/*.md
+
+# Brainstorm mockups from the superpowers visual companion
+.superpowers/
