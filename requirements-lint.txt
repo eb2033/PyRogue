@@ -1,5 +1,5 @@
 # Static checks, run by CI's `lint` job. Config is in pyproject.toml.
 # Not needed to run, test or package the game.
-ruff==0.17.0           # lint + format
+ruff==0.17.1           # lint + format
 pyright==1.1.414       # type checking (fetches its Node runtime on first run)
 vulture==2.16          # unused code; false positives go in vulture_allowlist.py
