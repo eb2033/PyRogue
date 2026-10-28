@@ -6,6 +6,11 @@ GitHub Release notes.
 
 ## [Unreleased]
 
+### Added
+- A browser build for itch.io (`packaging/build_web.sh` / `build_web.ps1`, pygbag): the full game
+  in a web page, with a fixed 1280x720 canvas. The browser's own fullscreen button replaces F11.
+  Needs internet to load the runtime on first play.
+
 ## [0.2.1] - 2026-10-16
 
 A playable fix-up on top of 0.2.0: a Windows window that opens at full size, and a round of

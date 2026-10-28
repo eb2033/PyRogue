@@ -218,12 +218,7 @@ class PygameRenderer(Renderer):
         other swing shapes in proportion (0 = no swings); `guard_ms` /
         `parry_fade_ms`: how long a parry's shield shows / its "Parry!" takes
         to fade once the riposte has landed (0 = skipped)."""
-        # Before any display call: the window and desktop sizes are then real
-        # pixels, not Windows' scaled ones.
-        _make_dpi_aware()
-        pygame.display.init()
-        pygame.display.set_caption('PyRogue')
-        _set_window_icon()
+        self._open_display()
         # Hold-to-repeat, like a terminal's autorepeat.
         pygame.key.set_repeat(300, 60)
 
@@ -294,6 +289,16 @@ class PygameRenderer(Renderer):
         # than an arrow pile stands on, in the frame being painted.
         self._arrow_sprites = {}
         self._occupied = set()
+
+    def _open_display(self):
+        """Everything before the first set_mode. The browser renderer
+        replaces this: the window calls here don't exist there."""
+        # Before any display call: the window and desktop sizes are then real
+        # pixels, not Windows' scaled ones.
+        _make_dpi_aware()
+        pygame.display.init()
+        pygame.display.set_caption('PyRogue')
+        _set_window_icon()
 
     @staticmethod
     def _set_mode(size, flags):
@@ -487,9 +492,7 @@ class PygameRenderer(Renderer):
         the paint. While a flight or impact plays, the monsters that later
         beats' hits are still to land on are drawn as they were before those
         hits (`pending`)."""
-        self._state = state
-        tilts = self.track_steps(state.visible_entities())
-        beats = self.director.plan(state)
+        tilts, beats = self._stage(state)
         try:
             self._play_beats(state, beats)
         finally:
@@ -498,37 +501,61 @@ class PygameRenderer(Renderer):
         if tilts:
             self._tilts = tilts
             try:
-                self._play(STEP_MS, lambda t: self._paint_game(state))
+                self._play(*self._walk_spec(state))
             finally:
                 self._tilts = {}
+        self._show_game(state)
+
+    def _stage(self, state):
+        """The non-waiting start of draw(): remember `state`, then return
+        (the walk tilts, the Director's beats) for this frame. Shared with the
+        browser renderer's async draw."""
+        self._state = state
+        tilts = self.track_steps(state.visible_entities())
+        return tilts, self.director.plan(state)
+
+    def _walk_spec(self, state):
+        """The spec (see _beat_specs) of the short hold that shows the walk tilt."""
+        return STEP_MS, lambda t: self._paint_game(state), True
+
+    def _show_game(self, state):
         self._show(lambda: self._paint_game(state))
 
     def _play_beats(self, state, beats):
         """Play the Director's `beats` in order (see draw)."""
+        for spec in self._beat_specs(state, beats):
+            self._play(*spec)
+
+    def _beat_specs(self, state, beats):
+        """Yield (ms, paint, interruptible) for each of `beats`, in order: the
+        arguments of _play. A generator, not a list, because the parry text is
+        set before a Guard's spec is played and cleared after a ParryText's, so
+        whoever plays the specs (the desktop loop, or the browser's awaiting
+        one) must play each one before asking for the next."""
         for i, beat in enumerate(beats):
             pending = [b.hit for b in beats[i + 1 :] if isinstance(b, camera.Impact)]
             if isinstance(beat, camera.Flight):
-                self._play(
+                yield (
                     camera.flight_ms(beat, self.flight_ms),
                     lambda t, flight=beat, pending=pending: self._paint_game(
                         state, flight=(flight, t), pending=pending
                     ),
-                    interruptible=False,
+                    False,
                 )
             elif isinstance(beat, camera.Swing):
                 # The swing first; its blow's Impact (next) is still pending.
-                self._play(
+                yield (
                     self.swing_ms_for(beat),
                     lambda t, swing=beat, pending=pending: self._paint_game(
                         state, swing=(swing, t), pending=pending
                     ),
-                    interruptible=False,
+                    False,
                 )
             elif isinstance(beat, camera.Impact):
                 shake = beat.shake or camera.shake_for(beat.hit)
                 # Arrows still flying hang where they are while it lands.
                 held = (camera.Flight(beat.held, 1), 1.0) if beat.held else None
-                self._play(
+                yield (
                     self.impact_ms_for(shake),
                     lambda t, hit=beat.hit, shake=shake, held=held, pending=pending: (
                         self._paint_game(
@@ -540,28 +567,28 @@ class PygameRenderer(Renderer):
                             pending=pending,
                         )
                     ),
-                    interruptible=False,
+                    False,
                 )
             elif isinstance(beat, camera.Guard):
                 # "Parry!" goes up with the shield and stays until ParryText.
                 self._parry_text = (beat.parry, 1.0)
-                self._play(
+                yield (
                     self.guard_ms,
                     lambda t, parry=beat.parry, pending=pending: self._paint_game(
                         state, guard=(parry, t), pending=pending
                     ),
-                    interruptible=False,
+                    False,
                 )
             elif isinstance(beat, camera.ParryText):
-                self._play(
+                yield (
                     self.parry_fade_ms,
                     lambda t, parry=beat.parry: self._paint_game(state, parry_text=(parry, 1 - t)),
-                    interruptible=False,
+                    False,
                 )
                 self._parry_text = None
             elif isinstance(beat, camera.Pan):
                 ms = self.follow_ms if beat.follow else self.zoom_ms
-                self._play(ms, lambda t, pan=beat: self._paint_pan(state, pan, t))
+                yield ms, lambda t, pan=beat: self._paint_pan(state, pan, t), True
 
     def track_steps(self, entities):
         """Compare `entities` with the last frame: {id(entity): degrees} for

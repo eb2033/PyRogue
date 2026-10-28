@@ -1,0 +1,135 @@
+PyRogue (browser build) -- third-party notices
+==============================================
+
+PyRogue itself is MIT-licensed (see LICENSE). This download also contains
+other people's software and art, listed below with their licences. The full
+licence texts are in the licenses/ folder next to this file.
+
+The browser build runs the game on pygbag 0.9.3's WebAssembly runtime (CPython
+3.12 and pygame-ce 2.5.7 compiled with Emscripten), which is copied into this
+zip under rt/. The runtime is a set of prebuilt binaries, and its authors
+publish no bill of materials for them. This list was compiled from the
+runtime's published build recipes (pygame-web/python-wasm-sdk, pygbag, the
+pygame-ce 2.5.7 source tree) and from inspecting the files (version strings,
+symbol names and source paths found inside them). It is NOT an audit of the
+binaries. Where a component's presence or version could not be confirmed, the
+row says "may be present" or "version not verified"; components that the
+desktop build ships but that left no trace in the browser binaries (libpng,
+libjpeg-turbo, libtiff, libwebp, FLAC, Opus, mpg123, WavPack, libxmp,
+FluidSynth) are left out. Licence texts were taken from each project's
+official repository on 2026-10-28 (SDL_gfx.txt is pygame-ce's own note from
+its tag 2.5.7 licence folder, and Timidity.txt is the README that carries
+Timidity's licence choice); where a text is identical to the desktop
+build's it is the same file.
+
+
+Replacing the LGPL parts
+------------------------
+pygame-ce is licensed under the GNU Lesser General Public License v2.1, and
+so is SDL2_mixer's bundled Timidity if you take it under the LGPL (it is
+offered under the GPL, LGPL or Artistic licence; this build uses the LGPL).
+In the browser build pygame-ce is a separate file, not compiled into the
+interpreter:
+
+    rt/cp312/pygame_ce-2.5.7-cp312-cp312-wasm32_bi_emscripten.whl
+
+A wheel is a zip archive. You can replace it with your own build of the same
+library: build pygame-ce 2.5.7 for Emscripten (Python 3.12) from
+https://github.com/pygame-community/pygame-ce/tree/2.5.7 , name the result
+exactly as above, put it in rt/cp312/ in place of the original and zip the
+folder again with index.html at the root. The page loads the interpreter and
+this wheel from rt/ at start-up (rt/index-0.9.3-cp312.json names it), so no
+other file needs to change. The libraries listed under "pygame-ce wheel"
+below are linked statically inside that one wheel, and are replaced with it.
+The recipes that built the stock wheel are in
+https://github.com/pygame-web/python-wasm-sdk and
+https://github.com/pygame-web/pygbag .
+
+
+Software
+--------
+Component                      Licence                      licenses/ file                Source
+
+pygame-ce wheel (rt/cp312/pygame_ce-2.5.7-....whl)
+pygame-ce 2.5.7                LGPL-2.1                     pygame-ce.txt                 https://github.com/pygame-community/pygame-ce
+SDL2 2.28.4 (Emscripten port)  zlib                         SDL2.txt                      https://github.com/libsdl-org/SDL
+SDL2_image (version not        zlib                         SDL2_image.txt                https://github.com/libsdl-org/SDL_image
+  verified)
+SDL2_mixer (version not        zlib                         SDL2_mixer.txt                https://github.com/libsdl-org/SDL_mixer
+  verified)
+  Timidity (inside SDL2_mixer) GPL / LGPL / Artistic        Timidity.txt                  https://github.com/libsdl-org/SDL_mixer
+SDL2_ttf (version not          zlib                         SDL2_ttf.txt                  https://github.com/libsdl-org/SDL_ttf
+  verified)
+FreeType (version not          FreeType License (FTL)       FreeType-FTL.txt              https://freetype.org
+  verified)
+HarfBuzz (version not          Old MIT                      HarfBuzz.txt                  https://github.com/harfbuzz/harfbuzz
+  verified)
+libvorbis 1.3.5                BSD-3-Clause                 libvorbis.txt                 https://github.com/xiph/vorbis
+libogg (version not verified)  BSD-3-Clause                 libogg.txt                    https://github.com/xiph/ogg
+SDL_gfx (pygame.gfxdraw,       zlib                         SDL_gfx.txt                   https://github.com/pygame-community/pygame-ce/tree/2.5.7/src_c/SDL_gfx
+  rotozoom; as shipped in
+  pygame-ce)
+stb_image, stb_image_write     MIT or public domain         stb.txt                       https://github.com/nothings/stb
+  (inside SDL2_image)
+miniz (inside SDL2_image)      MIT                          miniz.txt                     https://github.com/richgel999/miniz
+zlib (may be present;          zlib                         zlib.txt                      https://zlib.net
+  version not verified)
+GNU FreeSansBold               GPL-3.0-or-later with the    FreeFont-COPYING.txt          https://www.gnu.org/software/freefont/
+  (pygame/freesansbold.ttf,    font exception               FreeFont-README.txt
+  pygame's default font; the
+  copy in the wheel says
+  "Copyright 2002 Free
+  Software Foundation")
+
+CPython interpreter (rt/cpython312/main.wasm.gz, rt/cpython312/main.js.gz)
+CPython 3.12.12                PSF License                  Python-LICENSE.txt            https://www.python.org
+zlib 1.2.13                    zlib                         zlib.txt                      https://zlib.net
+bzip2 1.0.6                    bzip2 licence (BSD-style)    bzip2.txt                     https://sourceware.org/bzip2/
+Expat (version not verified)   MIT                          expat.txt                     https://github.com/libexpat/libexpat
+SQLite 3.39.0 (version string  Public domain                sqlite.txt                    https://www.sqlite.org
+  found in the binary)
+OpenSSL 1.1.1w                 OpenSSL + SSLeay licence     openssl-1.1.1.txt             https://github.com/openssl/openssl
+libmpdec (mpdecimal) 2.5.1     BSD-2-Clause                 mpdecimal.txt                 https://www.bytereef.org/mpdecimal/
+libffi (wasm32 port; version   MIT                          libffi.txt                    https://github.com/libffi/libffi
+  not verified)
+Emscripten runtime and system  MIT or UIUC/NCSA             emscripten.txt                https://github.com/emscripten-core/emscripten
+  libraries (version not
+  verified)
+musl libc (Emscripten's copy;  MIT                          musl.txt                      https://musl.libc.org
+  may be present)
+LLVM libc++, libc++abi,        Apache-2.0 with LLVM         LLVM.txt                      https://github.com/llvm/llvm-project
+  compiler-rt (may be present) exception
+
+Python libraries (rt/cpython312/main.data.gz, the standard library bundle)
+Python standard library        PSF License                  Python-LICENSE.txt            https://www.python.org
+packaging 26.0                 Apache-2.0 or BSD-2-Clause   packaging-Apache-2.0.txt      https://github.com/pypa/packaging
+                                                            packaging-BSD-2-Clause.txt
+pyparsing 3.3.2                MIT                          pyparsing.txt                 https://github.com/pyparsing/pyparsing
+installer 1.0.0.dev0           MIT                          installer.txt                 https://github.com/pypa/installer
+typing_extensions (version     PSF License                  Python-LICENSE.txt            https://github.com/python/typing_extensions
+  not verified)
+
+pygbag 0.9.3 (rt/pythons.js, rt/cpythonrc.py.gz, the aio, platform_wasm and pygbag_* modules and beep.ogg
+inside main.data.gz, favicon.png, and the page template that index.html was built from)
+pygbag                         MIT                          pygbag.txt                    https://github.com/pygame-web/pygbag
+
+CPython also carries a few smaller pieces of third-party code (for example the
+HACL* hash implementations); Python-LICENSE.txt and the CPython source at
+https://www.python.org/ftp/python/3.12.12/Python-3.12.12.tar.xz cover them.
+
+The Emscripten build of OpenSSL 1.1.1w is no longer maintained upstream; the
+game does not use the network, so it never calls into it.
+
+
+Art and fonts (in web.apk, under assets/)
+-----------------------------------------
+Kenney Roguelike RPG Pack, Roguelike Characters, Roguelike Caves & Dungeons
+  by Kenney (www.kenney.nl), CC0 1.0 (public domain). Thank you, Kenney.
+  Licence files: Kenney-roguelike-rpg-pack.txt, Kenney-roguelike-characters.txt,
+  Kenney-roguelike-caves-dungeons.txt (the same files that sit beside the art
+  inside web.apk).
+
+JetBrains Mono 2.304 by JetBrains, SIL Open Font License 1.1.
+  Licence file: JetBrainsMono-OFL.txt
+
+Where every asset came from: assets/ASSETS.md in the source repository.

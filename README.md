@@ -18,6 +18,11 @@ No Python needed. Keep the program next to its `_internal` folder. The build isn
 Windows SmartScreen may say "unknown publisher": choose **More info → Run anyway**. Each release
 lists `SHA256SUMS` to check your download against.
 
+## Play in the browser
+
+No install: the browser build runs on [itch.io](https://itch.io) (needs internet; the game
+downloads its runtime on first load). <!-- itch.io page link goes here -->
+
 ## Run from source
 
 Needs Python 3.12+ and [pygame-ce](https://pyga.me):

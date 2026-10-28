@@ -27,7 +27,7 @@ ignore = [
 external = ['BLE001']   # crashlog.py's "catch everything" noqa, kept as documentation
 
 [tool.pyright]
-include = ['main.py', 'game', 'render', 'packaging', 'tests']
+include = ['main.py', 'game', 'render', 'web', 'packaging', 'tests']
 pythonVersion = '3.12'
 typeCheckingMode = 'basic'
 # The checkout's own venv (CLAUDE.md), so it sees pygame-ce. CI's lint job
@@ -48,5 +48,5 @@ reportOptionalSubscript = false
 reportPossiblyUnboundVariable = false
 
 [tool.vulture]
-paths = ['main.py', 'game', 'render', 'packaging', 'tests', 'vulture_allowlist.py']
+paths = ['main.py', 'game', 'render', 'web', 'packaging', 'tests', 'vulture_allowlist.py']
 min_confidence = 60
