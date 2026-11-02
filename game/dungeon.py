@@ -12,6 +12,7 @@ instead of stalling out around 2-3 rooms.
 import heapq
 import math
 import random
+from collections import deque
 
 from game.rect import Rect
 from game.rng import Rng
@@ -22,11 +23,13 @@ from game.tiles import DOOR, FLOOR, STAIRS_DOWN, WALL
 # ROOM_GROWTH: (first floor, extra tiles on EACH of a room's four sides),
 # shallowest first; the last row holds for every floor below it (the cap).
 # A room's width and height grow by twice the value. The base room size is
-# the spec's, unchanged; the growth is added on top of it.
+# the spec's, unchanged; the growth is added on top of it. Each step makes an
+# average room about 1.5x bigger by area (mean side 10 -> 12 -> 14), so the jump
+# at floor 9 doesn't read as rooms suddenly doubling.
 ROOM_GROWTH = (
     (1, 2),  # floors 1-8
-    (9, 5),  # floors 9-16
-    (17, 6),  # floors 17 and up
+    (9, 3),  # floors 9-16
+    (17, 4),  # floors 17 and up
 )
 BASE_MIN_ROOM = 4
 BASE_MAX_ROOM = 8
@@ -62,12 +65,112 @@ def map_size(base_w, base_h, depth):
     return math.ceil(base_w * scale), math.ceil(base_h * scale)
 
 
-def generate_level(base_w, base_h, depth):
+def generate_level(base_w, base_h, depth, rng: Rng = random):
     """(game_map, rooms) for floor `depth`: map_size's map holding
     room_size_range's rooms. Its size is len(game_map[0]) x len(game_map)."""
     w, h = map_size(base_w, base_h, depth)
     min_size, max_size = room_size_range(depth)
-    return generate_dungeon(w, h, min_size=min_size, max_size=max_size)
+    game_map, rooms = generate_dungeon(w, h, min_size=min_size, max_size=max_size, rng=rng)
+    add_terrain(game_map, rooms, rng)
+    return game_map, rooms
+
+
+# -- terrain walls ------------------------------------------------------------
+# Small wall features inside rooms (an L of 3 tiles, or a straight wall of 2-3),
+# so rooms are not bare rectangles. See add_terrain.
+TERRAIN_NARROW_ROOM = 12  # a room this wide or less gets TERRAIN_FEATURES[0]
+TERRAIN_FEATURES = (3, 6)  # features in a narrow room, in a wider one
+TERRAIN_TRIES = 6  # placements tried per feature before it is skipped
+
+
+def _terrain_shape(rng):
+    """Offsets (relative to an anchor) of one random feature: a line of 2 or
+    3 tiles, or an L of 3."""
+    kind = rng.randrange(3)
+    if kind == 0:
+        return [(0, 0), (1, 0)] + ([(2, 0)] if rng.random() < 0.5 else [])
+    if kind == 1:
+        return [(0, 0), (0, 1)] + ([(0, 2)] if rng.random() < 0.5 else [])
+    sx = rng.choice((-1, 1))
+    sy = rng.choice((-1, 1))
+    return [(0, 0), (sx, 0), (0, sy)]
+
+
+def _connected(game_map, targets):
+    """True if every tile in `targets` (walkable) can reach the others."""
+    first = targets[0]
+    need = set(targets[1:])
+    seen = {first}
+    queue = deque([first])
+    while queue and need:
+        x, y = queue.popleft()
+        for pos in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+            if pos not in seen and game_map[pos[1]][pos[0]] != WALL:
+                seen.add(pos)
+                need.discard(pos)
+                queue.append(pos)
+    return not need
+
+
+def add_terrain(game_map, rooms, rng: Rng = random):
+    """Draw WALL features inside every room but rooms[0]: TERRAIN_FEATURES[0]
+    in a room up to TERRAIN_NARROW_ROOM wide, [1] in a wider one. A feature
+    is placed only if it lies on floor inside the room; stays out of the 3x3
+    around every room's centre (the start, stairs, boss and shopkeeper all
+    stand on a centre); has no tile orthogonally next to a door; has no tile
+    within one tile (diagonals too) of another feature; and leaves every tile
+    that was reachable from rooms[0]'s centre reachable. A feature that fails
+    is retried TERRAIN_TRIES times, then skipped."""
+    centres = [r.center() for r in rooms]
+    placed = set()
+    for room in rooms[1:]:
+        count = TERRAIN_FEATURES[0 if room.x2 - room.x1 <= TERRAIN_NARROW_ROOM else 1]
+        for _ in range(count):
+            for _ in range(TERRAIN_TRIES):
+                ax = rng.randrange(room.x1, room.x2)
+                ay = rng.randrange(room.y1, room.y2)
+                tiles = [(ax + dx, ay + dy) for dx, dy in _terrain_shape(rng)]
+                if not all(
+                    room.x1 <= x < room.x2 and room.y1 <= y < room.y2 and game_map[y][x] == FLOOR
+                    for x, y in tiles
+                ):
+                    continue
+                if any(
+                    abs(x - cx) <= 1 and abs(y - cy) <= 1 for x, y in tiles for cx, cy in centres
+                ):
+                    continue
+                if any(
+                    game_map[y + dy][x + dx] == DOOR
+                    for x, y in tiles
+                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))
+                ):
+                    continue
+                if any(
+                    (x + dx, y + dy) in placed
+                    for x, y in tiles
+                    for dx in (-1, 0, 1)
+                    for dy in (-1, 0, 1)
+                ):
+                    continue
+                for x, y in tiles:
+                    game_map[y][x] = WALL
+                # Walls can only cut the level where they were walked through:
+                # it stays whole if the walkable tiles around the feature
+                # still reach one another.
+                around = sorted(
+                    {
+                        (x + dx, y + dy)
+                        for x, y in tiles
+                        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))
+                        if game_map[y + dy][x + dx] != WALL
+                    }
+                )
+                if not around or _connected(game_map, around):
+                    placed.update(tiles)
+                    break
+                for x, y in tiles:
+                    game_map[y][x] = FLOOR
+    return game_map
 
 
 def make_empty_map(w, h, fill=WALL):
@@ -162,52 +265,80 @@ def route_corridor(game_map, rooms, start, goal):
     list of (x, y), or None. It crosses room walls only head-on, through a
     single tile: never along a wall, never through a ring corner, and never
     next to an existing doorway in the same wall (which would make a gap no
-    door can close). Reusing an existing doorway or corridor is cheap."""
+    door can close). Reusing an existing doorway or corridor is cheap.
+
+    Dijkstra over a flat grid. Each tile's cost is worked out once per call
+    (None: impassable), and a tile is numbered x * h + y so a heap entry
+    (dist, index) breaks ties exactly as (dist, (x, y)) would -- the path
+    chosen among equal-cost ones never depends on how the grid is stored."""
     h, w = len(game_map), len(game_map[0])
     sides, corners, rings = _wall_index(rooms)
 
-    def cost(pos):
+    # Plain tiles: floor is cheap, rock dearer; the outer border is closed.
+    costs: list[int | None] = [None] * (w * h)
+    for x in range(1, w - 1):
+        base = x * h
+        for y in range(1, h - 1):
+            costs[base + y] = FLOOR_COST if game_map[y][x] != WALL else ROCK_COST
+    for x, y in corners:
+        costs[x * h + y] = None
+    for pos, owners in sides.items():
         x, y = pos
-        if not (0 < x < w - 1 and 0 < y < h - 1) or pos in corners:
-            return None
-        if pos in sides:
-            if game_map[y][x] != WALL:
-                return FLOOR_COST  # an existing doorway
-            for room, side_no in sides[pos]:
-                for neighbour in _along_side(pos, side_no):
-                    nx, ny = neighbour
-                    if (room, side_no) in sides.get(neighbour, ()) and game_map[ny][nx] != WALL:
-                        return None  # would widen that doorway
-            return DOORWAY_COST
-        return FLOOR_COST if game_map[y][x] != WALL else ROCK_COST
+        if not (0 < x < w - 1 and 0 < y < h - 1):
+            continue
+        if game_map[y][x] != WALL:
+            costs[x * h + y] = FLOOR_COST  # an existing doorway
+            continue
+        cost = DOORWAY_COST
+        for room, side_no in owners:
+            for nx, ny in _along_side(pos, side_no):
+                if (room, side_no) in sides.get((nx, ny), ()) and game_map[ny][nx] != WALL:
+                    cost = None  # would widen that doorway
+        costs[x * h + y] = cost
+    # Ring membership, for the never-along-a-wall rule.
+    ring_of: list[frozenset | None] = [None] * (w * h)
+    for (x, y), owners in rings.items():
+        if 0 <= x < w and 0 <= y < h:
+            ring_of[x * h + y] = frozenset(owners)
 
-    best = {start: 0}
-    came_from = {}
-    queue = [(0, start)]
+    source = start[0] * h + start[1]
+    target = goal[0] * h + goal[1]
+    inf = float('inf')
+    best = [inf] * (w * h)
+    came_from = [-1] * (w * h)
+    best[source] = 0
+    queue = [(0, source)]
+    pop, push = heapq.heappop, heapq.heappush
+    # Neighbour offsets in the original order: east, west, south, north.
+    steps = (h, -h, 1, -1)
     while queue:
-        dist, pos = heapq.heappop(queue)
-        if pos == goal:
-            path = [pos]
-            while pos in came_from:
+        dist, pos = pop(queue)
+        if pos == target:
+            path = []
+            while pos != -1:
+                path.append((pos // h, pos % h))
                 pos = came_from[pos]
-                path.append(pos)
             return path[::-1]
         if dist > best[pos]:
             continue
-        x, y = pos
-        for nxt in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
-            step = cost(nxt)
+        ring = ring_of[pos]
+        for offset in steps:
+            nxt = pos + offset
+            step = costs[nxt]
             if step is None:
                 continue
-            if rings.get(pos, set()) & rings.get(nxt, set()):
-                # Walking along a wall -- including into a corner of the
-                # ring that is also another room's side, which would leave
-                # a door flanked by a doorway instead of wall.
-                continue
-            if dist + step < best.get(nxt, float('inf')):
-                best[nxt] = dist + step
+            if ring is not None:
+                other = ring_of[nxt]
+                if other is not None and not ring.isdisjoint(other):
+                    # Walking along a wall -- including into a corner of the
+                    # ring that is also another room's side, which would
+                    # leave a door flanked by a doorway instead of wall.
+                    continue
+            nd = dist + step
+            if nd < best[nxt]:
+                best[nxt] = nd
                 came_from[nxt] = pos
-                heapq.heappush(queue, (dist + step, nxt))
+                push(queue, (nd, nxt))
     return None
 
 
@@ -240,11 +371,13 @@ def connect_rooms(game_map, rooms, rng: Rng = random):
             game_map[y][x] = FLOOR
 
 
-def generate_dungeon(w, h, min_rooms=4, max_rooms=6, min_size=4, max_size=8, max_attempts=300):
+def generate_dungeon(
+    w, h, min_rooms=4, max_rooms=6, min_size=4, max_size=8, max_attempts=300, rng: Rng = random
+):
     """Keeps rolling random, non-overlapping rooms until it hits a target
     room count in [min_rooms, max_rooms] or exhausts max_attempts. min_size/
     max_size are clamped to whatever fits in (w, h): a map smaller than the
-    configured room size would otherwise hand random.randint an inverted
+    configured room size would otherwise hand rng.randint an inverted
     range and crash. If nothing fits at all, a single room filling the
     interior is carved so callers can always rely on rooms[0]/rooms[-1]."""
     game_map = make_empty_map(w, h)
@@ -256,18 +389,18 @@ def generate_dungeon(w, h, min_rooms=4, max_rooms=6, min_size=4, max_size=8, max
     min_rh = min(min_size, max_rh)
 
     if max_rw >= 1 and max_rh >= 1:
-        target_rooms = random.randint(min_rooms, max_rooms)
+        target_rooms = rng.randint(min_rooms, max_rooms)
         attempts = 0
         while len(rooms) < target_rooms and attempts < max_attempts:
             attempts += 1
-            rw = random.randint(min_rw, max_rw)
-            rh = random.randint(min_rh, max_rh)
+            rw = rng.randint(min_rw, max_rw)
+            rh = rng.randint(min_rh, max_rh)
             max_rx = w - rw - 1
             max_ry = h - rh - 1
             if max_rx < 1 or max_ry < 1:
                 continue
-            rx = random.randint(1, max_rx)
-            ry = random.randint(1, max_ry)
+            rx = rng.randint(1, max_rx)
+            ry = rng.randint(1, max_ry)
             new_room = Rect(rx, ry, rw, rh)
 
             if any(new_room.intersects(r) for r in rooms):
@@ -281,7 +414,7 @@ def generate_dungeon(w, h, min_rooms=4, max_rooms=6, min_size=4, max_size=8, max
     # Rooms first, then corridors: see connect_rooms.
     for room in rooms:
         carve_room(game_map, room)
-    connect_rooms(game_map, rooms)
+    connect_rooms(game_map, rooms, rng)
     place_doors(game_map, rooms)
     return game_map, rooms
 

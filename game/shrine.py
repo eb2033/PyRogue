@@ -4,8 +4,8 @@ A shrine (SHRINE_CHAR on the map) turns up on about SHRINE_CHANCE of the
 floors that are not boss floors, at most one per floor, in a random room
 other than rooms[0] (the player's start), never on the stairs or a chest.
 Stepping onto it offers BOONS_OFFERED different boons as a choice (the same
-choice screen a gear chest uses -- GameState.pending_choice); the player must
-take one, and the shrine is used up and removed from the map.
+choice screen a gear chest uses -- GameState.pending_choice); the player may
+take one or skip, and the shrine is used up and removed from the map either way.
 
 A boon is a bargain: every one has a benefit AND a cost, and they trade along
 different axes so none is strictly better than another. The player keeps the
@@ -21,9 +21,10 @@ bonus, is a running total: a boon's max_hp is added once, when it is taken
 
 import math
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-from game.entity import Entity
+from game.entity import FIXTURE, Entity
+from game.level import free_tiles
 from game.monster import is_boss_level
 from game.rng import Rng
 
@@ -73,9 +74,63 @@ _TABLE = (
 BOONS = {boon.key: boon for boon in _TABLE}
 
 
+def _half_int(value: int) -> int:
+    """Half a positive number, rounded half up, at least 1; 0 for a cost."""
+    return max(1, math.floor(value / 2 + 0.5)) if value > 0 else 0
+
+
+def _benefit_text(boon: Boon) -> str:
+    """A boon's benefit line, built from its positive effects."""
+    parts = []
+    if boon.power > 0:
+        parts.append(f'+{boon.power} power')
+    if boon.defense > 0:
+        parts.append(f'+{boon.defense} defence')
+    if boon.belt > 0:
+        parts.append(f'+{boon.belt} belt slot' + ('s' if boon.belt > 1 else ''))
+    if boon.crit > 0:
+        parts.append(f'+{round(boon.crit * 100)}% crit')
+    if boon.max_hp > 0:
+        parts.append(f'+{boon.max_hp} max HP')
+    if boon.heal > 1.0:
+        parts.append(f'+{round((boon.heal - 1) * 100)}% potion heal')
+    return ', '.join(parts)
+
+
+def half_boon(boon: Boon) -> Boon:
+    """The shop's lesser version of `boon`: every benefit halved (rounded
+    half up, at least 1; crit halved exactly) and no cost at all. Its own key
+    (`<key>_half`), so it is told apart from the full shrine boon and both can
+    be held."""
+    if boon.heal < 1.0:
+        heal = 1.0  # a cost: dropped
+    else:
+        heal = 1.0 + (boon.heal - 1.0) / 2
+    half = replace(
+        boon,
+        key=f'{boon.key}_half',
+        name=f'Lesser {boon.name.lower()}',
+        short=boon.short + '\u00bd',
+        cost='',
+        power=_half_int(boon.power),
+        max_hp=_half_int(boon.max_hp),
+        defense=_half_int(boon.defense),
+        crit=boon.crit / 2 if boon.crit > 0 else 0.0,
+        belt=_half_int(boon.belt),
+        heal=heal,
+    )
+    return replace(half, benefit=_benefit_text(half))
+
+
+# The shop's half-strength boons (game/shop.py). Shrines never offer them.
+HALF_BOONS = {b.key: b for b in (half_boon(x) for x in _TABLE)}
+ALL_BOONS = {**BOONS, **HALF_BOONS}
+
+
 def held_boons(player):
-    """The Boons `player` holds, in the order taken (unknown keys skipped)."""
-    return [BOONS[key] for key in getattr(player, 'boons', ()) if key in BOONS]
+    """The Boons `player` holds -- shrine and shop ones -- in the order taken
+    (unknown keys skipped)."""
+    return [ALL_BOONS[key] for key in getattr(player, 'boons', ()) if key in ALL_BOONS]
 
 
 def boon_total(player, field):
@@ -88,13 +143,6 @@ def heal_multiplier(player):
     """What potions heal is multiplied by: the product of the held boons'
     `heal` (two -25% boons give 0.5625)."""
     return math.prod(boon.heal for boon in held_boons(player))
-
-
-def boons_text(player):
-    """The side panel's boon row ('Boons: Blood Keen'), or '' before the
-    first boon. Both renderers' panels use it."""
-    boons = held_boons(player)
-    return 'Boons: ' + ' '.join(b.short for b in boons) if boons else ''
 
 
 def roll_boons(held=(), rng: Rng = random):
@@ -110,27 +158,30 @@ class Shrine(Entity):
     """A walkable altar. Not a Monster, not a Chest: GameState.shrine_at
     finds it, try_move_player visits it."""
 
+    layer = FIXTURE
+
     def __init__(self, x, y):
         super().__init__(x, y, SHRINE_CHAR, color=SHRINE_COLOR, name='shrine')
 
 
-def place_shrine(rooms, depth, occupied=(), boss_room=None, rng: Rng = random):
+def place_shrine(rooms, depth, occupied=(), boss_room=None, rng: Rng = random, exclude=()):
     """This floor's shrine, or None. Rolled with SHRINE_CHANCE; never on a
-    boss floor (unless SHRINE_ON_BOSS_FLOORS), in rooms[0] or in `boss_room`,
-    and never on a tile in `occupied` (the stairs, chests, monsters)."""
+    boss floor (unless SHRINE_ON_BOSS_FLOORS), in rooms[0], in `boss_room`
+    or in a room of `exclude` (the shop's), and never on a tile in
+    `occupied` (the floor's shared occupancy set, game/level.py: the
+    player, the shopkeeper, monsters, chests and the stairs)."""
     if is_boss_level(depth) and not SHRINE_ON_BOSS_FLOORS:
         return None
     if rng.random() >= SHRINE_CHANCE:
         return None
-    candidates = [room for room in rooms[1:] if room is not boss_room]
+    candidates = [
+        room
+        for room in rooms[1:]
+        if room is not boss_room and not any(room is ex for ex in exclude)
+    ]
     rng.shuffle(candidates)
     for room in candidates:
-        free = [
-            (x, y)
-            for y in range(room.y1, room.y2)
-            for x in range(room.x1, room.x2)
-            if (x, y) not in occupied
-        ]
+        free = free_tiles(room, occupied)
         if free:
             return Shrine(*rng.choice(free))
     return None

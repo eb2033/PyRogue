@@ -56,6 +56,8 @@ def _render(size, page):
 def _planks(board, area):
     """Horizontal planks with seams, grain lines and the odd knot. Seeded, so
     the same size always draws the same wood."""
+    if area.width <= 0 or area.height <= 0:
+        return  # a board too small to have a wood area inside its frame
     rng = random.Random(1987)
     plank_h = max(10, area.height // 14)
     y, i = area.top, 0
@@ -86,10 +88,13 @@ def _page(board, page):
     """Drop shadow, then the sheet: shaded margins around a flat centre."""
     shadow = pygame.Surface(page.size, pygame.SRCALPHA)
     shadow.fill(SHADOW)
-    offset = max(3, page.width // 60)
+    # Margins and shadow scale with the page's shorter side, so a long strip
+    # (the log board) gets the same narrow margin as the tall stats page.
+    side = min(page.width, page.height)
+    offset = max(3, side // 60)
     board.blit(shadow, page.move(offset, offset))
     board.fill(palette.PAGE_EDGE, page)
-    margin = max(3, page.width // 40)
+    margin = max(3, side // 40)
     steps = 4
     for step in range(1, steps + 1):
         t = step / steps

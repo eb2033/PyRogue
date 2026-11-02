@@ -14,9 +14,6 @@ build/
 dist/
 *.spec~
 
-# Runtime files the game writes into the working directory
-savegame.json
-
 # Markdown is ignored by default; the project's own docs are its memory and are tracked.
 *.md
 !README.md

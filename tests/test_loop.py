@@ -7,7 +7,6 @@ tested without a window.
 """
 
 import os
-import random
 import sys
 import unittest
 from unittest import mock
@@ -51,7 +50,7 @@ class HpRecordingRenderer(RecordingRenderer):
         self.monster = monster
 
     def draw(self, state):
-        damages = [h.damage for h in state.combat_events if h.attacker is state.player]
+        damages = [h.damage for h in state.hits() if h.attacker is state.player]
         self.events.append(
             ('draw', state.player.hp, list(state.messages), self.monster.hp, damages)
         )
@@ -65,8 +64,7 @@ def run_one_action(renderer, state, action, delay_ms):
 
 
 def state_with_monsters(offsets, player_hp=200, monster_power=2, monster_hp=200):
-    random.seed(40)
-    state = GameState(50, 20)
+    state = GameState(50, 20, seed=40)
     state.player.hp = state.player.max_hp = player_hp
     state.entities = [state.player]
     for dx, dy in offsets:
@@ -99,19 +97,13 @@ class MonsterPhaseFramesTests(unittest.TestCase):
         # ...and the reply does land, just afterwards.
         self.assertLess(state.player.hp, hp_after_player_half)
 
-    def test_one_held_frame_per_visible_monster(self):
+    def test_one_held_frame_per_visible_monster_and_one_more_blow_per_frame(self):
         state = state_with_monsters([(1, 0), (-1, 0), (0, 1)])
         renderer = RecordingRenderer()
         state.handle_action('wait')
         resolve_monster_phase(renderer, state, DELAY)
         self.assertEqual(len(renderer.pauses()), 3)
         self.assertEqual(renderer.pauses()[0], ('pause', DELAY))
-
-    def test_each_frame_shows_one_more_blow_than_the_last(self):
-        state = state_with_monsters([(1, 0), (-1, 0), (0, 1)])
-        renderer = RecordingRenderer()
-        state.handle_action('wait')
-        resolve_monster_phase(renderer, state, DELAY)
         hits = [sum('hits you' in m for m in draw[2]) for draw in renderer.draws()]
         self.assertEqual(hits, [0, 1, 2])  # strictly one at a time
 
@@ -145,10 +137,10 @@ class MonsterPhaseFramesTests(unittest.TestCase):
         goblin = state.entities[1]
         renderer = HpRecordingRenderer(goblin)
 
-        with mock.patch('game.state.BASE_CRIT_CHANCE', 0.0):
+        with mock.patch('game.fight.BASE_CRIT_CHANCE', 0.0):
             run_one_action(renderer, state, 'move_e', DELAY)
 
-        player_hits = [h for h in state.combat_events if h.attacker is state.player]
+        player_hits = [h for h in state.hits() if h.attacker is state.player]
         self.assertEqual(len(player_hits), 2)
         first, second = (h.damage for h in player_hits)
         frames = renderer.draws()
@@ -162,19 +154,17 @@ class MonsterPhaseFramesTests(unittest.TestCase):
         self.assertEqual(frames[1][4], [first, second])
         self.assertNotIn('hits you', ' '.join(frames[1][2]))
         # ...and the goblin does answer, after both strikes.
-        attackers = [h.attacker for h in state.combat_events]
+        attackers = [h.attacker for h in state.hits()]
         self.assertEqual(attackers, [state.player, state.player, goblin])
         self.assertEqual(state.turn, 1)
 
-    def test_rapier_kill_on_the_first_strike_holds_no_extra_frame(self):
+    def test_no_strike_step_after_a_first_strike_kill_or_a_warrior_bump(self):
         state = state_with_monsters([(1, 0)], monster_hp=1)
         state.player.weapon = Item(0, 0, 'rapier', 'epic')
         renderer = RecordingRenderer()
         run_one_action(renderer, state, 'move_e', DELAY)
         self.assertEqual(renderer.events, [])  # nothing left to step
-        self.assertEqual(len(state.combat_events), 1)
-
-    def test_warrior_bump_has_no_strike_step(self):
+        self.assertEqual(len(state.hits()), 1)
         state = state_with_monsters([(1, 0)])
         renderer = RecordingRenderer()
         state.handle_action('move_e')

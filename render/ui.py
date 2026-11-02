@@ -3,28 +3,35 @@
 `Layout` is the single source of truth for where things go (desktop_build_plan.md
 §5 WS-D task 2): the renderer asks it for cell sizes and positions rather than
 computing pixel offsets itself. `Canvas` draws text onto a surface in grid
-cells. `paint_panel` is the side panel: the stats, gear, belt, boons, controls
-and a pixel HP bar, plus a wrapped message log as long as the rows allow.
+cells. There are two boards: `paint_panel` paints the stats board (headed
+sections -- stats with a pixel HP bar, gear, a row of belt boxes, boons, a
+controls table) and `paint_log` the log board (a wrapped message log as long
+as the rows allow).
 
-The panel sits right of the map, or under it when that gives the map bigger
-cells (a portrait or narrow window) -- `Layout.stacked`. Either way it is the
-`PANEL_COLS`-wide block at grid cell (`panel_x`, `panel_y`), so callers never
-need to know which. It is drawn as a wooden noticeboard (render/noticeboard.py)
-with the stats inked on a parchment page hanging from it: text starts at
-(`text_x`, `text_y`), `PANEL_PAD_X` columns and `PANEL_PAD_TOP` rows in, so the
-frame, the nail and the page's margins fit around it.
+The stats board sits right of the map with the log board under the map, or --
+`Layout.stacked`, when that gives the map bigger cells (a portrait or narrow
+window) -- the stats board goes under the map and the log board under it.
+Either way the stats board is the `PANEL_COLS`-wide block at grid cell
+(`panel_x`, `panel_y`) and the log board the `log_cols`-wide one at (`log_x`,
+`log_y`), so callers never need to know which. Each is drawn as a wooden
+noticeboard (render/noticeboard.py) with its text inked on a parchment page:
+stats text starts at (`text_x`, `text_y`), `PANEL_PAD_X` columns and
+`PANEL_PAD_TOP` rows in, so the frame, the nail and the page's margins fit
+around it; log text at (`log_text_x`, `log_text_y`).
 
 Reads GameState; never mutates it.
 """
 
 import textwrap
+from typing import NamedTuple
 
 import pygame
 
+from game.gold import GOLD_COLOR
 from game.item import belt_capacity, belt_slot_label, dodge_chance
 from game.paths import resource_path
 from game.quiver import QUIVER_CAPACITY
-from game.shrine import BOON_COLOR, boons_text
+from game.shrine import BOON_COLOR, held_boons
 from render import noticeboard, palette
 
 # -- panel geometry -----------------------------------------------------------
@@ -38,24 +45,44 @@ PANEL_PAD_X = 3  # frame + board + page margin, each side
 PANEL_PAD_TOP = 3  # frame, the nail and string, the page margin
 PANEL_PAD_BOTTOM = 2  # page margin, frame
 PANEL_TEXT_COLS = PANEL_COLS - 2 * PANEL_PAD_X
-HP_ROW = 2
-GEAR_TOP = 6  # header; weapon name + stats, armor name + stats
-BELT_ROW = GEAR_TOP + 5  # the potion belt, under the armor
-BOONS_ROW = BELT_ROW + 1  # shrine boons; blank until the first is taken
-CONTROLS_TOP = GEAR_TOP + 7
-LOG_TOP = CONTROLS_TOP + 4  # the '-- log --' header; messages start below it
+# Sections: a bold header with a rule under it, then its rows.
+HEADER_ROW = 0  # 'Class - Depth n', the first section's header
+HP_ROW = 1
+STATS_ROW = 2  # stats_text
+ITEMS_ROW = 3  # items_text
+GOLD_ROW = 4  # 'Gold N'
+GEAR_TOP = 6  # header; weapon name + stats (7-8), armor name + stats (9-10)
+BELT_TOP = 12  # header
+BELT_ROW = 13  # one row of slot boxes
+BOONS_TOP = 15  # header and the boons' short names, once the first is taken
+BOON_ROWS = 2  # rows of names under it (wrapped), the second only when needed
+CONTROLS_TOP = 18  # header; a key/action table, one row per binding
+CONTROLS_KEY_COLS = 11  # the key column, 'wasd/arrows' wide
+PANEL_TEXT_ROWS = 25  # text rows on the stats board's page
+# The stats board is a fixed height; the message log has a board of its own.
+PANEL_ROWS = PANEL_PAD_TOP + PANEL_TEXT_ROWS + PANEL_PAD_BOTTOM
+# Stacked (panel under the map): blank text rows between map and panel, and
+# between the panel and the log board.
+STACK_GAP = 1
+
+# -- log board geometry -------------------------------------------------------
+# The log board sits under the map (side by side) or under the stats board
+# (stacked). Its text row 0 is the 'LOG' header; messages start on row 1.
 MIN_LOG_LINES = 4  # always room for this many
 LOG_LINES = 12  # shown when the window has the rows for them
-PANEL_ROWS = PANEL_PAD_TOP + LOG_TOP + 1 + MIN_LOG_LINES + PANEL_PAD_BOTTOM  # the minimum
-PANEL_MAX_ROWS = PANEL_PAD_TOP + LOG_TOP + 1 + LOG_LINES + PANEL_PAD_BOTTOM  # a full log
-# Stacked (panel under the map): blank text rows between map and panel.
-STACK_GAP = 1
+LOG_PAD_X = PANEL_PAD_X
+LOG_PAD_TOP = 2  # frame, the page margin
+LOG_PAD_BOTTOM = PANEL_PAD_BOTTOM
+LOG_BOARD_MIN_ROWS = LOG_PAD_TOP + 1 + MIN_LOG_LINES + LOG_PAD_BOTTOM
+LOG_BOARD_MAX_ROWS = LOG_PAD_TOP + 1 + LOG_LINES + LOG_PAD_BOTTOM
+LOG_GAP = 1  # rows between the map's bottom and the log board
 
 # The HP bar sits right of the 'HP: x/max' text, in panel columns.
 HP_BAR_COL = 12  # 'HP: 999/999' is 11 wide
 HP_BAR_COLS = PANEL_TEXT_COLS - HP_BAR_COL
 HP_BAR_COLOR = palette.HP_BAR_FILL  # palette.INK_DANGER at or below 1/3 max
 HP_BAR_TRACK = palette.HP_BAR_TRACK
+EMPTY_SLOT = '\u2014'  # an empty belt slot's dash
 
 # The bundled font (assets/fonts, SIL OFL) is the default everywhere, so the
 # layout -- and the tests that pin it -- see the same metrics on every OS.
@@ -75,8 +102,9 @@ TILE_SIZES = (64, 56, 48, 44, 40, 36, 32, 28, 24, 20, 16)
 # A bigger tile is only worth it while the panel text stays readable.
 MIN_TILE_FONT_SIZE = 12
 MAX_TILE_FONT_SIZE = 20
-# The first window: this size on any desktop that holds it, else the largest
-# 16:9 size within this share of a smaller desktop.
+# The first window: this size on any desktop where it fits within
+# DESKTOP_SHARE of both dimensions, else the largest 16:9 size within that
+# share (so it never fills the whole desktop, taskbar and title bar included).
 FIRST_WINDOW = (1920, 1080)
 DESKTOP_SHARE = 0.85
 FALLBACK_DESKTOP = (1280, 800)
@@ -86,22 +114,24 @@ class Layout:
     """Grid geometry: how many cells, how big, and where the grid sits.
 
     Glyph mode (the default): the window is a `cols x rows` grid of monospace
-    cells -- the map at the top left, the panel at column `panel_x`, row
-    `panel_y`. `fit()` picks the largest font whose grid fits the window and
-    letterboxes it; text is re-rendered at the new size rather than scaled, so
-    it stays crisp. The grid grows a few rows when the window has them spare,
-    up to what a full message log uses.
+    cells -- the map at the top left, the stats board at column `panel_x`,
+    row `panel_y`, the log board at column `log_x`, row `log_y`. `fit()`
+    picks the largest font whose grid fits the window and letterboxes it;
+    text is re-rendered at the new size rather than scaled, so it stays
+    crisp. The grid grows a few rows when the window has them spare, up to
+    what a full message log uses.
 
     Tile mode (`tiles=True`): the map is its own grid of square `tile`-pixel
     cells at `map_origin`, because 16x16 art can't go in a ~1:2 text cell.
     Text still uses a monospace grid, now covering the whole window, so the
-    menus centre in it and the panel starts at column `panel_x`, row
-    `panel_y`, next to the map. `fit()` picks the largest tile size that
-    leaves the panel a readable font.
+    menus centre in it and the boards start at grid cells next to the map.
+    `fit()` picks the largest tile size that leaves the boards a readable
+    font.
 
-    In both modes the panel goes right of the map, or -- `stacked` -- under
-    it, whichever gives the map bigger cells (in tile mode, a tie goes to the
-    bigger panel font; otherwise to side by side).
+    In both modes the stats board goes right of the map with the log board
+    under the map, or -- `stacked` -- the stats board under the map and the
+    log board under that, whichever gives the map bigger cells (in tile
+    mode, a tie goes to the bigger text font; otherwise to side by side).
 
     `map_width` x `map_height` is the map *area* in cells -- the renderer
     passes camera.view_size, the exploring view, not the current floor's map
@@ -115,7 +145,8 @@ class Layout:
         self.tiles = tiles
         self.tile = None
         self.stacked = False
-        self.cols, self.rows, _, self.panel_x, self.panel_y = self._glyph_grid(False)
+        self.cols, self.rows, _, *placement = self._glyph_grid(False)
+        self.panel_x, self.panel_y, self.log_x, self.log_y, self.log_cols = placement
         self.font_path = font_path or _default_font()
         self._fonts = {}
         self.font_size = START_FONT_SIZE
@@ -136,25 +167,36 @@ class Layout:
     # -- glyph mode -----------------------------------------------------------
 
     def _glyph_grid(self, stacked):
-        """(cols, min_rows, max_rows, panel_x, panel_y) of the glyph grid.
+        """(cols, min_rows, max_rows, panel_x, panel_y, log_x, log_y, log_cols)
+        of the glyph grid: min_rows holds the shortest log board, max_rows a
+        full one.
 
         The map is always at grid cell (0, 0): the renderer draws it with
         Canvas.put, i.e. in grid cells."""
         if stacked:
             panel_y = self.map_height + STACK_GAP
+            log_y = panel_y + PANEL_ROWS + STACK_GAP
+            cols = max(self.map_width, PANEL_COLS)
             return (
-                max(self.map_width, PANEL_COLS),
-                panel_y + PANEL_ROWS,
-                panel_y + PANEL_MAX_ROWS,
+                cols,
+                log_y + LOG_BOARD_MIN_ROWS,
+                log_y + LOG_BOARD_MAX_ROWS,
                 0,
                 panel_y,
+                0,
+                log_y,
+                cols,
             )
+        log_y = self.map_height + LOG_GAP
         return (
             self.map_width + PANEL_GAP + PANEL_COLS,
-            max(self.map_height, PANEL_ROWS),
-            max(self.map_height, PANEL_MAX_ROWS),
+            max(log_y + LOG_BOARD_MIN_ROWS, PANEL_ROWS),
+            max(log_y + LOG_BOARD_MAX_ROWS, PANEL_ROWS),
             self.map_width + PANEL_GAP,
             0,
+            0,
+            log_y,
+            self.map_width,
         )
 
     def _largest_glyph_font(self, cols, rows, win_w, win_h):
@@ -172,7 +214,8 @@ class Layout:
             cols, min_rows = self._glyph_grid(stacked)[:2]
             sizes[stacked] = self._largest_glyph_font(cols, min_rows, win_w, win_h)
         self.stacked = sizes[True] > sizes[False]
-        cols, min_rows, max_rows, self.panel_x, self.panel_y = self._glyph_grid(self.stacked)
+        cols, min_rows, max_rows, *placement = self._glyph_grid(self.stacked)
+        self.panel_x, self.panel_y, self.log_x, self.log_y, self.log_cols = placement
         # Once the text is already large, a full-length log beats a slightly
         # bigger font (fonts with tall line heights would otherwise cut it).
         full = self._largest_glyph_font(cols, max_rows, win_w, win_h)
@@ -190,17 +233,25 @@ class Layout:
 
     # -- tile mode ------------------------------------------------------------
 
-    def _block_size(self, tile, cell, stacked=False, panel_rows=PANEL_ROWS):
-        """Pixel size of map + gap + panel at this tile size and text cell."""
+    def _block_size(self, tile, cell, stacked=False, log_rows=LOG_BOARD_MIN_ROWS):
+        """Pixel size of map + stats board + log board (`log_rows` tall) at
+        this tile size and text cell."""
         cell_w, cell_h = cell
         map_w, map_h = self.map_width * tile, self.map_height * tile
         if stacked:
-            return (max(map_w, PANEL_COLS * cell_w), map_h + (STACK_GAP + panel_rows) * cell_h)
-        return (map_w + (PANEL_GAP + PANEL_COLS) * cell_w, max(map_h, panel_rows * cell_h))
+            rows_below = STACK_GAP + PANEL_ROWS + STACK_GAP + log_rows
+            return (max(map_w, PANEL_COLS * cell_w), map_h + rows_below * cell_h)
+        # Side by side the map's top is on a text row, and the log board
+        # starts on the first whole row under it.
+        map_rows = -(-map_h // cell_h)
+        return (
+            map_w + (PANEL_GAP + PANEL_COLS) * cell_w,
+            max((map_rows + LOG_GAP + log_rows) * cell_h, PANEL_ROWS * cell_h),
+        )
 
     def _pick_tile_and_font(self, win_w, win_h, stacked=False):
-        """(tile, font size, shortfall). The largest tile whose map + panel
-        fit with the panel font at least MIN_TILE_FONT_SIZE, and the largest
+        """(tile, font size, shortfall). The largest tile whose map + boards
+        fit with the text font at least MIN_TILE_FONT_SIZE, and the largest
         such font; if even the smallest tile needs a smaller font, the
         smallest tile and whatever font fits. `shortfall` is 1.0 when that
         fits the window, else the share of it that does (the worse axis)."""
@@ -223,8 +274,8 @@ class Layout:
         # Nothing fits (the map alone may be wider than the window): the
         # biggest font among those that overflow the least, since shrinking
         # the text doesn't help when the map is what overflows.
-        # A font whose panel still fits the window's height wins a tie, so
-        # an over-wide map doesn't drag the panel off the bottom too.
+        # A font whose boards still fit the window's height wins a tie, so
+        # an over-wide map doesn't drag them off the bottom too.
         best = max(
             range(MAX_TILE_FONT_SIZE, MIN_FONT_SIZE - 1, -1),
             key=lambda size: (coverage(tile, size), height_fits(tile, size), size),
@@ -233,8 +284,8 @@ class Layout:
 
     def _choose_tiles(self, win_w, win_h):
         """(stacked, tile, font size): stacked only if it gives a bigger tile,
-        or the same tile with a bigger panel font. In a window too small for
-        either, whichever overflows it less (so map and panel don't overlap
+        or the same tile with a bigger text font. In a window too small for
+        either, whichever overflows it less (so map and boards don't overlap
         in a narrow window that can't even fit the map)."""
         side_tile, side_size, side_fit = self._pick_tile_and_font(win_w, win_h, False)
         tile, size, stacked_fit = self._pick_tile_and_font(win_w, win_h, True)
@@ -243,8 +294,8 @@ class Layout:
         return False, side_tile, side_size
 
     def _grow_tile_font(self, size, win_w, win_h):
-        """Once the tile is chosen, the panel font may grow past
-        MAX_TILE_FONT_SIZE (up to MAX_FONT_SIZE) while map + panel, with a
+        """Once the tile is chosen, the text font may grow past
+        MAX_TILE_FONT_SIZE (up to MAX_FONT_SIZE) while map + boards, with a
         full-length log, still fit: at 4K a 20pt panel next to 64px tiles is
         unreadably small. Never shrinks the log below what `size` gives."""
         for bigger in range(MAX_FONT_SIZE, size, -1):
@@ -252,7 +303,7 @@ class Layout:
                 self.tile,
                 self._cell_size(self._font(bigger)),
                 self.stacked,
-                panel_rows=PANEL_MAX_ROWS,
+                log_rows=LOG_BOARD_MAX_ROWS,
             )
             if block_w <= win_w and block_h <= win_h:
                 return bigger
@@ -270,12 +321,12 @@ class Layout:
         self.rows = max(PANEL_ROWS, win_h // cell_h)
         self.origin_x = max(0, (win_w - cell_w * self.cols) // 2)
         self.origin_y = max(0, (win_h - cell_h * self.rows) // 2)
-        # Centre map + panel as one block, then snap the panel onto the text
-        # grid and place the map against it.
-        # Centre on the board with a full log when that fits, so the log
-        # isn't cut short by a panel that starts too low.
+        # Centre map + boards as one block, then snap the stats board onto
+        # the text grid and place the map against it.
+        # Centre on a full-length log board when that fits, so the log isn't
+        # cut short by boards that start too low.
         block_w, block_h = self._block_size(
-            self.tile, (cell_w, cell_h), self.stacked, panel_rows=PANEL_MAX_ROWS
+            self.tile, (cell_w, cell_h), self.stacked, log_rows=LOG_BOARD_MAX_ROWS
         )
         if block_w > win_w or block_h > win_h:
             block_w, block_h = self._block_size(self.tile, (cell_w, cell_h), self.stacked)
@@ -289,16 +340,31 @@ class Layout:
         self.panel_x = min(
             max(0, self.cols - PANEL_COLS), max(0, round((panel_left - self.origin_x) / cell_w))
         )
+        # The map's top is on the stats board's row; keep the shortest log
+        # board under the map inside the grid when the grid has the rows.
+        rows_needed = max(PANEL_ROWS, -(-map_h // cell_h) + LOG_GAP + LOG_BOARD_MIN_ROWS)
         self.panel_y = min(
-            max(0, self.rows - PANEL_ROWS), max(0, (block_top - self.origin_y) // cell_h)
+            max(0, self.rows - rows_needed), max(0, (block_top - self.origin_y) // cell_h)
         )
         self.map_origin = (
             max(0, self.origin_x + (self.panel_x - PANEL_GAP) * cell_w - map_w),
             self.origin_y + self.panel_y * cell_h,
         )
+        self._place_log_under_map()
+
+    def _place_log_under_map(self):
+        """Side by side: the log board LOG_GAP rows under the map, on the
+        whole text columns inside the map's width (and left of the panel)."""
+        cell_w, cell_h = self.cell_w, self.cell_h
+        map_rect = self.map_rect()
+        self.log_y = -(-(map_rect.bottom - self.origin_y) // cell_h) + LOG_GAP
+        self.log_x = max(0, -(-(map_rect.left - self.origin_x) // cell_w))
+        right = min((map_rect.right - self.origin_x) // cell_w, self.panel_x, self.cols)
+        self.log_cols = max(0, right - self.log_x)
 
     def _place_stacked_tiles(self, block_left, block_top, win_w, map_w, map_h):
-        """Map on top, panel under it, both left-aligned on the panel's column."""
+        """Map on top, the stats board under it, the log board under that, all
+        left-aligned on the stats board's column."""
         cell_w, cell_h = self.cell_w, self.cell_h
         self.panel_x = min(
             max(0, self.cols - PANEL_COLS), max(0, round((block_left - self.origin_x) / cell_w))
@@ -309,15 +375,21 @@ class Layout:
         def row_below(map_top):
             return -(-(map_top + map_h - self.origin_y) // cell_h) + STACK_GAP
 
-        # Pull the panel up to keep it inside the window, but never above the
-        # row below a map at the very top: overlapping the map is worse than
-        # running off the bottom of a window too small for both.
-        panel_y = min(row_below(block_top), self.rows - PANEL_ROWS)
+        # Pull the boards up to keep them inside the window, but never above
+        # the row below a map at the very top: overlapping the map is worse
+        # than running off the bottom of a window too small for all three.
+        boards = PANEL_ROWS + STACK_GAP + LOG_BOARD_MIN_ROWS
+        panel_y = min(row_below(block_top), self.rows - boards)
         self.panel_y = max(0, panel_y, row_below(0))
         panel_top = self.origin_y + self.panel_y * cell_h
         # If the panel had to move up, the map moves up with it.
         map_top = min(block_top, panel_top - STACK_GAP * cell_h - map_h)
         self.map_origin = (map_left, max(0, map_top))
+        # The log board: as wide as the stats board, or the map if wider.
+        self.log_x = self.panel_x
+        self.log_y = self.panel_y + PANEL_ROWS + STACK_GAP
+        under_map = (map_left + map_w - self.origin_x) // cell_w - self.log_x
+        self.log_cols = max(0, min(max(PANEL_COLS, under_map), self.cols - self.log_x))
 
     # -- public geometry ------------------------------------------------------
 
@@ -327,7 +399,7 @@ class Layout:
         return first_window_size()
 
     def fit(self, window_size):
-        """Recompute font, cell size, panel placement and letterbox origin
+        """Recompute font, cell size, board placement and letterbox origin
         for a window size."""
         if self.tiles:
             self._fit_tiles(window_size)
@@ -357,13 +429,20 @@ class Layout:
         cell_w, cell_h = self.map_cell_size()
         return pygame.Rect(*self.map_origin, cell_w * self.map_width, cell_h * self.map_height)
 
+    def _page_rect(self, text, board):
+        """The parchment page around a board's `text` area: a margin of most
+        of a column / row, clipped inside the board's frame."""
+        page = text.inflate(2 * self.cell_w + 4, self.cell_h * 6 // 5)
+        return page.clip(board.inflate(-2, -2))
+
+    # The stats board.
+
     def panel_rows(self):
-        """Rows the board takes: padding, the stats, and the log at this size."""
-        rows = PANEL_PAD_TOP + LOG_TOP + 1 + self.log_lines() + PANEL_PAD_BOTTOM
-        return max(1, min(rows, self.rows - self.panel_y))
+        """Rows the stats board takes: PANEL_ROWS, unless the grid ends first."""
+        return max(1, min(PANEL_ROWS, self.rows - self.panel_y))
 
     def panel_rect(self):
-        """Pixel rect of the noticeboard."""
+        """Pixel rect of the stats noticeboard."""
         return pygame.Rect(
             *self.cell_to_pixel(self.panel_x, self.panel_y),
             self.cell_w * self.panel_width(),
@@ -376,38 +455,71 @@ class Layout:
 
     @property
     def text_x(self):
-        """Grid column where the panel's text starts."""
+        """Grid column where the stats board's text starts."""
         return self.panel_x + PANEL_PAD_X
 
     @property
     def text_y(self):
-        """Grid row where the panel's text starts (its row 0)."""
+        """Grid row where the stats board's text starts (its row 0)."""
         return self.panel_y + PANEL_PAD_TOP
 
     def text_width(self):
-        """Columns of text the page holds."""
+        """Columns of text the stats page holds."""
         return max(0, self.panel_width() - 2 * PANEL_PAD_X)
 
     def text_rect(self):
-        """Pixel rect of the page's text area (flat paper under the ink)."""
+        """Pixel rect of the stats page's text area (flat paper under the ink)."""
         return pygame.Rect(
             *self.cell_to_pixel(self.text_x, self.text_y),
             self.cell_w * self.text_width(),
-            self.cell_h * (LOG_TOP + 1 + self.log_lines()),
+            self.cell_h * PANEL_TEXT_ROWS,
         )
 
     def page_rect(self):
-        """Pixel rect of the parchment page: the text area plus a margin of
-        most of a column / row, inside the board."""
-        text = self.text_rect()
-        page = text.inflate(2 * self.cell_w + 4, self.cell_h * 6 // 5)
-        return page.clip(self.panel_rect().inflate(-2, -2))
+        """Pixel rect of the stats board's parchment page."""
+        return self._page_rect(self.text_rect(), self.panel_rect())
+
+    # The log board.
 
     def log_lines(self):
-        """How many message-log rows the panel has at this size: as many as
-        the grid's rows allow under the log header, up to LOG_LINES."""
-        free = self.rows - (self.text_y + LOG_TOP + 1) - PANEL_PAD_BOTTOM
-        return max(1, min(LOG_LINES, free))
+        """Message rows on the log page at this size: as many as the grid's
+        rows allow under the 'LOG' header, up to LOG_LINES -- and never fewer
+        than MIN_LOG_LINES (the board then runs off the bottom of a window
+        too small for it, rather than onto the map)."""
+        free = self.rows - (self.log_text_y + 1) - LOG_PAD_BOTTOM
+        return max(MIN_LOG_LINES, min(LOG_LINES, free))
+
+    def log_rect(self):
+        """Pixel rect of the log noticeboard, frame included."""
+        rows = LOG_PAD_TOP + 1 + self.log_lines() + LOG_PAD_BOTTOM
+        return pygame.Rect(
+            *self.cell_to_pixel(self.log_x, self.log_y),
+            self.cell_w * self.log_cols,
+            self.cell_h * rows,
+        )
+
+    @property
+    def log_text_x(self):
+        """Grid column where the log's text starts."""
+        return self.log_x + LOG_PAD_X
+
+    @property
+    def log_text_y(self):
+        """Grid row of the log's text row 0 (the header; messages from row 1)."""
+        return self.log_y + LOG_PAD_TOP
+
+    def log_text_width(self):
+        """Columns of text the log page holds."""
+        return max(0, self.log_cols - 2 * LOG_PAD_X)
+
+    def log_page_rect(self):
+        """Pixel rect of the log board's parchment page."""
+        text = pygame.Rect(
+            *self.cell_to_pixel(self.log_text_x, self.log_text_y),
+            self.cell_w * self.log_text_width(),
+            self.cell_h * (1 + self.log_lines()),
+        )
+        return self._page_rect(text, self.log_rect())
 
 
 class Canvas:
@@ -464,51 +576,139 @@ class Canvas:
 # -- the panel ----------------------------------------------------------------
 
 
+class PanelContent(NamedTuple):
+    """Everything the stats board shows, as plain values (see panel_content)."""
+
+    header: str  # 'Class - Depth n'
+    hp: int
+    max_hp: int
+    danger: bool  # HP at or below a third: the HP text and bar go red
+    stats: str  # stats_text
+    items: str  # items_text
+    gold: str  # 'Gold n'
+    gear: tuple  # per slot: (name line, stats line, ink)
+    belt: tuple  # per belt box: (label, ink)
+    belt_full: bool  # the belt holds a potion: the first box is outlined
+    boons: tuple  # the held boons' short names
+    controls: tuple  # controls_rows for the class
+
+
+def panel_content(state):
+    """What the stats board shows for `state`, as a PanelContent. Two equal
+    contents paint identical boards at the same layout -- which makes this
+    the key render/boards.py caches the stats board under."""
+    player = state.player
+    belt = state.belt
+    return PanelContent(
+        header=f'{player.char_class.capitalize()} - Depth {state.depth}',
+        hp=player.hp,
+        max_hp=player.max_hp,
+        danger=player.hp <= player.max_hp // 3,
+        stats=stats_text(player),
+        items=items_text(player),
+        gold=f'Gold {player.gold}',
+        gear=tuple(
+            _gear_lines(label, item, stat)
+            for label, item, stat in [('Wpn', player.weapon, 'atk'), ('Arm', player.armor, 'def')]
+        ),
+        belt=tuple(
+            (EMPTY_SLOT, palette.INK)
+            if i >= len(belt) or belt[i] is None
+            else (belt_slot_label(belt[i], player), palette.ink(belt[i].color))
+            for i in range(belt_capacity(player))
+        ),
+        belt_full=bool(belt),
+        boons=tuple(boon.short for boon in held_boons(player)),
+        controls=tuple(controls_rows(player.char_class)),
+    )
+
+
 def paint_panel(canvas, state):
-    """The noticeboard, then the panel's items inked on its page (gear lines
-    take two rows each), clipped to the page's width; plus an HP bar beside
-    the HP text and a message log as long as the rows allow."""
+    """The stats board: the noticeboard, then its sections inked on the page
+    -- class & depth with HP (text and a bar), stats and items; gear (two
+    rows a slot); the potion belt as a row of boxes; boons, once one is
+    held; and a controls table. Text is clipped to the page's width. The
+    message log is on its own board: paint_log."""
+    paint_panel_content(canvas, panel_content(state))
+
+
+def paint_panel_content(canvas, content):
+    """paint_panel for an already-gathered PanelContent."""
     layout = canvas.layout
     if layout.panel_width() > 0:
         noticeboard.paint(canvas.surface, layout.panel_rect(), layout.page_rect())
-    player = state.player
     x, top = layout.text_x, layout.text_y
     width = layout.text_width()
 
-    def put(row, text, color=palette.INK, bold=False):
-        canvas.put_str(x, top + row, text[:width], color, bold=bold)
+    def put(row, text, color=palette.INK):
+        canvas.put_str(x, top + row, text[:width], color)
 
-    put(0, 'PythonRogue', bold=True)
-    put(1, f'{player.char_class.capitalize()} - Depth: {state.depth}')
-    danger = player.hp <= player.max_hp // 3
-    put(HP_ROW, f'HP: {player.hp}/{player.max_hp}', palette.INK_DANGER if danger else palette.INK)
-    _paint_hp_bar(canvas, x, top + HP_ROW, width, player.hp, player.max_hp, danger)
-    put(3, stats_text(player))
-    put(4, items_text(player))
+    def header(row, text):
+        _paint_header(canvas, x, top + row, width, text)
 
-    put(GEAR_TOP, '-- gear --', bold=True)
-    for row, (label, item, stat) in enumerate(
-        [('Wpn', player.weapon, 'atk'), ('Arm', player.armor, 'def')]
-    ):
-        name, stats, color = _gear_lines(label, item, stat)
+    header(HEADER_ROW, content.header)
+    put(
+        HP_ROW,
+        f'HP: {content.hp}/{content.max_hp}',
+        palette.INK_DANGER if content.danger else palette.INK,
+    )
+    _paint_hp_bar(canvas, x, top + HP_ROW, width, content.hp, content.max_hp, content.danger)
+    put(STATS_ROW, content.stats)
+    put(ITEMS_ROW, content.items)
+    put(GOLD_ROW, content.gold, palette.ink(GOLD_COLOR))
+
+    header(GEAR_TOP, 'GEAR')
+    for row, (name, stats, color) in enumerate(content.gear):
         put(GEAR_TOP + 1 + 2 * row, name, color)
         if stats:
             put(GEAR_TOP + 2 + 2 * row, stats, color)
-    _paint_belt(canvas, x, top + BELT_ROW, width, state.belt, player)
-    boons = boons_text(player)
-    if boons:
-        put(BOONS_ROW, boons, palette.ink(BOON_COLOR))
 
-    if player.char_class == 'archer':
-        put(CONTROLS_TOP, 'wasd move, arrows shoot')
+    header(BELT_TOP, 'BELT')
+    _paint_belt(canvas, content.belt, content.belt_full)
+
+    if content.boons:
+        # The header says what they are: just their short names under it.
+        header(BOONS_TOP, 'BOONS')
+        for i, row in enumerate(_boon_name_rows(content.boons, width)):
+            put(BOONS_TOP + 1 + i, row, palette.ink(BOON_COLOR))
+
+    header(CONTROLS_TOP, 'CONTROLS')
+    _paint_controls(canvas, x, top + CONTROLS_TOP + 1, width, content.controls)
+
+
+def paint_log(canvas, state):
+    """The log board: its noticeboard, a 'LOG' header, then the newest
+    messages word-wrapped to the page, as many as its rows allow."""
+    paint_log_messages(canvas, log_content(state, canvas.layout))
+
+
+def log_content(state, layout):
+    """The messages the log board can show at `layout`: the newest
+    log_lines() of them (each takes at least a row). Two equal tails paint
+    identical boards -- the key render/boards.py caches the log board under."""
+    return tuple(state.messages[-layout.log_lines() :])
+
+
+def paint_log_messages(canvas, messages):
+    """paint_log for a tuple of messages (log_content)."""
+    layout = canvas.layout
+    if layout.log_cols <= 0:
+        return
+    noticeboard.paint(canvas.surface, layout.log_rect(), layout.log_page_rect())
+    x, top, width = layout.log_text_x, layout.log_text_y, layout.log_text_width()
+    _paint_header(canvas, x, top, width, 'LOG')
+    for i, line in enumerate(log_rows(messages, width, layout.log_lines())):
+        canvas.put_str(x, top + 1 + i, line, palette.INK)
+
+
+def controls_rows(char_class):
+    """The controls table's (key, action) rows for a class: the archer moves
+    with wasd and shoots with the arrows; everyone else moves with both."""
+    if char_class == 'archer':
+        moves = [('wasd', 'move'), ('arrows', 'shoot')]
     else:
-        put(CONTROLS_TOP, 'wasd/arrows move')
-    put(CONTROLS_TOP + 1, 'space  wait   e  descend')
-    put(CONTROLS_TOP + 2, 'h  drink  q  ability')
-
-    put(LOG_TOP, '-- log --', bold=True)
-    for i, line in enumerate(log_rows(state.messages, width, layout.log_lines())):
-        put(LOG_TOP + 1 + i, line)
+        moves = [('wasd/arrows', 'move')]
+    return moves + [('space', 'wait'), ('e', 'descend'), ('h', 'drink'), ('q', 'ability')]
 
 
 def stats_text(player):
@@ -522,10 +722,23 @@ def stats_text(player):
 def items_text(player):
     """The panel's item row: 'Items: n', plus '   Arrows n/12' for a player
     with a quiver (the archer; game/quiver.py)."""
-    text = f'Items: {len(player.inventory)}'
+    text = f'Items: {len(player.items_used)}'
     if player.quiver is None:
         return text
     return f'{text}   Arrows {player.quiver}/{QUIVER_CAPACITY}'
+
+
+def boon_rows(boons, width):
+    """The held boons' short names, space-separated and wrapped to `width`
+    columns over at most BOON_ROWS rows (BOONS_TOP + 1 and the blank row
+    before CONTROLS). A name is never split across rows."""
+    return _boon_name_rows([boon.short for boon in boons], width)
+
+
+def _boon_name_rows(names, width):
+    """boon_rows for the short `names` themselves (PanelContent.boons)."""
+    rows = textwrap.wrap(' '.join(names), max(1, width))
+    return rows[:BOON_ROWS]
 
 
 def log_rows(messages, width, rows):
@@ -545,22 +758,85 @@ def log_rows(messages, width, rows):
     return lines
 
 
-def _paint_belt(canvas, x, y, width, belt, player):
-    """'Belt: [+20] +35 ---' in text row `y`: the bracketed first slot is the one 'h' drinks; each
-    potion in its rarity's ink, empty slots in plain ink. One slot per
-    belt_capacity(player), each showing its heal after the player's boons."""
-    label = 'Belt: '
-    canvas.put_str(x, y, label[:width], palette.INK)
-    col = len(label)
-    for i in range(belt_capacity(player)):
-        item = belt[i] if i < len(belt) else None
-        text = belt_slot_label(item, player)
-        if i == 0:
-            text = f'[{text}]'
-        if col < width:
-            color = palette.ink(item.color) if item is not None else palette.INK
-            canvas.put_str(x + col, y, text[: width - col], color)
-        col += len(text) + 1
+def _paint_header(canvas, x, y, width, text):
+    """A section header in text row `y`: bold ink, with a 1px rule across
+    `width` columns along the foot of the row."""
+    if width <= 0:
+        return
+    canvas.put_str(x, y, text[:width], palette.INK, bold=True)
+    layout = canvas.layout
+    left, row_top = layout.cell_to_pixel(x, y)
+    foot = row_top + layout.cell_h - 1
+    canvas.surface.fill(palette.TABLE_RULE, (left, foot, width * layout.cell_w, 1))
+
+
+def _paint_controls(canvas, x, y, width, rows):
+    """`rows` of (key, action) as a table from text row `y`, one row each:
+    the key bold and centred in a shaded CONTROLS_KEY_COLS-wide column, the
+    action a column into the second cell, 1px TABLE_RULE borders round every
+    cell. The borders stay inside the rows the table takes."""
+    if width <= 0 or not rows:
+        return
+    layout, surface = canvas.layout, canvas.surface
+    key_cols = min(CONTROLS_KEY_COLS, width)
+    left, top = layout.cell_to_pixel(x, y)
+    table_w, key_w, cell_h = width * layout.cell_w, key_cols * layout.cell_w, layout.cell_h
+    for i, (key, action) in enumerate(rows):
+        row_top = top + i * cell_h
+        cell = pygame.Rect(left, row_top, key_w, cell_h)
+        surface.fill(palette.PAGE_EDGE, cell)
+        text = _fit_width(canvas, key, key_w - 4)
+        surface.blit(text, text.get_rect(center=cell.center))
+        canvas.put_str(
+            x + key_cols + 1, y + i, action[: max(0, width - key_cols - 1)], palette.INK
+        )
+    height = len(rows) * cell_h
+    for i in range(len(rows)):
+        surface.fill(palette.TABLE_RULE, (left, top + i * cell_h, table_w, 1))
+    surface.fill(palette.TABLE_RULE, (left, top + height - 1, table_w, 1))
+    for edge in (left, left + key_w, left + table_w - 1):
+        surface.fill(palette.TABLE_RULE, (edge, top, 1, height))
+
+
+def _fit_width(canvas, text, width):
+    """`text` in bold ink if that fits in `width` pixels; else regular (the
+    font's bold is synthetic, a pixel or so wider a glyph, so 'wasd/arrows'
+    overflows its column), squeezed to `width` if even that doesn't fit."""
+    bold = canvas.text_surface(text, palette.INK, bold=True)
+    if bold.get_width() <= width:
+        return bold
+    regular = canvas.text_surface(text, palette.INK)
+    if regular.get_width() <= width:
+        return regular
+    return pygame.transform.smoothscale(regular, (max(1, width), regular.get_height()))
+
+
+def belt_slot_rects(layout, slots):
+    """Pixel rects of `slots` equal belt boxes side by side across the stats
+    page's text width on BELT_ROW. Neighbours share their 1px border."""
+    if slots <= 0:
+        return []
+    left, top = layout.cell_to_pixel(layout.text_x, layout.text_y + BELT_ROW)
+    step = (layout.text_width() * layout.cell_w - 1) // slots
+    return [pygame.Rect(left + i * step, top, step + 1, layout.cell_h) for i in range(slots)]
+
+
+def _paint_belt(canvas, slots, outline_first):
+    """The potion belt on BELT_ROW: one box per (label, ink) in `slots`
+    (PanelContent.belt -- a potion's heal after the player's boons in its
+    rarity's ink, or a dash in plain ink when empty), centred. The first box
+    -- the one 'h' drinks -- is outlined in ink if `outline_first` (the belt
+    holds a potion)."""
+    if canvas.layout.text_width() <= 0:
+        return
+    boxes = belt_slot_rects(canvas.layout, len(slots))
+    surface = canvas.surface
+    for box, (label, color) in zip(boxes, slots):
+        text = canvas.text_surface(label, color)
+        surface.blit(text, text.get_rect(center=box.center))
+        pygame.draw.rect(surface, palette.TABLE_RULE, box, 1)
+    if boxes and outline_first:
+        pygame.draw.rect(surface, palette.INK, boxes[0], 2)
 
 
 def _paint_hp_bar(canvas, x, y, width, hp, max_hp, danger):
@@ -601,14 +877,14 @@ def _gear_lines(label, item, stat_label):
 
 
 def first_window_size(desktop=None):
-    """FIRST_WINDOW (1920x1080) when the desktop (`desktop`, else the primary
-    one) is at least that big; otherwise the largest 16:9 size inside
-    DESKTOP_SHARE of it."""
+    """FIRST_WINDOW (1920x1080) when it fits inside DESKTOP_SHARE of the
+    desktop (`desktop`, else the primary one); otherwise the largest 16:9
+    size inside that share. Never the whole desktop."""
     desktop_w, desktop_h = desktop or _desktop_size()
     target_w, target_h = FIRST_WINDOW
-    if desktop_w >= target_w and desktop_h >= target_h:
-        return FIRST_WINDOW
     usable_w, usable_h = int(desktop_w * DESKTOP_SHARE), int(desktop_h * DESKTOP_SHARE)
+    if usable_w >= target_w and usable_h >= target_h:
+        return FIRST_WINDOW
     width = max(16, min(usable_w, usable_h * target_w // target_h))
     return width, width * target_h // target_w
 

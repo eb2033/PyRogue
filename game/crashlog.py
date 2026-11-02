@@ -4,19 +4,17 @@ Mandatory, not polish: a `--windowed` PyInstaller build discards stderr, so
 without this an uncaught exception is a window that silently vanishes
 (desktop_build_plan.md §5 WS-B task 4, §7 risk register).
 
-Standard library only -- no dialog here. A renderer that can show one (the
-pygame build) should wrap install()'s hook or call write() itself.
+Standard library only -- no dialog here. main.py calls write() itself from
+its __main__ block (an excepthook may never run in a windowed build).
 """
 
 import datetime
+import logging
 import sys
 import traceback
 from pathlib import Path
 
 from game import paths
-
-# The hook install() replaced, so a second install() doesn't chain to itself.
-_previous_hook = None
 
 
 def _resolve(path):
@@ -54,25 +52,30 @@ def write(exc_type, exc_value, exc_tb, path=None):
         return None
 
 
-def install(path=None):
-    """Install a sys.excepthook that appends a timestamped traceback to `path`
-    (default: game.paths.log_path(), resolved at crash time) before the
-    previously installed hook runs. Idempotent. Returns the new hook."""
-    global _previous_hook
-    current = sys.excepthook
-    if getattr(current, '_pyrogue_crashlog', False):
-        previous = _previous_hook
-    else:
-        previous = current
-        _previous_hook = current
+WARNINGS_FILENAME = 'warnings.log'
+_WARNING_LOGGERS = ('render',)  # e.g. render.tileset's "tileset unavailable"
 
-    def hook(exc_type, exc_value, exc_tb):
-        # Ctrl+C in the terminal build is not a crash worth logging.
-        if not issubclass(exc_type, KeyboardInterrupt):
-            write(exc_type, exc_value, exc_tb, path)
-        if previous is not None:
-            previous(exc_type, exc_value, exc_tb)
 
-    hook._pyrogue_crashlog = True
-    sys.excepthook = hook
-    return hook
+def route_warnings(path=None):
+    """Send WARNING-and-above log records from the render package to a file
+    (default: warnings.log in the user data dir, next to crash.log). Without
+    this they reach logging's last-resort stderr handler, which a windowed
+    build doesn't have. Idempotent; never raises. Returns the log's Path, or
+    None if it could not be set up."""
+    try:
+        target = Path(path) if path is not None else paths.user_data_dir() / WARNINGS_FILENAME
+        target.parent.mkdir(parents=True, exist_ok=True)
+        for name in _WARNING_LOGGERS:
+            logger = logging.getLogger(name)
+            if any(getattr(h, '_pyrogue_warnings', False) for h in logger.handlers):
+                continue
+            handler = logging.FileHandler(target, encoding='utf-8', delay=True)
+            handler.setFormatter(
+                logging.Formatter('%(asctime)s %(name)s %(levelname)s %(message)s')
+            )
+            handler._pyrogue_warnings = True  # type: ignore[attr-defined]
+            logger.addHandler(handler)
+            logger.setLevel(logging.WARNING)
+        return target
+    except Exception:  # noqa: BLE001 -- logging must never stop the game
+        return None

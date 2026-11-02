@@ -36,6 +36,7 @@ python -m venv .venv
 | Arrow keys | **Warrior:** move. **Archer:** shoot an arrow that way. |
 | `space` or `.` | Wait a turn |
 | `e` | Go down the stairs (`>`) when you're standing on them |
+| `h` | Drink a potion from your belt |
 | `q` | Class ability (on the death screen: quit) |
 | `F11` | Fullscreen |
 
@@ -46,8 +47,13 @@ Menus also take the mouse.
 - **Line of sight.** You see only what's in view; rooms are hidden behind closed doors until you
   step into the doorway. Places you've seen stay on the map, dimmed.
 - **Chests.** Walk onto one to open it. **Pink** chests hold a healing potion, **cyan** ones a
-  weapon or armour. Gear comes in four rarities (common, uncommon, rare, epic) and is equipped
-  automatically if it's better than what you're wearing. Loot gets better the deeper you go.
+  choice of three weapons or armour: `1` `2` `3` takes one, `4` or `space` takes nothing. Gear
+  comes in four rarities (common, uncommon, rare, epic). Loot gets better the deeper you go.
+- **Gold.** Monsters drop `$` piles (walk onto one to take it) and **yellow** chests hold gold.
+- **Shops.** Every fourth floor has a shopkeeper (`P`) in a room of their own. Walk into them to
+  buy: `1`-`5` pick an offer (two weapons, two half-strength boons, a full heal), `space` leaves.
+- **Shrines.** Some floors have a shrine (`_`). Step onto it to choose one of three boons, each
+  with a benefit and a cost, or skip with `4` or `space`.
 - **Combat zoom.** A melee fight zooms the map in on you and your opponent, blows
   flash with the damage, and it zooms back out when the fight ends (Warrior only for now). Any key
   skips the animation.
@@ -56,16 +62,17 @@ Menus also take the mouse.
 
 ## Settings
 
-Optional, in a `.env` file next to the program (or next to `main.py` from source), one `KEY=value`
-per line:
+Optional, in a `.env` file next to the program (or next to `main.py` from source; failing that, in
+the folder you start it from), one `KEY=value` per line:
 
 | Key | Default | |
 |---|---|---|
-| `MAP_WIDTH`, `MAP_HEIGHT` | 50, 20 | Map size in tiles (a source checkout's `.env` sets 40x20) |
+| `MAP_WIDTH`, `MAP_HEIGHT` | 50, 20 | Base map size in tiles; deeper floors are bigger (a source checkout's `.env` sets 40x20) |
 | `FOV_RADIUS` | 6 | How far you can see |
 | `TURN_DELAY_MS` | 110 | Pause between monster moves; `0` makes them instant |
 | `TILES` | 1 | `0` draws letters instead of tiles |
 | `COMBAT_ZOOM` | 1 | `0` keeps the whole map in view during melee fights |
+| `SOUND` | 1 | `0` turns sound off |
 
 There is no save/load: a run is meant to be played in one sitting. `crash.log` goes to your user
 data folder: `%APPDATA%\PyRogue` on Windows,
@@ -81,7 +88,8 @@ data folder: `%APPDATA%\PyRogue` on Windows,
 ./packaging/build.sh                                # build the Linux zip into dist/
 ```
 
-CI runs all of these on every push. `git config blame.ignoreRevsFile .git-blame-ignore-revs` keeps
+CI runs the checks and tests on every push; the frozen builds run on pushes to `main`, tags and
+manual runs. `git config blame.ignoreRevsFile .git-blame-ignore-revs` keeps
 the one-off formatting commit out of `git blame`.
 
 The Windows build is made by CI (`packaging/build.ps1` on a Windows runner); pushing a `v*` tag

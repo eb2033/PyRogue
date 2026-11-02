@@ -42,10 +42,8 @@ class _TempDirTest(unittest.TestCase):
 
 
 class FrozenDetectionTest(unittest.TestCase):
-    def test_not_frozen_from_source(self):
+    def test_frozen_detection(self):
         self.assertFalse(paths.is_frozen())
-
-    def test_frozen_detected(self):
         with mock.patch.object(sys, 'frozen', True, create=True):
             self.assertTrue(paths.is_frozen())
 
@@ -56,7 +54,7 @@ class ResourcePathTest(_TempDirTest):
         self.assertTrue(paths.resource_path('game', 'paths.py').is_file())
         self.assertEqual(paths.resource_path(), paths.SOURCE_ROOT)
 
-    def test_meipass_wins(self):
+    def test_meipass_wins_with_or_without_the_frozen_flag(self):
         bundle = self.tmp / '_internal'
         with (
             mock.patch.object(sys, 'frozen', True, create=True),
@@ -65,8 +63,6 @@ class ResourcePathTest(_TempDirTest):
             self.assertEqual(
                 paths.resource_path('assets', 'tiles.json'), bundle / 'assets' / 'tiles.json'
             )
-
-    def test_meipass_wins_even_without_frozen_flag(self):
         with mock.patch.object(sys, '_MEIPASS', str(self.tmp), create=True):
             self.assertEqual(paths.resource_path('x'), self.tmp / 'x')
 
@@ -90,56 +86,46 @@ class ResourcePathTest(_TempDirTest):
 
 
 class UserDataDirTest(_TempDirTest):
-    def test_windows_honours_appdata(self):
-        with mock.patch.object(sys, 'platform', 'win32'):
-            os.environ['APPDATA'] = str(self.tmp)
-            d = paths.user_data_dir()
-        self.assertEqual(d, self.tmp / 'PyRogue')
-        self.assertTrue(d.is_dir())
-
-    def test_windows_without_appdata_falls_back_to_roaming(self):
-        with (
-            mock.patch.object(sys, 'platform', 'win32'),
-            mock.patch.object(Path, 'home', return_value=self.tmp),
-        ):
-            d = paths.user_data_dir()
-        self.assertEqual(d, self.tmp / 'AppData' / 'Roaming' / 'PyRogue')
-        self.assertTrue(d.is_dir())
-
-    def test_macos_application_support(self):
-        with (
-            mock.patch.object(sys, 'platform', 'darwin'),
-            mock.patch.object(Path, 'home', return_value=self.tmp),
-        ):
-            d = paths.user_data_dir()
-        self.assertEqual(d, self.tmp / 'Library' / 'Application Support' / 'PyRogue')
-        self.assertTrue(d.is_dir())
-
-    def test_linux_honours_xdg_data_home(self):
+    def test_platform_data_dirs(self):
         xdg = self.tmp / 'xdg'
-        with mock.patch.object(sys, 'platform', 'linux'):
-            os.environ['XDG_DATA_HOME'] = str(xdg)
-            d = paths.user_data_dir()
-        self.assertEqual(d, xdg / 'pyrogue')
-        self.assertTrue(d.is_dir(), 'parents must be created too')
-
-    def test_linux_default_is_local_share(self):
-        with (
-            mock.patch.object(sys, 'platform', 'linux'),
-            mock.patch.object(Path, 'home', return_value=self.tmp),
-        ):
-            d = paths.user_data_dir()
-        self.assertEqual(d, self.tmp / '.local' / 'share' / 'pyrogue')
-        self.assertTrue(d.is_dir())
-
-    def test_relative_xdg_data_home_is_ignored(self):
-        with (
-            mock.patch.object(sys, 'platform', 'linux'),
-            mock.patch.object(Path, 'home', return_value=self.tmp),
-        ):
-            os.environ['XDG_DATA_HOME'] = 'relative/dir'
-            d = paths.user_data_dir()
-        self.assertEqual(d, self.tmp / '.local' / 'share' / 'pyrogue')
+        local_share = self.tmp / '.local' / 'share' / 'pyrogue'
+        cases = (
+            # name, platform, env, expected
+            ('windows appdata', 'win32', {'APPDATA': str(self.tmp)}, self.tmp / 'PyRogue'),
+            (
+                'windows without appdata -> roaming',
+                'win32',
+                {},
+                self.tmp / 'AppData' / 'Roaming' / 'PyRogue',
+            ),
+            (
+                'macos application support',
+                'darwin',
+                {},
+                self.tmp / 'Library' / 'Application Support' / 'PyRogue',
+            ),
+            ('linux xdg data home', 'linux', {'XDG_DATA_HOME': str(xdg)}, xdg / 'pyrogue'),
+            ('linux default is local share', 'linux', {}, local_share),
+            (
+                'relative xdg data home is ignored',
+                'linux',
+                {'XDG_DATA_HOME': 'relative/dir'},
+                local_share,
+            ),
+        )
+        for name, platform, env, expected in cases:
+            with self.subTest(name):
+                patcher = _clean_env(**env)
+                try:
+                    with (
+                        mock.patch.object(sys, 'platform', platform),
+                        mock.patch.object(Path, 'home', return_value=self.tmp),
+                    ):
+                        d = paths.user_data_dir()
+                finally:
+                    patcher.stop()
+                self.assertEqual(d, expected)
+                self.assertTrue(d.is_dir(), 'parents must be created too')
 
     def test_explicit_override_wins_on_every_platform(self):
         override = self.tmp / 'portable'
@@ -150,11 +136,9 @@ class UserDataDirTest(_TempDirTest):
             with mock.patch.object(sys, 'platform', platform):
                 self.assertEqual(paths.user_data_dir(), override)
 
-    def test_log_lives_in_the_data_dir(self):
+    def test_log_lives_in_the_data_dir_resolved_at_call_time(self):
         os.environ['PYROGUE_DATA_DIR'] = str(self.tmp)
         self.assertEqual(paths.log_path(), self.tmp / 'crash.log')
-
-    def test_resolved_at_call_time_not_import_time(self):
         os.environ['PYROGUE_DATA_DIR'] = str(self.tmp / 'a')
         first = paths.log_path()
         os.environ['PYROGUE_DATA_DIR'] = str(self.tmp / 'b')
@@ -164,18 +148,15 @@ class UserDataDirTest(_TempDirTest):
 class ContractTest(unittest.TestCase):
     """Signatures other streams code against exist."""
 
-    def test_platform_functions_exist(self):
+    def test_platform_functions_exist_and_version_is_semver(self):
         for fn in (
             paths.user_data_dir,
             paths.log_path,
             settings.find_config,
             settings.load,
-            crashlog.install,
             crashlog.write,
         ):
             self.assertTrue(callable(fn), fn)
-
-    def test_version_is_semver(self):
         self.assertRegex(__version__, re.compile(r'^\d+\.\d+\.\d+$'))
 
 

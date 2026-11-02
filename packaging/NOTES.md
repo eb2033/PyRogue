@@ -15,7 +15,7 @@ the way it does.
 | `README.txt` | The player-facing readme that ships inside the zip. |
 | `../tests/test_frozen_smoke.py` | Launches `dist/PyRogue/` headless; skipped when there is no build. |
 | `../.github/workflows/release.yml` | Tag `v*` → both zips + `SHA256SUMS` on a GitHub Release (+ itch.io). Manual run → zips as workflow artifacts only. |
-| `../.github/workflows/ci.yml` `frozen-build` | Builds and smoke-tests both platforms on every push/PR. |
+| `../.github/workflows/ci.yml` `frozen-build` | Builds and smoke-tests both platforms on pushes to `main`, tags and manual runs. |
 
 ```bash
 .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
@@ -26,7 +26,8 @@ powershell -File packaging\build.ps1          # Windows -> dist\PyRogue\PyRogue.
 
 PyInstaller cannot cross-compile: the Linux box only builds the Linux bundle. The Windows exe is
 built by GitHub Actions — run the `release` workflow by hand (Actions → release → Run workflow) to
-get one without tagging, or grab the `frozen-build` artifact from any CI run.
+get one without tagging, or grab the `frozen-build` artifact from a CI run on `main`, a tag or a
+manual run.
 
 ## Antivirus rules (desktop plan §2.5) — non-negotiable
 
@@ -50,21 +51,18 @@ a single file — which is what itch.io and every Ren'Py game ship anyway. Playe
 
 ## Current build facts (2026-10-12, Linux, Python 3.14.7, PyInstaller 6.22.3)
 
-- Unzipped `dist/PyRogue/`: **~40 MB**; zip **~17 MB** (budget: < 120 MB). Biggest items:
+- Unzipped `dist/PyRogue/`: **~43 MB**; zip **~19 MB** (the 0.2.1 build, 2026-10-17; budget:
+  < 120 MB). Biggest items:
   `pygame_ce.libs` (SDL + codecs, 13 MB), `libpython3.14` (6 MB), OpenSSL (7 MB, pulled in by the
   stdlib — a candidate to trim if size ever matters).
 - Start-up: window created ~0.15–0.26 s after launch (budget: < 2 s). Windows numbers come from CI
   and a real machine; Defender scanning makes the very first launch slower.
 - Excluded on purpose: `tkinter`, `numpy`, `unittest`, `test`, `pydoc`, `doctest`, `curses`
-  (the curses renderer is deleted; the game is pygame-only), `tcod`, `render.tcod_render`, `pygame.tests`/`examples`/`docs`.
+  (the curses renderer is deleted; the game is pygame-only), `tcod`, `pygame.tests`/`examples`/`docs`.
 
 ## Things the exe currently relies on from other workstreams
 
-- **python-dotenv (WS-B).** `main.py` still imports `dotenv`, so the bundle includes it (PyInstaller
-  finds it by import scan; nothing in the spec names it). Once `game/settings.py`'s `load()` replaces
-  it, drop `python-dotenv` from `requirements.txt` and confirm `dotenv` is gone from the bundle
-  (`pyi-archive_viewer --list build/pyrogue/PYZ-00.pyz | grep dotenv`).
-- **`.env` is not shipped.** The frozen game uses the code defaults (50x20 map), not the repo's
+- **`.env` is not shipped.** The frozen game uses the code defaults (50x20 base map), not the repo's
   `.env` (40x20). If the release should ship different defaults, decide that explicitly and add the
   file next to the exe in the build scripts — it's a release checklist item, not an accident.
 - **Crash log (WS-B).** Must go to `game.paths.user_data_dir()`, never the CWD or the
@@ -94,8 +92,9 @@ modal "Unhandled exception" dialog. Setting `disable_windowed_traceback=True` do
 dialog, it only replaces the traceback with a "disabled" message, so the spec keeps the traceback.
 The catch: a dialog keeps the crashed process alive, so "still running after N seconds" would read
 as success. `test_frozen_smoke.py` therefore also checks, on Windows, that the process owns no
-visible window (under SDL's dummy driver the game itself opens none). Better still would be for
-`main.py` to catch and log exceptions itself (`game.crashlog`), so the bootloader never sees them.
+visible window (under SDL's dummy driver the game itself opens none). `main.py` writes the
+exception to `crash.log` (`game.crashlog.write`) before re-raising, so the log exists even when the
+dialog appears.
 
 ## Release checklist
 

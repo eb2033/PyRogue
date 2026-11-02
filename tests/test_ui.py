@@ -16,7 +16,7 @@ except ImportError:  # pragma: no cover - terminal-only checkout
 from typing import cast
 from unittest import mock
 
-from game.item import BELT_SLOTS, Item, belt_slot_label
+from game.item import BELT_SLOTS, Item, belt_capacity
 from game.shrine import BOON_COLOR
 from game.state import GameState
 from render.menu import Menu
@@ -71,6 +71,10 @@ class TileLayoutTest(unittest.TestCase):
         )
         self.assertTrue(window.contains(panel_text), (panel_text, size))
         self.assertFalse(map_rect.colliderect(panel_rect))
+        log_rect = self.layout.log_rect()
+        self.assertTrue(window.contains(log_rect), (log_rect, size))
+        self.assertFalse(log_rect.colliderect(map_rect))
+        self.assertFalse(log_rect.colliderect(panel_rect))
 
     def test_map_cells_are_square_tiles(self):
         self.layout.fit((1600, 900))
@@ -84,25 +88,27 @@ class TileLayoutTest(unittest.TestCase):
             (x0 + 3 * tile, y0 + 2 * tile),
         )
 
-    def test_bigger_window_never_gets_smaller_tiles(self):
+    def test_every_common_window_fits_and_bigger_never_gets_smaller_tiles(self):
         sizes = [(1024, 600), (1280, 720), (1600, 900), (1920, 1080), (3840, 2160)]
         tiles = []
         for size in sizes:
-            self.layout.fit(size)
-            self.assertFitsInside(size)
-            tiles.append(self.layout.tile)
+            with self.subTest(size=size):
+                self.layout.fit(size)
+                self.assertFitsInside(size)
+                self.assertIn(self.layout.tile, ui.TILE_SIZES)
+                tiles.append(self.layout.tile)
         self.assertEqual(tiles, sorted(tiles))
         self.assertGreater(tiles[-1], tiles[0])
 
-    def test_panel_font_stays_readable_when_tiles_grow(self):
+    def test_panel_font_stays_readable_when_tiles_grow_and_grows_past_the_cap_at_4k(self):
         self.layout.fit((1920, 1080))
         self.assertGreaterEqual(
             self.layout.font.get_height(), self.layout._font(ui.MIN_TILE_FONT_SIZE).get_height()
         )
-
-    def test_tiny_window_does_not_raise(self):
-        self.layout.fit((200, 100))
-        self.assertEqual(self.layout.tile, ui.TILE_SIZES[-1])
+        self.layout.fit((3840, 2160))
+        self.assertGreater(
+            self.layout.font.get_height(), self.layout._font(ui.MAX_TILE_FONT_SIZE).get_height()
+        )
 
     def test_preferred_size_fits_the_desktop(self):
         width, height = self.layout.preferred_window_size()
@@ -111,7 +117,8 @@ class TileLayoutTest(unittest.TestCase):
         self.assertLessEqual(height, desktop_h)
 
     def test_first_window_is_1920x1080_on_a_big_desktop(self):
-        for desktop in [(1920, 1080), (2560, 1440), (3840, 2160), (1920, 1200)]:
+        # Big enough that 1920x1080 stays within DESKTOP_SHARE of it.
+        for desktop in [(2560, 1440), (3840, 2160), (2560, 1600)]:
             with self.subTest(desktop=desktop):
                 self.assertEqual(ui.first_window_size(desktop), (1920, 1080))
         with mock.patch.object(ui, '_desktop_size', return_value=(2560, 1440)):
@@ -120,7 +127,16 @@ class TileLayoutTest(unittest.TestCase):
     def test_first_window_is_capped_16_9_on_a_small_desktop(self):
         # A 1536x864 desktop is 1920x1080 at Windows' 125% scaling, seen by
         # a process that isn't DPI-aware.
-        for desktop in [(1536, 864), (1366, 768), (1280, 800), (1024, 768), (1920, 1000)]:
+        for desktop in [
+            (1536, 864),
+            (1366, 768),
+            (1280, 800),
+            (1024, 768),
+            (1920, 1000),
+            (1920, 1080),
+            (1920, 1200),
+            (2048, 1152),
+        ]:
             with self.subTest(desktop=desktop):
                 width, height = ui.first_window_size(desktop)
                 self.assertLessEqual(width, desktop[0] * ui.DESKTOP_SHARE)
@@ -131,11 +147,9 @@ class TileLayoutTest(unittest.TestCase):
         self.assertEqual(ui.first_window_size((1536, 864)), (1304, 733))
         self.assertEqual(ui.first_window_size((1920, 1000)), (1511, 849))
         self.assertEqual(ui.first_window_size((1024, 768)), (870, 489))
-
-    def test_a_1920x1080_window_fits_the_layout(self):
-        self.layout.fit(ui.first_window_size((1920, 1080)))
-        self.assertFitsInside((1920, 1080))
-        self.assertIn(self.layout.tile, ui.TILE_SIZES)
+        # A 1920x1080 desktop must not be filled by the window (taskbar,
+        # title bar): 85% of it, 16:9.
+        self.assertEqual(ui.first_window_size((1920, 1080)), (1632, 918))
 
 
 # Window sizes every layout test sweeps: landscape, 4K, portrait, narrow, tiny.
@@ -171,6 +185,9 @@ class StackedLayoutTest(unittest.TestCase):
         self.assertTrue(window.contains(panel_text), (panel_text, size))
         self.assertGreaterEqual(layout.rows - layout.panel_y, ui.PANEL_ROWS)
         self.assertGreaterEqual(layout.panel_width(), ui.PANEL_COLS)
+        log_rect = layout.log_rect()
+        self.assertFalse(log_rect.colliderect(map_rect), (log_rect, map_rect))
+        self.assertFalse(log_rect.colliderect(panel_rect), (log_rect, panel_rect))
 
     def test_every_size_fits_without_overlap(self):
         for tiles in (False, True):
@@ -181,69 +198,107 @@ class StackedLayoutTest(unittest.TestCase):
     def test_tiny_window_does_not_raise(self):
         for tiles in (False, True):
             fitted(SIZES[-1], tiles).panel_rect()
+        # The tiniest tile window gets the smallest tile.
+        self.assertEqual(fitted((200, 100), tiles=True).tile, ui.TILE_SIZES[-1])
 
-    def test_window_narrower_than_the_smallest_map_still_does_not_overlap(self):
-        # 40 x 16px tiles = 640px: a 600px-wide window can't hold the map, so
-        # it overflows -- but the panel must go under it, not on top of it.
-        layout = fitted((600, 1000), tiles=True)
-        self.assertTrue(layout.stacked)
-        self.assertFalse(layout.map_rect().colliderect(layout.panel_rect()))
-
-    def test_landscape_stays_side_by_side(self):
+    def test_landscape_stays_side_by_side_and_portrait_or_narrow_stacks(self):
         for tiles in (False, True):
             for size in [(1280, 720), (1920, 1080), (3840, 2160)]:
                 with self.subTest(tiles=tiles, size=size):
                     layout = fitted(size, tiles)
                     self.assertFalse(layout.stacked)
                     self.assertGreater(layout.panel_rect().left, layout.map_rect().right)
-
-    def test_portrait_and_narrow_stack_the_panel_under_the_map(self):
-        for tiles in (False, True):
-            for size in [(800, 1200), (600, 1000)]:
+        # Glyph mode stacks map, stats board and log board in a column of
+        # text rows, so it takes a taller portrait than tile mode to win.
+        # (600, 1000) in tile mode: 40 x 16px tiles = 640px, so the map
+        # overflows -- but the panel must go under it, not on top of it.
+        for tiles, sizes in [(False, [(600, 1400)]), (True, [(800, 1200), (600, 1000)])]:
+            for size in sizes:
                 with self.subTest(tiles=tiles, size=size):
                     layout = fitted(size, tiles)
                     self.assertTrue(layout.stacked)
                     self.assertGreaterEqual(layout.panel_rect().top, layout.map_rect().bottom)
 
     def test_stacking_gives_the_map_bigger_glyphs(self):
-        stacked = fitted((800, 1200))
+        stacked = fitted((600, 1400))
+        self.assertTrue(stacked.stacked)
         side = ui.Layout(WIDTH, HEIGHT)
         cols, rows = side._glyph_grid(False)[:2]
-        side_size = side._largest_glyph_font(cols, rows, 800, 1200)
+        side_size = side._largest_glyph_font(cols, rows, 600, 1400)
         self.assertGreater(stacked.cell_w, side._cell_size(side._font(side_size))[0])
 
     def test_glyph_map_stays_at_grid_cell_zero(self):
         # The renderer draws glyph-mode map cells with Canvas.put (grid cells).
-        for size in [(1280, 720), (800, 1200)]:
+        for size in [(1280, 720), (600, 1400)]:
             layout = fitted(size)
             self.assertEqual(layout.map_origin, layout.cell_to_pixel(0, 0))
             self.assertEqual(layout.map_cell_to_pixel(3, 2), layout.cell_to_pixel(3, 2))
 
     def test_refit_back_to_landscape_unstacks(self):
-        layout = fitted((800, 1200))
+        layout = fitted((600, 1400))
+        self.assertTrue(layout.stacked)
         layout.fit((1280, 720))
         self.assertFalse(layout.stacked)
         self.assertEqual(layout.panel_x, WIDTH + ui.PANEL_GAP)
         self.assertEqual(layout.panel_y, 0)
 
-    def test_4k_tile_panel_font_grows_past_the_tile_cap(self):
-        layout = fitted((3840, 2160), tiles=True)
-        self.assertGreater(
-            layout.font.get_height(), layout._font(ui.MAX_TILE_FONT_SIZE).get_height()
+
+@unittest.skipUnless(pygame, 'pygame-ce not installed')
+class LogBoardTest(unittest.TestCase):
+    """The message log has its own board: under the map side by side, under
+    the stats board when stacked."""
+
+    def test_log_board_never_overlaps_map_or_panel(self):
+        for tiles in (False, True):
+            for size in SIZES + [(320, 240)]:
+                with self.subTest(tiles=tiles, size=size):
+                    layout = fitted(size, tiles)
+                    log, m, p = layout.log_rect(), layout.map_rect(), layout.panel_rect()
+                    self.assertFalse(log.colliderect(m), (size, tiles))
+                    self.assertFalse(log.colliderect(p), (size, tiles))
+
+    def test_side_by_side_log_board_is_under_the_map_and_as_wide(self):
+        layout = fitted((1920, 1080), True)
+        self.assertFalse(layout.stacked)
+        log, m = layout.log_rect(), layout.map_rect()
+        self.assertGreaterEqual(log.top, m.bottom)
+        self.assertLessEqual(m.left, log.left)
+        self.assertLessEqual(log.right, m.right)
+        self.assertGreater(log.width, m.width - 2 * layout.cell_w)
+
+    def test_stacked_log_board_is_under_the_panel(self):
+        for tiles in (False, True):
+            with self.subTest(tiles=tiles):
+                layout = fitted((600, 1400), tiles)
+                self.assertTrue(layout.stacked)
+                self.assertGreaterEqual(layout.log_rect().top, layout.panel_rect().bottom)
+
+    def test_log_lines_between_min_and_cap(self):
+        for tiles in (False, True):
+            for size in SIZES:
+                with self.subTest(tiles=tiles, size=size):
+                    lines = fitted(size, tiles).log_lines()
+                    self.assertTrue(ui.MIN_LOG_LINES <= lines <= ui.LOG_LINES, lines)
+
+    def test_log_page_holds_the_log_text(self):
+        layout = fitted((1920, 1080), True)
+        self.assertTrue(layout.log_rect().contains(layout.log_page_rect()))
+        text = pygame.Rect(
+            layout.cell_to_pixel(layout.log_text_x, layout.log_text_y),
+            (layout.log_text_width() * layout.cell_w, (1 + layout.log_lines()) * layout.cell_h),
         )
+        self.assertTrue(layout.log_page_rect().contains(text))
+
+    def test_stats_board_is_a_fixed_height(self):
+        for tiles, size in [(False, (1280, 720)), (True, (1920, 1080)), (True, (3840, 2160))]:
+            with self.subTest(tiles=tiles, size=size):
+                layout = fitted(size, tiles)
+                self.assertEqual(layout.panel_rows(), ui.PANEL_ROWS)
 
 
 @unittest.skipUnless(pygame, 'pygame-ce not installed')
 class MessageLogTest(unittest.TestCase):
-    """Task 2: more log lines than the terminal's 4, wrapped to the panel."""
-
-    def test_log_has_at_least_the_terminals_lines_and_at_most_the_cap(self):
-        for tiles in (False, True):
-            for size in SIZES[:-1]:
-                with self.subTest(tiles=tiles, size=size):
-                    lines = fitted(size, tiles).log_lines()
-                    self.assertGreaterEqual(lines, ui.MIN_LOG_LINES)
-                    self.assertLessEqual(lines, ui.LOG_LINES)
+    """Task 2: more log lines than the terminal's 4, wrapped to the log board."""
 
     def test_a_roomy_window_shows_more_than_the_terminal(self):
         self.assertGreater(ui.LOG_LINES, ui.MIN_LOG_LINES)
@@ -261,6 +316,7 @@ class MessageLogTest(unittest.TestCase):
         self.assertEqual(ui.log_rows(messages, 10, 3), ['two words', 'here', 'three'])
         self.assertEqual(ui.log_rows(messages, 10, 2), ['three'])
         self.assertEqual(ui.log_rows(messages, 40, 10), messages)
+        self.assertEqual(ui.log_rows([], 44, 4), [])  # an empty log
 
     def test_log_rows_never_exceeds_width_or_rows(self):
         messages = ['x' * 100, 'a b c d e f g h i j k l m n o p']
@@ -271,9 +327,6 @@ class MessageLogTest(unittest.TestCase):
 
     def test_a_message_too_long_for_the_log_is_cut_not_dropped(self):
         self.assertEqual(ui.log_rows(['aaaa bbbb cccc'], 4, 2), ['aaaa', 'bbbb'])
-
-    def test_empty_log(self):
-        self.assertEqual(ui.log_rows([], 44, 4), [])
 
 
 @unittest.skipUnless(pygame, 'pygame-ce not installed')
@@ -398,10 +451,10 @@ class OptionAtTest(unittest.TestCase):
         )
 
     def test_hint_wraps_in_a_narrow_grid(self):
-        layout = fitted((600, 1000))
+        layout = fitted((600, 1400))
         self.assertTrue(layout.stacked)
         self.assertLess(layout.cols, len(screens.MENU_HINT))
-        canvas = ui.Canvas(pygame.Surface((600, 1000)), layout)
+        canvas = ui.Canvas(pygame.Surface((600, 1400)), layout)
         canvas.clear()
         screens.paint_menu(canvas, Menu(screens.TITLE_OPTIONS), ['x'])
         for row in (layout.rows - 3, layout.rows - 2):
@@ -431,22 +484,28 @@ class PaintTest(unittest.TestCase):
             untouched.count(), area.get_width() * area.get_height(), 'nothing drawn in this area'
         )
 
-    def test_panel(self):
-        ui.paint_panel(self.canvas, GameState(WIDTH, HEIGHT))
-        self.assertDrewSomething(self.layout.panel_rect())
-
-    def test_menu(self):
-        screens.paint_menu(
-            self.canvas,
-            Menu(screens.CLASS_OPTIONS),
-            ['Choose your class'],
-            screens.CLASS_DESCRIPTIONS,
-        )
-        self.assertDrewSomething(self.canvas.surface.get_rect())
-
-    def test_game_over(self):
-        screens.paint_game_over(self.canvas)
-        self.assertDrewSomething(self.layout.map_rect())
+    def test_each_paint_function_draws_in_its_area(self):
+        state = GameState(WIDTH, HEIGHT, seed=0)
+        cases = [
+            ('panel', lambda: ui.paint_panel(self.canvas, state), self.layout.panel_rect()),
+            ('log', lambda: ui.paint_log(self.canvas, state), self.layout.log_rect()),
+            (
+                'menu',
+                lambda: screens.paint_menu(
+                    self.canvas,
+                    Menu(screens.CLASS_OPTIONS),
+                    ['Choose your class'],
+                    screens.CLASS_DESCRIPTIONS,
+                ),
+                self.canvas.surface.get_rect(),
+            ),
+            ('game over', lambda: screens.paint_game_over(self.canvas), self.layout.map_rect()),
+        ]
+        for name, paint, rect in cases:
+            with self.subTest(name):
+                self.canvas.clear()
+                paint()
+                self.assertDrewSomething(rect)
 
 
 @unittest.skipUnless(pygame, 'pygame-ce not installed')
@@ -500,10 +559,15 @@ class NoticeboardTest(unittest.TestCase):
                 surface = pygame.Surface(size)
                 canvas = ui.Canvas(surface, layout)
                 canvas.clear()
-                ui.paint_panel(canvas, GameState(WIDTH, HEIGHT))
+                ui.paint_panel(canvas, GameState(WIDTH, HEIGHT, seed=0))
+                ui.paint_log(canvas, GameState(WIDTH, HEIGHT, seed=0))
                 board, page = layout.panel_rect(), layout.page_rect()
                 self.assertTrue(board.contains(page))
                 self.assertTrue(page.contains(layout.text_rect()))
+                log = layout.log_rect()
+                self.assertTrue(log.contains(layout.log_page_rect()))
+                log_frame = surface.get_at((log.left + 1, log.centery))[:3]
+                self.assertNotIn(log_frame, (palette.BACKGROUND, palette.PAGE))
                 frame = surface.get_at((board.left + 1, board.centery))[:3]
                 self.assertNotEqual(frame, palette.BACKGROUND)
                 self.assertNotEqual(frame, palette.PAGE)
@@ -524,6 +588,11 @@ class NoticeboardTest(unittest.TestCase):
             noticeboard.paint(surface, layout.panel_rect(), layout.page_rect())
         self.assertEqual(len(noticeboard._cache), 1)
 
+    def test_a_board_narrower_than_its_frame_paints_without_error(self):
+        for width in range(1, 40):
+            board = pygame.Surface((width, 60), pygame.SRCALPHA)
+            noticeboard._planks(board, pygame.Rect(0, 0, width, 60).inflate(-2 * 4, -2 * 4))
+
 
 @unittest.skipUnless(pygame, 'pygame-ce not installed')
 class PanelTest(unittest.TestCase):
@@ -536,29 +605,35 @@ class PanelTest(unittest.TestCase):
     the palette's ink twins. Each gear slot takes two rows (name, then bonus +
     rarity) to keep the board narrow.
 
-    Checklist (rows relative to layout.text_y):
-      [x] 0  title                        [x] 6  '-- gear --'
-      [x] 1  'Class - Depth: n' (live)    [x] 7-8  weapon, rarity ink / (none)
-      [x] 2  HP, red at <= 1/3 max        [x] 9-10 armor, rarity ink / (none)
-          + bar beside it (extra)         [x] 11 potion belt, 3 slots, rarity ink
-      [x] 3  ATK / DEF                    [x] 12 shrine boons, once one is taken
-                                          [x] 13 class-dependent controls line
-      [x] 4  item count (live)            [x] 14-15 shared controls (+ 'h drink')
-                                          [x] 17 '-- log --', 18+ newest messages
+    Checklist (rows relative to layout.text_y; headers are bold with a rule):
+      [x] 0  'Class - Depth n' (live)     [x] 12 'BELT'
+      [x] 1  HP, red at <= 1/3 max        [x] 13 one row of slot boxes, rarity
+             + bar beside it (extra)             ink, the first outlined
+                                                 when the belt isn't empty
+      [x] 2  ATK / DEF (+ DODGE)          [x] 15 'BOONS', 16-17 boons (wrapped)
+      [x] 3  item count (live, quiver)           -- once one is taken
+      [x] 4  gold ('Gold 0' too)          [x] 18 'CONTROLS'
+      [x] 6  'GEAR'                       [x] 19+ key/action table, one row
+      [x] 7-8  weapon, rarity ink                 per binding, by class
+      [x] 9-10 armor, rarity ink / (none)
+    The log board (rows relative to layout.log_text_y):
+      [x] 0  'LOG'                        [x] 1+ newest messages, wrapped
     """
 
     LAYOUTS = [
         (False, (1280, 720)),
-        (False, (800, 1200)),
+        (False, (600, 1400)),
         (True, (1920, 1080)),
-        (True, (700, 900)),
+        (True, (700, 1000)),
     ]
 
-    def paint(self, state, tiles, size):
+    def paint(self, state, tiles, size, log=True):
         self.layout = fitted(size, tiles)
         self.canvas = ui.Canvas(pygame.Surface(size), self.layout)
         self.canvas.clear()
         ui.paint_panel(self.canvas, state)
+        if log:
+            ui.paint_log(self.canvas, state)
 
     def row_rect(self, row, first_col=0, cols=None):
         layout = self.layout
@@ -582,6 +657,14 @@ class PanelTest(unittest.TestCase):
         untouched = pygame.mask.from_threshold(area, palette.BACKGROUND, (1, 1, 1, 255))
         return area.get_width() * area.get_height() - untouched.count()
 
+    def log_row_rect(self, row):
+        """Pixel rect of the log board's text row `row` (0 is the header)."""
+        layout = self.layout
+        return pygame.Rect(
+            layout.cell_to_pixel(layout.log_text_x, layout.log_text_y + row),
+            (layout.log_text_width() * layout.cell_w, layout.cell_h),
+        )
+
     def row_bytes(self, row):
         return pygame.image.tobytes(self.canvas.surface.subsurface(self.row_rect(row)), 'RGB')
 
@@ -594,52 +677,117 @@ class PanelTest(unittest.TestCase):
 
     @staticmethod
     def state(char_class='warrior', hp=None):
-        state = GameState(WIDTH, HEIGHT, char_class=char_class)
+        state = GameState(WIDTH, HEIGHT, char_class=char_class, seed=0)
         state.messages[:] = ['first message', 'second message']
         if hp is not None:
             state.player.hp = hp
         return state
 
-    def test_rows_with_two_row_gear_slots(self):
-        # HP on row 2, the gear header on 6, two gear slots of two rows each,
-        # the belt and boons rows, three control lines and a blank, the log.
+    def test_section_rows(self):
+        # Stats on rows 0-4 (gold last), then GEAR,
+        # BELT, BOONS and CONTROLS, each a header with its rows under it.
         self.assertEqual(
-            (ui.HP_ROW, ui.GEAR_TOP, ui.BELT_ROW, ui.CONTROLS_TOP, ui.LOG_TOP),
-            (2, 6, 6 + 5, 6 + 7, 6 + 7 + 4),
+            (
+                ui.HEADER_ROW,
+                ui.HP_ROW,
+                ui.STATS_ROW,
+                ui.ITEMS_ROW,
+                ui.GOLD_ROW,
+                ui.GEAR_TOP,
+                ui.BELT_TOP,
+                ui.BELT_ROW,
+                ui.BOONS_TOP,
+                ui.CONTROLS_TOP,
+                ui.PANEL_TEXT_ROWS,
+            ),
+            (0, 1, 2, 3, 4, 6, 12, 13, 15, 18, 25),
         )
+        # The longest controls table (the archer's) fits on the page.
+        self.assertLessEqual(ui.CONTROLS_TOP + 1 + len(ui.controls_rows('archer')), 25)
 
-    def test_every_text_row_is_painted_and_the_gaps_are_not(self):
-        rows = [
-            0,
-            1,
+    def test_every_section_row_is_painted(self):
+        rows = (
+            ui.HEADER_ROW,
             ui.HP_ROW,
-            3,
-            4,
+            ui.STATS_ROW,
+            ui.ITEMS_ROW,
+            ui.GOLD_ROW,
             ui.GEAR_TOP,
             ui.GEAR_TOP + 1,
+            ui.GEAR_TOP + 2,  # every run starts with a weapon: its stats row
             ui.GEAR_TOP + 3,
+            ui.BELT_TOP,
             ui.BELT_ROW,
             ui.CONTROLS_TOP,
             ui.CONTROLS_TOP + 1,
-            ui.CONTROLS_TOP + 2,
-            ui.LOG_TOP,
-            ui.LOG_TOP + 1,
-            ui.LOG_TOP + 2,
-        ]
+        )
         for _ in self.each_layout():
             for row in rows:
                 self.assertGreater(self.pixels(self.row_rect(row)), 0, f'row {row} blank')
-            # Every run starts with a weapon, so its stats row (GEAR_TOP + 2)
-            # is drawn; no armor, so the armor's stats row stays empty.
-            self.assertGreater(self.pixels(self.row_rect(ui.GEAR_TOP + 2)), 0)
-            for blank in (
-                5,
-                ui.GEAR_TOP + 4,
-                ui.BELT_ROW + 1,
-                ui.CONTROLS_TOP + 3,
-                ui.LOG_TOP + 3,
-            ):
-                self.assertEqual(self.pixels(self.row_rect(blank)), 0, f'row {blank} drawn')
+            # The log board: its header and the two messages, then paper.
+            for row in (0, 1, 2):
+                self.assertGreater(self.pixels(self.log_row_rect(row)), 0, f'log row {row} blank')
+            self.assertEqual(self.pixels(self.log_row_rect(3)), 0, 'log row 3 drawn')
+
+    def test_gaps_between_sections_and_the_boons_rows_without_boons_are_blank(self):
+        # No armor, so its stats row is empty too.
+        gaps = (5, ui.GEAR_TOP + 4, ui.BELT_TOP - 1, ui.BOONS_TOP - 1, ui.CONTROLS_TOP - 1)
+        for _ in self.each_layout():
+            for row in gaps:
+                self.assertEqual(self.pixels(self.row_rect(row)), 0, f'row {row} drawn')
+            for row in (ui.BOONS_TOP, ui.BOONS_TOP + 1):
+                self.assertEqual(self.pixels(self.row_rect(row)), 0, f'boons row {row} drawn')
+
+    def test_section_and_log_headers_are_ruled(self):
+        # A 1px TABLE_RULE line across the text width at the header row's foot.
+        for _ in self.each_layout():
+            for row in (ui.HEADER_ROW, ui.GEAR_TOP, ui.BELT_TOP, ui.CONTROLS_TOP):
+                rect = self.row_rect(row)
+                foot = pygame.Rect(rect.left, rect.bottom - 1, rect.width, 1)
+                self.assertEqual(self.pixels(foot, palette.TABLE_RULE), rect.width, row)
+            # The log board's 'LOG' header too.
+            rect = self.log_row_rect(0)
+            foot = pygame.Rect(rect.left, rect.bottom - 1, rect.width, 1)
+            self.assertEqual(self.pixels(foot, palette.TABLE_RULE), rect.width, 'log')
+
+    def test_controls_rows_by_class(self):
+        self.assertEqual(ui.controls_rows('archer')[:2], [('wasd', 'move'), ('arrows', 'shoot')])
+        self.assertEqual(ui.controls_rows('warrior')[0], ('wasd/arrows', 'move'))
+        self.assertEqual(ui.controls_rows('archer')[2:], ui.controls_rows('warrior')[1:])
+        self.assertEqual(
+            ui.controls_rows('warrior')[1:],
+            [('space', 'wait'), ('e', 'descend'), ('h', 'drink'), ('q', 'ability')],
+        )
+
+    def test_controls_table_has_one_row_per_binding_by_class(self):
+        for tiles, size in self.LAYOUTS:
+            with self.subTest(tiles=tiles, size=size):
+                self.paint(self.state('warrior'), tiles, size)
+                for i in range(1, 6):
+                    self.assertGreater(self.pixels(self.row_rect(ui.CONTROLS_TOP + i)), 0, i)
+                self.assertEqual(self.pixels(self.row_rect(ui.CONTROLS_TOP + 6)), 0)
+                warrior = [self.row_bytes(ui.CONTROLS_TOP + i) for i in range(1, 6)]
+                self.paint(self.state('archer'), tiles, size)
+                for i in range(1, 7):
+                    self.assertGreater(self.pixels(self.row_rect(ui.CONTROLS_TOP + i)), 0, i)
+                archer = [self.row_bytes(ui.CONTROLS_TOP + i) for i in range(1, 7)]
+                self.assertNotEqual(warrior[0], archer[0])
+                # The archer's extra 'arrows shoot' row; the rest are shared.
+                # (The table's bottom rule is on the last row only.)
+                self.assertEqual(warrior[1:-1], archer[2:-1])
+
+    def test_controls_key_column_is_shaded_and_ruled(self):
+        for _ in self.each_layout():
+            row = ui.CONTROLS_TOP + 2  # ('space', 'wait')
+            key = self.row_rect(row, 0, ui.CONTROLS_KEY_COLS)
+            action = self.row_rect(row, ui.CONTROLS_KEY_COLS)
+            shaded = self.pixels(key, palette.PAGE_EDGE)
+            self.assertGreater(shaded, key.width * key.height // 2)
+            # Only the odd antialiased edge of the action text comes close.
+            self.assertLess(self.pixels(action, palette.PAGE_EDGE), shaded // 10)
+            self.assertGreater(self.pixels(key, palette.TABLE_RULE), 0)
+            self.assertGreater(self.pixels(action, palette.TABLE_RULE), 0)
+            self.assertGreater(self.pixels(action, palette.INK), 0, 'action text')
 
     def hp_colours(self, hp):
         """Per layout: (red in the HP text, red in bar, green in bar, empty track)."""
@@ -653,30 +801,26 @@ class PanelTest(unittest.TestCase):
                 self.pixels(bar, ui.HP_BAR_TRACK),
             )
 
-    def test_full_hp_is_plain_text_and_a_full_green_bar(self):
+    def test_hp_text_and_bar_colour_by_hp(self):
         max_hp = self.state().player.max_hp
-        for red_text, red_bar, green_bar, track in self.hp_colours(max_hp):
-            self.assertEqual((red_text, red_bar, track), (0, 0, 0))
-            self.assertGreater(green_bar, 0)
-
-    def test_a_third_of_max_hp_turns_text_and_bar_red(self):
-        max_hp = self.state().player.max_hp
-        for red_text, red_bar, green_bar, track in self.hp_colours(max_hp // 3):
-            self.assertGreater(red_text, 0)
-            self.assertGreater(red_bar, 0)
-            self.assertEqual(green_bar, 0)
-            self.assertGreater(track, red_bar, 'a third full: mostly empty track')
-
-    def test_just_above_a_third_is_still_green(self):
-        max_hp = self.state().player.max_hp
-        for red_text, red_bar, green_bar, _ in self.hp_colours(max_hp // 3 + 1):
-            self.assertEqual((red_text, red_bar), (0, 0))
-            self.assertGreater(green_bar, 0)
-
-    def test_zero_hp_is_an_empty_track(self):
-        for _, red_bar, green_bar, track in self.hp_colours(0):
-            self.assertEqual((red_bar, green_bar), (0, 0))
-            self.assertGreater(track, 0)
+        with self.subTest('full hp: plain text and a full green bar'):
+            for red_text, red_bar, green_bar, track in self.hp_colours(max_hp):
+                self.assertEqual((red_text, red_bar, track), (0, 0, 0))
+                self.assertGreater(green_bar, 0)
+        with self.subTest('a third of max hp turns text and bar red'):
+            for red_text, red_bar, green_bar, track in self.hp_colours(max_hp // 3):
+                self.assertGreater(red_text, 0)
+                self.assertGreater(red_bar, 0)
+                self.assertEqual(green_bar, 0)
+                self.assertGreater(track, red_bar, 'a third full: mostly empty track')
+        with self.subTest('just above a third is still green'):
+            for red_text, red_bar, green_bar, _ in self.hp_colours(max_hp // 3 + 1):
+                self.assertEqual((red_text, red_bar), (0, 0))
+                self.assertGreater(green_bar, 0)
+        with self.subTest('zero hp is an empty track'):
+            for _, red_bar, green_bar, track in self.hp_colours(0):
+                self.assertEqual((red_bar, green_bar), (0, 0))
+                self.assertGreater(track, 0)
 
     def test_hp_bar_fill_is_proportional(self):
         state = self.state()
@@ -718,11 +862,11 @@ class PanelTest(unittest.TestCase):
             text = ui.stats_text(state.player)
             self.assertTrue(text.endswith('DODGE 6%'), text)
             plain = len(f'ATK {state.player.power}   DEF {state.player.defense}')
-            self.assertGreater(self.pixels(self.row_rect(3, plain)), 0)
+            self.assertGreater(self.pixels(self.row_rect(ui.STATS_ROW, plain)), 0)
         for state in self.each_layout(wearing('armor')):
             text = ui.stats_text(state.player)
             self.assertNotIn('DODGE', text)
-            self.assertEqual(self.pixels(self.row_rect(3, len(text))), 0)
+            self.assertEqual(self.pixels(self.row_rect(ui.STATS_ROW, len(text))), 0)
 
     def test_archer_shows_the_quiver_on_the_items_row(self):
         for tiles, size in self.LAYOUTS:
@@ -732,15 +876,16 @@ class PanelTest(unittest.TestCase):
                 self.paint(state, tiles, size)
                 text = ui.items_text(state.player)
                 self.assertEqual(text, 'Items: 0   Arrows 9/12')
-                self.assertGreater(self.pixels(self.row_rect(4, len('Items: 0'))), 0)
-                before = self.row_bytes(4)
+                quiver = self.row_rect(ui.ITEMS_ROW, len('Items: 0'))
+                self.assertGreater(self.pixels(quiver), 0)
+                before = self.row_bytes(ui.ITEMS_ROW)
                 state.player.quiver = 3
                 self.paint(state, tiles, size)
-                self.assertNotEqual(self.row_bytes(4), before)
+                self.assertNotEqual(self.row_bytes(ui.ITEMS_ROW), before)
         for state in self.each_layout():
             text = ui.items_text(state.player)
             self.assertNotIn('Arrows', text)
-            self.assertEqual(self.pixels(self.row_rect(4, len(text))), 0)
+            self.assertEqual(self.pixels(self.row_rect(ui.ITEMS_ROW, len(text))), 0)
 
     def test_no_gear_is_plain_text(self):
         for _ in self.each_layout():
@@ -750,29 +895,31 @@ class PanelTest(unittest.TestCase):
                 for rarity_colour in (4, 5, 6):
                     self.assertEqual(self.pixels(rect, palette.ink(rarity_colour)), 0)
 
-    def test_controls_depend_on_the_class(self):
-        for tiles, size in self.LAYOUTS:
-            with self.subTest(tiles=tiles, size=size):
-                self.paint(self.state('warrior'), tiles, size)
-                warrior = [self.row_bytes(ui.CONTROLS_TOP + i) for i in range(3)]
-                self.paint(self.state('archer'), tiles, size)
-                archer = [self.row_bytes(ui.CONTROLS_TOP + i) for i in range(3)]
-                self.assertNotEqual(warrior[0], archer[0])
-                self.assertEqual(warrior[1:], archer[1:])
-
-    def test_class_depth_and_item_count_are_live(self):
+    def test_class_depth_item_count_gold_and_belt_rows_are_live(self):
         for tiles, size in self.LAYOUTS:
             with self.subTest(tiles=tiles, size=size):
                 state = self.state()
                 self.paint(state, tiles, size)
-                class_row, items_row = self.row_bytes(1), self.row_bytes(4)
+                class_row = self.row_bytes(ui.HEADER_ROW)
+                items_row = self.row_bytes(ui.ITEMS_ROW)
+                gold_row = self.row_bytes(ui.GOLD_ROW)
+                belt_row = self.row_bytes(ui.BELT_ROW)
+                # Gold and the belt are always painted, 'Gold 0' and an empty
+                # belt included.
+                self.assertGreater(self.pixels(self.row_rect(ui.GOLD_ROW)), 0)
+                self.assertGreater(self.pixels(self.row_rect(ui.BELT_ROW)), 0)
                 state.depth += 1
-                state.player.inventory.append(Item(0, 0).name)
+                state.player.items_used.append(Item(0, 0).name)
+                state.player.gold = 37
+                state.belt.append(Item(0, 0, 'potion', 'common'))
                 self.paint(state, tiles, size)
-                self.assertNotEqual(self.row_bytes(1), class_row)
-                self.assertNotEqual(self.row_bytes(4), items_row)
+                self.assertNotEqual(self.row_bytes(ui.HEADER_ROW), class_row, 'depth')
+                self.assertNotEqual(self.row_bytes(ui.ITEMS_ROW), items_row, 'items')
+                self.assertGreater(self.pixels(self.row_rect(ui.GOLD_ROW)), 0)
+                self.assertNotEqual(self.row_bytes(ui.GOLD_ROW), gold_row, 'gold')
+                self.assertNotEqual(self.row_bytes(ui.BELT_ROW), belt_row, 'belt')
                 self.paint(self.state('archer'), tiles, size)
-                self.assertNotEqual(self.row_bytes(1), class_row)
+                self.assertNotEqual(self.row_bytes(ui.HEADER_ROW), class_row, 'class')
 
     def test_log_fills_its_rows_with_messages(self):
         def make():
@@ -784,44 +931,88 @@ class PanelTest(unittest.TestCase):
             lines = self.layout.log_lines()
             self.assertGreaterEqual(lines, ui.MIN_LOG_LINES)
             for i in range(lines):
-                self.assertGreater(self.pixels(self.row_rect(ui.LOG_TOP + 1 + i)), 0)
-            below = ui.LOG_TOP + 1 + lines
+                self.assertGreater(self.pixels(self.log_row_rect(1 + i)), 0)
             # The row under the last log line is paper (or, on a short board,
             # the frame, whose dark wood is close to ink): no text on paper.
-            paper = self.row_rect(below).clip(self.layout.page_rect().inflate(-8, -8))
+            below = self.log_row_rect(1 + lines)
+            paper = below.clip(self.layout.log_page_rect().inflate(-8, -8))
             if paper.height == self.layout.cell_h:
                 self.assertEqual(self.pixels(paper, palette.INK), 0)
 
-    def test_long_messages_wrap_inside_the_panel(self):
+    def test_long_messages_wrap_inside_the_log_board(self):
         def make():
             state = self.state()
-            state.messages[:] = ['word ' * 40, 'x' * 120]
+            state.messages[:] = ['word ' * 80, 'x' * 300]
             return state
 
         for _ in self.each_layout(make):
-            panel = self.layout.panel_rect()
-            right = pygame.Rect(
-                panel.right, panel.top, self.canvas.surface.get_width() - panel.right, panel.height
-            )
-            if right.width > 0:
-                self.assertEqual(self.drawn(right), 0, 'text overran the panel')
-            self.assertGreater(self.pixels(self.row_rect(ui.LOG_TOP + 2)), 0, 'not wrapped')
+            layout = self.layout
+            log = layout.log_rect()
+            # Between the log board's right edge and whatever is right of it
+            # (the stats board side by side, the window edge stacked).
+            panel = layout.panel_rect()
+            edge = panel.left if panel.left >= log.right else self.canvas.surface.get_width()
+            right = pygame.Rect(log.right, log.top, edge - log.right, log.height)
+            right = right.clip(self.canvas.surface.get_rect())
+            if right.width > 0 and right.height > 0:
+                self.assertEqual(self.drawn(right), 0, 'text overran the log board')
+            self.assertGreater(self.pixels(self.log_row_rect(2)), 0, 'not wrapped')
 
-    def test_panel_paints_nothing_on_the_map(self):
-        for _ in self.each_layout():
-            self.assertEqual(self.drawn(self.layout.map_rect()), 0)
+    def test_long_message_wraps_inside_the_log_page(self):
+        # Outside the page (its board's frame and wood) the long message
+        # leaves the log board exactly as an empty log does.
+        for tiles, size in self.LAYOUTS:
+            with self.subTest(tiles=tiles, size=size):
+                empty = self.state()
+                empty.messages[:] = []
+                self.paint(empty, tiles, size)
+                page, board = self.layout.log_page_rect(), self.layout.log_rect()
+                strip = pygame.Rect(page.right, board.top, board.right - page.right, board.height)
+                strip = strip.clip(self.canvas.surface.get_rect())
+                before = pygame.image.tobytes(self.canvas.surface.subsurface(strip), 'RGB')
+                full = self.state()
+                full.log('word ' * 80)
+                self.paint(full, tiles, size)
+                after = pygame.image.tobytes(self.canvas.surface.subsurface(strip), 'RGB')
+                self.assertEqual(after, before, 'text ran off the log page')
+                self.assertGreater(self.pixels(self.log_row_rect(2)), 0, 'not wrapped')
 
-    def belt_slot_rects(self, belt):
-        """Pixel rects of the three belt slots' text on BELT_ROW, from the
-        same column arithmetic as ui._paint_belt."""
-        col, rects = len('Belt: '), []
-        for i in range(BELT_SLOTS):
-            text = belt_slot_label(belt[i] if i < len(belt) else None)
-            if i == 0:
-                text = f'[{text}]'
-            rects.append(self.row_rect(ui.BELT_ROW, col, len(text)))
-            col += len(text) + 1
-        return rects
+    def test_panel_paints_neither_the_log_nor_the_map_and_paint_log_does(self):
+        for tiles, size in self.LAYOUTS:
+            with self.subTest(tiles=tiles, size=size):
+                state = self.state()
+                state.log('hello there')
+                self.paint(state, tiles, size, log=False)
+                self.assertEqual(self.drawn(self.log_row_rect(1)), 0)
+                self.assertEqual(self.drawn(self.layout.map_rect()), 0)
+                ui.paint_log(self.canvas, state)
+                self.assertGreater(self.pixels(self.log_row_rect(1)), 0)
+                # Neither board paints anything on the map.
+                self.assertEqual(self.drawn(self.layout.map_rect()), 0)
+
+    def slot_boxes(self, state):
+        return ui.belt_slot_rects(self.layout, belt_capacity(state.player))
+
+    @staticmethod
+    def inside(box):
+        """A slot box without its border or outline: just the label."""
+        return box.inflate(-6, -6)
+
+    def test_belt_boxes_split_the_text_width_equally_and_are_ruled(self):
+        for state in self.each_layout():
+            boxes = self.slot_boxes(state)
+            self.assertEqual(len(boxes), BELT_SLOTS)
+            text = self.layout.text_rect()
+            belt_row = self.row_rect(ui.BELT_ROW)
+            self.assertEqual(len({box.width for box in boxes}), 1)
+            for box in boxes:
+                self.assertTrue(belt_row.contains(box), box)
+            self.assertEqual(boxes[0].left, text.left)
+            self.assertGreater(boxes[-1].right, text.right - len(boxes))
+            # Ruled: the last box's right edge is a TABLE_RULE line.
+            last = boxes[-1]
+            right = pygame.Rect(last.right - 1, last.top, 1, last.height)
+            self.assertEqual(self.pixels(right, palette.TABLE_RULE), last.height)
 
     def test_belt_shows_three_slots_each_in_its_rarity_ink(self):
         def make():
@@ -830,52 +1021,109 @@ class PanelTest(unittest.TestCase):
             return state
 
         for state in self.each_layout(make):
-            first, second, empty = self.belt_slot_rects(state.belt)
+            first, second, empty = map(self.inside, self.slot_boxes(state))
             epic, uncommon = palette.ink(6), palette.ink(4)
             self.assertGreater(self.pixels(first, epic), 0)
             self.assertEqual(self.pixels(first, uncommon), 0)
             self.assertGreater(self.pixels(second, uncommon), 0)
             self.assertEqual(self.pixels(second, epic), 0)
-            # The empty third slot is drawn ('---') in plain ink.
+            # The empty third slot is drawn (a dash) in plain ink.
             self.assertGreater(self.pixels(empty, palette.INK), 0)
             self.assertEqual(self.pixels(empty, epic) + self.pixels(empty, uncommon), 0)
 
-    def test_boons_row_appears_once_a_boon_is_taken(self):
-        # The row under the belt.
-        self.assertEqual(ui.BOONS_ROW, ui.BELT_ROW + 1)
+    def test_first_belt_slot_is_outlined_in_ink_only_while_it_holds_a_potion(self):
+        def make():
+            state = self.state()
+            state.belt.append(Item(0, 0, 'potion', 'common'))
+            return state
 
+        for state in self.each_layout(make):
+            boxes = self.slot_boxes(state)
+            first, last = boxes[0], boxes[-1]
+            edge = pygame.Rect(first.left, first.top, 2, first.height)
+            self.assertEqual(self.pixels(edge, palette.INK), 2 * first.height)
+            edge = pygame.Rect(last.left + 1, last.top, 2, last.height)
+            self.assertEqual(self.pixels(edge, palette.INK), 0)
+        # An empty belt, nothing for 'h' to drink: the first box is ruled like
+        # the others.
+        for state in self.each_layout():
+            first = self.slot_boxes(state)[0]
+            edge = pygame.Rect(first.left, first.top, 2, first.height)
+            self.assertEqual(self.pixels(edge, palette.INK), 0, 'empty belt')
+
+    def test_boons_section_appears_once_a_boon_is_taken(self):
         def make():
             state = self.state()
             state.player.boons[:] = ['blood_pact', 'keen_eye']
             return state
 
         for _ in self.each_layout(make):
-            row = self.row_rect(ui.BOONS_ROW)
+            self.assertGreater(self.pixels(self.row_rect(ui.BOONS_TOP)), 0)
+            row = self.row_rect(ui.BOONS_TOP + 1)
             self.assertGreater(self.pixels(row, palette.ink(BOON_COLOR)), 0)
-        # Without boons the row stays the blank gap above the controls
-        # (test_every_text_row_is_painted_and_the_gaps_are_not).
+        # Without boons both rows stay blank
+        # (test_gaps_between_sections_and_the_boons_rows_without_boons_are_blank).
 
-    def test_quick_hands_belt_shows_four_slots(self):
+    SEVEN_BOONS = [
+        'blood_pact',
+        'iron_skin',
+        'quick_hands',
+        'keen_eye',
+        'stone_heart',
+        'blood_pact_half',
+        'iron_skin_half',
+    ]
+
+    def test_seven_boons_wrap_onto_a_second_row(self):
+        """Seven short names don't fit one page row: they wrap onto the row
+        under it (the blank one before CONTROLS), none of them cut."""
+        from game.shrine import ALL_BOONS
+
+        shorts = [ALL_BOONS[key].short for key in self.SEVEN_BOONS]
+
+        def make():
+            state = self.state()
+            state.player.boons[:] = list(self.SEVEN_BOONS)
+            return state
+
+        for _ in self.each_layout(make):
+            width = self.layout.text_width()
+            self.assertGreater(len(' '.join(shorts)), width)
+            rows = ui.boon_rows([ALL_BOONS[key] for key in self.SEVEN_BOONS], width)
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(' '.join(rows).split(), shorts)
+            self.assertTrue(all(len(row) <= width for row in rows), rows)
+            for row in (ui.BOONS_TOP + 1, ui.BOONS_TOP + 2):
+                rect = self.row_rect(row)
+                self.assertGreater(self.pixels(rect, palette.ink(BOON_COLOR)), 0, row)
+            self.assertLess(ui.BOONS_TOP + 2, ui.CONTROLS_TOP)
+
+    def test_four_belt_boxes_fit_the_page_in_one_row(self):
         def make():
             state = self.state()
             state.player.boons[:] = ['quick_hands']
             return state
 
         for state in self.each_layout(make):
-            line = 'Belt: [---] --- --- ---'
-            self.assertGreater(self.pixels(self.row_rect(ui.BELT_ROW, len(line) - 3, 3)), 0)
-            self.assertEqual(state.player.boons, ['quick_hands'])
+            # Still one row: the row under the belt is blank.
+            self.assertEqual(self.pixels(self.row_rect(ui.BELT_ROW + 1)), 0)
+            boxes = self.slot_boxes(state)
+            self.assertEqual(len(boxes), 4)
+            text = self.layout.text_rect()
+            for box in boxes:
+                self.assertTrue(text.contains(box), box)
+            self.assertGreater(self.pixels(self.inside(boxes[3]), palette.INK), 0)
+            # Right of the text area the belt row is bare page margin, the
+            # same as the blank row under it.
+            page = self.layout.page_rect()
+            row, below = self.row_rect(ui.BELT_ROW), self.row_rect(ui.BELT_ROW + 1)
+            margin = pygame.Rect(text.right, row.top, page.right - text.right, row.height)
+            under = margin.move(0, below.top - row.top)
 
-    def test_belt_row_changes_with_its_contents(self):
-        for tiles, size in self.LAYOUTS:
-            with self.subTest(tiles=tiles, size=size):
-                state = self.state()
-                self.paint(state, tiles, size)
-                empty = self.row_bytes(ui.BELT_ROW)
-                self.assertGreater(self.pixels(self.row_rect(ui.BELT_ROW)), 0)
-                state.belt.append(Item(0, 0, 'potion', 'common'))
-                self.paint(state, tiles, size)
-                self.assertNotEqual(self.row_bytes(ui.BELT_ROW), empty)
+            def raw(rect):
+                return pygame.image.tobytes(self.canvas.surface.subsurface(rect), 'RGB')
+
+            self.assertEqual(raw(margin), raw(under))
 
 
 @unittest.skipUnless(pygame, 'pygame-ce not installed')

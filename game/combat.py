@@ -1,20 +1,23 @@
-"""What happened in a fight, as plain data, for whoever draws it.
+"""What happened in a round, as plain data, for whoever draws or plays it.
 
-GameState.attack() records a `Hit` for every blow -- melee, arrow, or a monster
-swinging back -- in `GameState.combat_events`. A renderer can stage those (an
-impact flash, a combat camera) without GameState knowing anything about
-animation. Each hit carries a serial number that only ever grows, so a
-renderer that draws the same round several times can tell which hits it has
-already shown without mutating the state.
+GameState keeps one ordered stream of records, `GameState.events`, oldest
+first: a `Hit` for every melee blow (the player's or a monster's), a `Shot`
+for every shot (player or goblin archer), a `Parry` for every blow an armed
+parry nullified, and a game.sound.SoundEvent for every sound hook. It is
+cleared when the player acts. Every record carries a `serial` from one
+counter that only ever grows (across rounds and levels), and the list is
+always in serial order -- so a renderer that draws the same round several
+times keeps a cursor (the last serial it handled) and reads only what is new
+(`GameState.events_since`), without mutating the state. A new GameState
+starts the counter again, so a renderer resets its cursors on a restart.
 
-Every shot also records a `Shot` in `GameState.shots` (same lifetime as
-combat_events): the cells each of its arrows flew through, so a renderer can
-draw them flying and land each on its Hits.
+Records refer to each other instead of being matched up by the reader:
 
-A monster melee blow that the warrior's armed parry nullifies records no Hit
-(it does nothing); it records a `Parry` in `GameState.parries` instead (same
-lifetime as combat_events), so a renderer can still show the blow being
-turned aside before the riposte's own Hit.
+- A `Shot` owns the Hits its arrows made (in `arrows[i].hits`); they are not
+  in the stream themselves. `GameState.hits()` lists every Hit of the round,
+  stream and shots alike, in serial order.
+- A `Parry` names its riposte's Hit (`riposte`), which follows it in the
+  stream.
 """
 
 from collections import namedtuple
@@ -33,16 +36,37 @@ Hit.__new__.__defaults__ = (False,)
 # on the path.
 Arrow = namedtuple('Arrow', 'path hits')
 
-# One shot: every arrow loosed by one shoot action, all leaving the shooter's
-# cell together. `arrows` is a tuple of Arrows, the aim arrow first -- one
-# element for every bow but the volley bow, whose extras follow it. `path` and
-# `hits` are the aim arrow's (arrows[0]), kept for readers that only fly one.
-# `serial` comes from the same counter as Hit.serial and is taken before any
-# arrow flies, so a Shot sorts before all of its Hits.
-Shot = namedtuple('Shot', 'serial path hits arrows')
 
-# A parried blow (GameState._monster_melee): `monster` swung at `player`, who
-# stood at (x, y), and the parry nullified it. `serial` comes from the same
-# counter as Hit.serial and is taken before the riposte's Hit, so a Parry
-# sorts right before the riposte it led to.
-Parry = namedtuple('Parry', 'serial monster player x y')
+class Shot(namedtuple('Shot', 'serial arrows')):
+    """One shot: every arrow loosed by one shoot action, all leaving the
+    shooter's cell together. `arrows` is a tuple of Arrows, the aim arrow
+    first -- one element for every bow but the volley bow, whose extras
+    follow it. Its serial is taken before any arrow flies, so it is lower
+    than every Hit it owns."""
+
+    __slots__ = ()
+
+    @property
+    def path(self):
+        """The aim arrow's path (arrows[0]), for readers that fly one."""
+        return self.arrows[0].path
+
+    @property
+    def hits(self):
+        """The aim arrow's Hits (arrows[0])."""
+        return self.arrows[0].hits
+
+    def all_hits(self):
+        """Every Hit this shot made, in serial order."""
+        return sorted((hit for arrow in self.arrows for hit in arrow.hits), key=_serial)
+
+
+def _serial(event):
+    return event.serial
+
+
+# A parried blow (game.fight.monster_melee): `monster` swung at `player`, who
+# stood at (x, y), and the parry nullified it (no Hit for the blow).
+# `riposte` is the Hit of the blow the parry returned to the monster (or
+# None); it follows the Parry in the stream.
+Parry = namedtuple('Parry', 'serial monster player x y riposte')

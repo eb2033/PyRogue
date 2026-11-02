@@ -48,5 +48,5 @@ reportOptionalSubscript = false
 reportPossiblyUnboundVariable = false
 
 [tool.vulture]
-paths = ['main.py', 'game', 'render', 'packaging', 'tests', 'vulture_allowlist.py']
+paths = ['main.py', 'game', 'render', 'packaging', 'vulture_allowlist.py']
 min_confidence = 60

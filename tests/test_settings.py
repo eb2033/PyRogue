@@ -41,16 +41,23 @@ class _EnvTest(unittest.TestCase):
 
 
 class EnvIntTest(_EnvTest):
-    def test_parses(self):
+    def test_parses_and_falls_back_to_the_default(self):
         os.environ['PYROGUE_T_INT'] = '42'
         self.assertEqual(settings.env_int('PYROGUE_T_INT', 7), 42)
-
-    def test_missing_uses_default(self):
-        self.assertEqual(settings.env_int('PYROGUE_T_INT', 7), 7)
-
-    def test_garbage_uses_default(self):
+        del os.environ['PYROGUE_T_INT']
+        self.assertEqual(settings.env_int('PYROGUE_T_INT', 7), 7)  # missing
         os.environ['PYROGUE_T_INT'] = 'forty'
-        self.assertEqual(settings.env_int('PYROGUE_T_INT', 7), 7)
+        self.assertEqual(settings.env_int('PYROGUE_T_INT', 7), 7)  # garbage
+
+    def test_out_of_range_uses_default_and_bounds_are_inclusive(self):
+        for text in ('0', '-4', '9'):
+            os.environ['PYROGUE_T_INT'] = text
+            self.assertEqual(settings.env_int('PYROGUE_T_INT', 7, 10, 20), 7, text)
+        os.environ['PYROGUE_T_INT'] = '21'
+        self.assertEqual(settings.env_int('PYROGUE_T_INT', 7, maximum=20), 7)
+        for text in ('10', '20'):
+            os.environ['PYROGUE_T_INT'] = text
+            self.assertEqual(settings.env_int('PYROGUE_T_INT', 15, 10, 20), int(text))
 
 
 class LoadTest(_EnvTest):
@@ -107,13 +114,13 @@ class LoadTest(_EnvTest):
         self.assertEqual(os.environ['PYROGUE_T_A'], 'ok')
         self.assertNotIn('BAD KEY', os.environ)
 
-    def test_missing_file_is_not_an_error(self):
+    def test_missing_undecodable_or_absent_config_is_not_an_error(self):
         self.assertEqual(settings.load(self.tmp / 'nope.env'), {})
-
-    def test_undecodable_file_is_not_an_error(self):
         p = self.tmp / '.env'
         p.write_bytes(b'\xff\xfe\xfa\x80 not utf-8')
         self.assertEqual(settings.load(p), {})
+        with mock.patch.object(settings, 'find_config', return_value=None):
+            self.assertEqual(settings.load(), {})
 
     def test_bom_and_crlf_are_tolerated(self):
         p = self.tmp / '.env'
@@ -125,10 +132,6 @@ class LoadTest(_EnvTest):
     def test_garbage_value_then_env_int_falls_back(self):
         settings.load(self.write('.env', 'PYROGUE_T_INT=lots\n'))
         self.assertEqual(settings.env_int('PYROGUE_T_INT', 50), 50)
-
-    def test_load_without_any_config_is_a_noop(self):
-        with mock.patch.object(settings, 'find_config', return_value=None):
-            self.assertEqual(settings.load(), {})
 
 
 class FindConfigTest(_EnvTest):
@@ -145,29 +148,21 @@ class FindConfigTest(_EnvTest):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    def test_none_when_nothing_exists(self):
+    def test_search_order(self):
         self.assertIsNone(settings.find_config())
-
-    def test_cwd_env_is_last_resort(self):
-        p = self.write('cwd/.env', 'X=1')
-        self.assertEqual(settings.find_config().resolve(), p.resolve())
-
-    def test_app_dir_beats_cwd(self):
-        self.write('cwd/.env', 'X=1')
-        p = self.write('app/.env', 'X=2')
-        self.assertEqual(settings.find_config(), p)
-
-    def test_pyrogue_config_beats_everything(self):
-        self.write('cwd/.env', 'X=1')
-        self.write('app/.env', 'X=2')
-        p = self.write('custom/game.cfg', 'X=3')
-        os.environ[settings.CONFIG_ENV] = str(p)
-        self.assertEqual(settings.find_config(), p)
-
-    def test_pyrogue_config_pointing_nowhere_falls_through(self):
-        p = self.write('app/.env', 'X=2')
+        # the working directory is the last resort
+        cwd_env = self.write('cwd/.env', 'X=1')
+        self.assertEqual(settings.find_config().resolve(), cwd_env.resolve())
+        # the app dir beats it
+        app_env = self.write('app/.env', 'X=2')
+        self.assertEqual(settings.find_config(), app_env)
+        # a PYROGUE_CONFIG that points nowhere falls through
         os.environ[settings.CONFIG_ENV] = str(self.tmp / 'missing.cfg')
-        self.assertEqual(settings.find_config(), p)
+        self.assertEqual(settings.find_config(), app_env)
+        # a real one beats everything
+        custom = self.write('custom/game.cfg', 'X=3')
+        os.environ[settings.CONFIG_ENV] = str(custom)
+        self.assertEqual(settings.find_config(), custom)
 
     def test_load_uses_search_order(self):
         self.write('cwd/.env', 'PYROGUE_T_A=cwd\n')

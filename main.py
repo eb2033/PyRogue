@@ -23,21 +23,25 @@ DEFAULT_FOV_RADIUS = 6
 # TURN_DELAY_MS=0 to resolve each round instantly, as it worked before the
 # player and monster halves were split apart.
 DEFAULT_TURN_DELAY_MS = 110
+# MAP_WIDTH/MAP_HEIGHT outside these fall back to the defaults (a map this
+# small can't hold the rooms generation needs; a huge one only wastes memory).
+MIN_WIDTH, MIN_HEIGHT, MAX_MAP = 20, 12, 200
 
 
-BUNDLED_FONT = 'JetBrainsMono-Regular.ttf'
+BUNDLED_FONT_FILE = 'JetBrainsMono-Regular.ttf'
 
 
 def make_renderer(width, height):
     from game.paths import resource_path
     from render.pygame_render import PygameRenderer
+    from render.sound import SoundBoard
     from render.tileset import Tileset
 
     # TILES=0 keeps the window drawing characters instead of tiles.
     tileset = Tileset(resource_path('assets')) if env_int('TILES', 1) else None
     # The bundled font, so Windows and Linux draw the same glyphs; a missing
     # file falls back to a system monospace font.
-    font = resource_path('assets', 'fonts', BUNDLED_FONT)
+    font = resource_path('assets', 'fonts', BUNDLED_FONT_FILE)
     # COMBAT_ZOOM=0 keeps the whole map in view during melee fights.
     return PygameRenderer(
         width,
@@ -45,6 +49,8 @@ def make_renderer(width, height):
         tileset=tileset,
         font_path=str(font) if font.is_file() else None,
         combat_zoom=bool(env_int('COMBAT_ZOOM', 1)),
+        # SOUND=0 turns the audio off; missing files are silent anyway.
+        sound=SoundBoard(resource_path('assets', 'sounds'), enabled=bool(env_int('SOUND', 1))),
     )
 
 
@@ -93,10 +99,14 @@ def run(renderer, state, delay_ms=DEFAULT_TURN_DELAY_MS):
 def play(renderer, width, height, fov_radius=DEFAULT_FOV_RADIUS, delay_ms=DEFAULT_TURN_DELAY_MS):
     """Title screen, class select, a run -- and again for as long as each
     run ends in 'press r to restart'. Every run gets a GameState built fresh
-    after its class is chosen, so nothing of a dead run carries over. Quit on
-    the title, q on the death screen, or closing the window ends it."""
+    after its class is chosen, so nothing of a dead run carries over. q on the
+    class select goes back to the title. Quit on the title, q on the death
+    screen, or closing the window ends it."""
     while renderer.show_title_screen():
-        state = GameState(width, height, fov_radius=fov_radius, char_class=renderer.choose_class())
+        char_class = renderer.choose_class()
+        if char_class is None:
+            continue  # backed out (or closed: the title then returns False)
+        state = GameState(width, height, fov_radius=fov_radius, char_class=char_class)
         run(renderer, state, delay_ms)
         if not state.restart_requested:
             return
@@ -105,12 +115,15 @@ def play(renderer, width, height, fov_radius=DEFAULT_FOV_RADIUS, delay_ms=DEFAUL
 def main():
     # Before anything reads the environment.
     settings.load()
+    # Tileset problems and the like go to warnings.log: a windowed build has
+    # no stderr to show them on.
+    crashlog.route_warnings()
 
     # The base map size: each floor's map grows from it with depth
     # (game/dungeon.py map_size), and the window's view is sized from it
     # (render/camera.py view_size).
-    width = env_int('MAP_WIDTH', DEFAULT_WIDTH)
-    height = env_int('MAP_HEIGHT', DEFAULT_HEIGHT)
+    width = env_int('MAP_WIDTH', DEFAULT_WIDTH, MIN_WIDTH, MAX_MAP)
+    height = env_int('MAP_HEIGHT', DEFAULT_HEIGHT, MIN_HEIGHT, MAX_MAP)
 
     renderer = make_renderer(width, height)
     try:
@@ -118,8 +131,8 @@ def main():
             renderer,
             width,
             height,
-            fov_radius=env_int('FOV_RADIUS', DEFAULT_FOV_RADIUS),
-            delay_ms=env_int('TURN_DELAY_MS', DEFAULT_TURN_DELAY_MS),
+            fov_radius=env_int('FOV_RADIUS', DEFAULT_FOV_RADIUS, 1, 50),
+            delay_ms=env_int('TURN_DELAY_MS', DEFAULT_TURN_DELAY_MS, 0, 5000),
         )
     finally:
         renderer.close()
@@ -129,7 +142,7 @@ if __name__ == '__main__':
     try:
         main()
     except Exception:
-        # Written here rather than via crashlog.install()'s excepthook: a
+        # Written here rather than via an excepthook: a
         # --windowed PyInstaller build reports the exception in its own dialog
         # and may never run sys.excepthook. renderer.close() has already run
         # (main's finally), so the window is gone before the traceback.

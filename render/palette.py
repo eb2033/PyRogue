@@ -28,10 +28,12 @@ BACKGROUND = (0, 0, 0)
 # (render/noticeboard.py): text there is ink, not light-on-black, so the
 # rarity ladder has darker twins that read on paper. Same Entity.color keys.
 PAGE = (236, 224, 194)  # flat under the text, so ink is easy to tell apart
-PAGE_EDGE = (214, 196, 156)
+PAGE_EDGE = (214, 196, 156)  # also the shading of a table's key column
+TABLE_RULE = (185, 167, 127)  # section-header rules and table/belt-box borders
 INK = (52, 38, 26)
 INK_DANGER = (178, 34, 30)
 INK_COLORS = {
+    1: (150, 110, 0),  # yellow: a dark gold ink on the paper
     2: INK_DANGER,
     3: (20, 110, 120),  # cyan
     4: (34, 118, 46),  # uncommon (green)

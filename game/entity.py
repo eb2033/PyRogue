@@ -1,6 +1,7 @@
 """Entities (spec §4).
 
-Monster and Item subtypes go here too — stretch goals #3 and #4.
+Monster, Item and the other subtypes live in game/monster.py, game/item.py
+and friends; this file holds the base Entity and the Player.
 """
 
 from typing import TYPE_CHECKING
@@ -11,7 +12,17 @@ if TYPE_CHECKING:
     from game.item import Item
 
 
+# What kind of thing an entity is on the map (game/level.py has the rules),
+# and the order the renderer paints them in, lowest first: a creature is
+# always drawn over a chest, a chest over a pile.
+PILE = 0  # gold and arrows on the floor: never in anything's way
+FIXTURE = 1  # chests and shrines: the player uses one by walking into it
+CREATURE = 2  # the player, monsters, the shopkeeper: one to a tile
+
+
 class Entity:
+    layer = CREATURE
+
     def __init__(self, x, y, char, color=0, name=''):
         self.x, self.y = x, y
         self.char = char
@@ -64,11 +75,15 @@ class Player(Entity):
         self.defense = 0
         self.weapon: Item | None = None
         self.armor: Item | None = None
-        self.inventory: list[str] = []  # item names, newest last
+        self.items_used: list[
+            str
+        ] = []  # names of everything drunk or equipped this run, newest last (a history, not a bag)
         # Shrine boons taken this run (game/shrine.py BOONS keys), oldest
         # first. Their effects are derived from this list, never stored.
         self.boons: list[str] = []
         # Arrows in the quiver (game/quiver.py): an archer's starts at
         # QUIVER_CAPACITY; None means no quiver (a warrior).
         self.quiver: int | None = None
+        # Gold carried (game/gold.py): picked up from piles and gold chests.
+        self.gold = 0
         self.alive = True

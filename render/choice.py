@@ -2,7 +2,7 @@
 
 The window draws a pending choice (GameState.pending_choice) from the text
 here: three cards, numbered in pending_choice order, and a skip line under
-them (key 4 or Space). The offers are a chest's Items or a shrine's
+them (Space). The offers are a chest's Items or a shrine's
 Boons (game/shrine.py); every function here takes either, and a boon card
 reads its name, its benefit and its cost where an item card reads its name,
 rarity and stat. Geometry (in pixels) is render/screens.py's business.
@@ -14,13 +14,13 @@ from render.base import Action
 
 TITLE = 'Choose one'
 BOON_TITLE = 'Choose a boon'
-HINT = 'press 1, 2 or 3; 4 or space skips'
+HINT = 'press 1, 2 or 3; space skips'
 # Action -> index into pending_choice; GameState.handle_action uses the same order.
 CHOOSE_ACTIONS = (Action.CHOOSE_1, Action.CHOOSE_2, Action.CHOOSE_3)
-# The line under the cards that takes nothing (Action.SKIP: key 4 or Space).
+# The line under the cards that takes nothing (Action.SKIP: Space).
 SKIP_ACTION = Action.SKIP
-SKIP_LINE = '[4] Skip: leave the chest'
-BOON_SKIP_LINE = '[4] Skip: leave the shrine'
+SKIP_LINE = '[Space] Skip: leave the chest'
+BOON_SKIP_LINE = '[Space] Skip: leave the shrine'
 
 JUNK_STAT = 'nothing useful'
 JUNK_RARITY = 'junk'
@@ -52,6 +52,10 @@ def _effect_text(item):
         return f'mark +{round(item.mark_bonus * 100)}%'
     if item.tempo:
         return f'every {item.tempo} shots free'
+    if item.riposte_mult:
+        return f'riposte x{item.riposte_mult:g}'
+    if item.hop_shot:
+        return 'hop-shot'
     return None
 
 

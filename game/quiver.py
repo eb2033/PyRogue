@@ -8,7 +8,7 @@ that the quiver restocks itself by one arrow every RESTOCK_TURNS player turns
 (GameState.restock_progress counts them, 0..RESTOCK_TURNS).
 """
 
-from game.entity import Entity
+from game.entity import PILE, Entity
 
 QUIVER_CAPACITY = 12
 RESTOCK_TURNS = 3
@@ -19,6 +19,8 @@ ARROW_PILE_COLOR = 7
 class ArrowPile(Entity):
     """Arrows on the floor: one pile per tile, `count` arrows in it. Not a
     chest and not an obstacle -- the player and monsters walk over it."""
+
+    layer = PILE
 
     def __init__(self, x, y, count=1):
         super().__init__(x, y, ARROW_PILE_CHAR, color=ARROW_PILE_COLOR, name='arrows')

@@ -14,7 +14,9 @@ adjacency), which let a monster sitting on a diagonal hit a player who had
 no legal move to hit back.
 
 Monsters never share a tile: GameState hands take_turn the tiles held by
-the player and every other living monster, and a step into one is skipped.
+the player, every other living monster and the shopkeeper (game/level.py's
+MONSTER_MOVE row), and a step into one is skipped. Chests, shrines and piles
+don't block a monster.
 A chasing monster that goes GIVE_UP_AFTER (3) turns in a row without seeing
 the player gives up and wanders until it sees the player again.
 
@@ -30,6 +32,15 @@ power, compounding (tier 2 is 1.2x *that*, not 1.2x the base). Every 8th
 floor also spawns exactly one boss: 2x the hp and 1.5x the power of the
 toughest regular monster at that depth's tier, flagged is_boss so GameState
 knows to guarantee a rare+ drop on its death.
+
+Slimes (SLIME_KINDS: slime_small, slime_medium, slime_large; one size per
+band of floors, slime_kind_for_depth) take their HP from the orc that would
+spawn at the same depth (orc_hp) times the size's factor, and their power
+from a base of 2/3/4 plus the tier bonus. A medium or large slime splits on
+death (game/fight.py's split_slime; the split-offs have drops_gold False).
+A large slime moves only every MOVE_EVERY-th turn it doesn't attack, but
+attacks every turn it is adjacent. Player arrows do RANGED_RESIST of their
+damage to a slime (game/archery.py).
 
 Who spawns where (one enemy kind per room, pack sizes, the boss room) is
 decided by game/spawn.py.
@@ -47,9 +58,40 @@ MONSTER_TYPES = {
     'orc': ('o', 2, 27, 4),
     # Ranged: keeps its distance and shoots (see Monster._ranged_turn).
     'goblin_archer': ('s', 2, 7, 1),
+    # Slimes: a placeholder char shared by all three sizes (the renderer
+    # draws a green square by kind, not this char). Their base hp is unused:
+    # see SLIME_KINDS.
+    'slime_small': ('j', 2, 0, 2),
+    'slime_medium': ('j', 2, 0, 3),
+    'slime_large': ('j', 2, 0, 4),
 }
 
+# How a kind is named in the log, where kind.replace('_', ' ') would read badly.
+MONSTER_NAMES = {
+    'slime_small': 'small slime',
+    'slime_medium': 'medium slime',
+    'slime_large': 'large slime',
+}
+
+# Slime kind -> (hp as a multiple of the orc that spawns at that depth,
+# the kind it splits into on death, or None).
+SLIME_KINDS = {
+    'slime_small': (0.5, None),
+    'slime_medium': (0.8, 'slime_small'),
+    'slime_large': (1.2, 'slime_medium'),
+}
+SLIME_SPLIT_COUNT = 2  # a medium or large slime splits into this many
+# (first floor, kind): small on floors 1-5, medium on 6-10, large from 11.
+SLIME_BANDS = ((1, 'slime_small'), (6, 'slime_medium'), (11, 'slime_large'))
+# kind -> the factor a player's arrow's damage is multiplied by.
+RANGED_RESIST = {kind: 0.7 for kind in SLIME_KINDS}
+# kind -> it takes a step only on every n-th turn it doesn't attack.
+MOVE_EVERY = {'slime_large': 2}
+
 RANGED_KINDS = frozenset({'goblin_archer'})
+# kind -> chance a shot misses the player outright (rolled before the dodge).
+# Data per ranged kind; a kind not listed never misses.
+MISS_CHANCE = {'goblin_archer': 0.3}
 SHOOT_RANGE = 5  # Chebyshev; the shot itself must be along a row or column
 KEEP_AWAY = 2  # a ranged monster backs off when the player is this close
 
@@ -90,6 +132,25 @@ def scale_stats(base_hp, base_power, depth):
     return hp, power
 
 
+def orc_hp(depth):
+    """The HP of a regular orc spawned at `depth`: tier scaling, then the
+    early-orc reduction on floors 1..EARLY_ORC_MAX_DEPTH."""
+    _, _, base_hp, base_power = MONSTER_TYPES['orc']
+    hp, _ = scale_stats(base_hp, base_power, depth)
+    if depth <= EARLY_ORC_MAX_DEPTH:
+        hp = max(1, round(hp * EARLY_ORC_HP_MULT))
+    return hp
+
+
+def slime_kind_for_depth(depth):
+    """The slime size that spawns on floor `depth` (SLIME_BANDS)."""
+    kind = SLIME_BANDS[0][1]
+    for first, band_kind in SLIME_BANDS:
+        if depth >= first:
+            kind = band_kind
+    return kind
+
+
 def is_boss_level(depth):
     return depth > 0 and depth % BOSS_LEVEL_INTERVAL == 0
 
@@ -102,12 +163,15 @@ class Monster(Entity):
         hp, power = scale_stats(base_hp, base_power, depth)
         if kind == 'orc' and not is_boss and depth <= EARLY_ORC_MAX_DEPTH:
             hp = max(1, round(hp * EARLY_ORC_HP_MULT))
+        if kind in SLIME_KINDS:
+            hp = max(1, round(orc_hp(depth) * SLIME_KINDS[kind][0]))
         if is_boss:
             hp = max(1, round(hp * BOSS_HP_MULT))
             power = max(1, round(power * BOSS_POWER_MULT))
             char = char.upper()
 
-        display = kind.replace('_', ' ')  # 'goblin_archer' -> 'goblin archer'
+        # 'goblin_archer' -> 'goblin archer'; 'slime_small' -> 'small slime'
+        display = MONSTER_NAMES.get(kind, kind.replace('_', ' '))
         name = f'boss {display}' if is_boss else display
         super().__init__(x, y, char, color=color, name=name)
         self.kind = kind
@@ -119,8 +183,13 @@ class Monster(Entity):
         self.enraged = False  # a boss summons help once, at half HP
         self.chasing = False  # pursuing the player (see take_turn)
         self.lost_sight = 0  # consecutive chasing turns without sight of the player
+        # False for a slime split off a dead one (game/fight.py): only what
+        # the spawner placed drops gold.
+        self.drops_gold = True
+        self.split_from: Monster | None = None  # the slime this one split off
+        self.move_clock = 0  # turns spent not attacking (MOVE_EVERY)
 
-    def take_turn(self, player, game_map, occupied=(), sees_player=True):
+    def take_turn(self, player, game_map, occupied=(), sees_player=True, rng: Rng = random):
         """Chase or wander. Returns 'attack' when standing orthogonally
         adjacent to the player, 'shoot' when a ranged monster looses an
         arrow at it, else None after (maybe) taking one step.
@@ -136,12 +205,18 @@ class Monster(Entity):
         monster sees you exactly when you see it. The default (True) keeps
         the old distance-only behaviour for callers that don't track sight.
 
+        `rng` rolls the wander step (GameState passes its own state.rng).
+
         Pursuit: a monster starts chasing when it sees the player within
         CHASE_RANGE. Every turn it spends chasing without seeing the player
         counts one toward `lost_sight` (it still steps toward the player on
         that turn); on the GIVE_UP_AFTER-th consecutive blind turn it stops
         pursuing and wanders until it sees the player again. Seeing the
         player resets the count.
+
+        A kind in MOVE_EVERY (the large slime) takes its step only on every
+        n-th turn it doesn't attack; on the others it stands still, but its
+        sight and give-up counting run exactly as on a moving turn.
 
         Because both the adjacency test and every step are orthogonal, a
         step can never land on the player's tile: reaching it would mean
@@ -164,19 +239,31 @@ class Monster(Entity):
         elif self.chasing:
             self.lost_sight += 1
 
+        resting = self._resting()
         if self.chasing:
-            step = self._chase_step(player, game_map, occupied)
+            step = None if resting else self._chase_step(player, game_map, occupied)
             if self.lost_sight >= GIVE_UP_AFTER:
                 self.chasing = False
                 self.lost_sight = 0
+        elif resting:
+            step = None
         else:
-            step = random.choice(WANDER_STEPS)
+            step = rng.choice(WANDER_STEPS)
             if (self.x + step[0], self.y + step[1]) in occupied:
                 step = None
 
         if step is not None:
             self.move(step[0], step[1], game_map)
         return None
+
+    def _resting(self):
+        """Count one turn without an attack; True if this kind (MOVE_EVERY)
+        skips its step on it. It steps on the 1st, (n+1)th, ... such turn."""
+        every = MOVE_EVERY.get(self.kind, 1)
+        if every <= 1:
+            return False
+        self.move_clock += 1
+        return (self.move_clock - 1) % every != 0
 
     def clear_shot(self, player, game_map, occupied=()):
         """True if the player is on this monster's row or column, within
@@ -351,15 +438,6 @@ def lane_tiles(player, game_map, occupied=()):
                 break
             x, y = x + sx, y + sy
     return lanes
-
-
-def spawn_monsters(rooms, depth=1, rng: Rng = random):
-    """Every enemy on a floor -- one kind per non-start room, plus the boss
-    (and its escort) on a boss floor. The rules live in game/spawn.py; this
-    is the old entry point, kept for callers that only want the list."""
-    from game.spawn import spawn_level  # spawn imports this module
-
-    return spawn_level(rooms, depth, rng)[0]
 
 
 def spawn_boss(room, depth, at=None):

@@ -23,13 +23,15 @@ Controls
   Arrow keys    Warrior: move.  Archer: shoot an arrow in that direction
   space or .    wait a turn
   e             go down the stairs (>) when standing on them
+  h             drink a potion from your belt
   q             class ability (on the death screen: quit)
   F11           fullscreen
 
 The menus also take the mouse.
 
 Walk onto a chest to open it: pink chests hold a healing potion, cyan ones a
-weapon or armour. Gear equips itself if it's better than what you wear.
+choice of three weapons or armour (1, 2 or 3 takes one; 4 or space takes
+nothing).
 
 crash.log
 ---------
@@ -48,6 +50,7 @@ Create a file called .env next to the program, with lines like:
   TURN_DELAY_MS=0      (monsters move instantly)
   TILES=0              (letters instead of tiles)
   COMBAT_ZOOM=0        (no zooming in on melee fights)
+  SOUND=0              (no sound)
 
 Licence
 -------

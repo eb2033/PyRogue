@@ -6,6 +6,49 @@ GitHub Release notes.
 
 ## [Unreleased]
 
+### Added
+- Gold. Killed enemies drop a pile of gold (`$`) where they fall, more for tougher enemies and
+  three times as much for a boss; walk onto it to pick it up. Most floors also have a yellow gold
+  chest. Your gold is shown on the stats board.
+- Shops on every 4th floor (4, 8, 12, ...): walk into the shopkeeper (`P`) to browse, as often
+  as you like on that floor. Each shop sells two weapons for your class (never Epic; at most
+  Uncommon before floor 8), two lesser boons (half a shrine boon's benefit, with no cost) and a
+  full heal. Prices grow with depth: on floor 4 a Common weapon is 60 gold, an Uncommon 120 and a
+  lesser boon 53 (a Rare, sold from floor 8, is 320 there); the heal is 5 gold per missing HP.
+  Keys 1-5 buy, Space leaves.
+- Sound hooks: footsteps, doors, swings and shots, monster attacks, chests, the stairs, enemy
+  alerts and gold pickups each have a named slot that plays `assets/sounds/<slot>.ogg` (or
+  `.wav`) if it exists. No sounds ship yet, so the game is still silent. `SOUND=0` turns audio
+  off.
+- Slimes: green squares in three sizes (small on floors 1-5, medium on 6-10, large from 11). A
+  medium or large slime splits into two of the next size down when killed; split-offs drop no
+  gold. Large slimes move every other turn, and arrows do 70% damage to any slime.
+- Terrain walls: small L-shaped and straight walls inside rooms (3 per room, 6 in wide rooms from
+  floor 9). The start, stairs, boss and shopkeeper spots stay clear and every room stays connected.
+- Fencing sword (warrior): its parry's riposte hits for x2.0 (common) up to x2.5 (epic) instead of
+  x1.5.
+- Hand crossbow (archer): a hop straight away from an adjacent enemy doesn't end the turn if your
+  next action is a shot, so you hop and shoot before enemies act.
+
+### Changed
+- Archer melee hits and point-blank shots (at an adjacent enemy) do half damage.
+- Arrows that hit an enemy are used up; ammo comes back only from misses and the slow restock.
+- Goblin packs grow with depth (up to 5 from floor 13) and goblin archers come in packs of up to 3.
+- Ranged enemies miss 30% of their shots.
+- Space is the only way to skip a chest or shrine choice; key 4 no longer skips (it still buys the
+  shop's 4th offer).
+- Rooms grow with depth: 10-14 tiles a side on floors 9-16 and 12-16 from floor 17.
+- Gold drops retuned: a full clear of floors 1-4 pays about 120 gold.
+- The side panel is split in two: a stats board beside the map and a log board under it (in a
+  tall window, both under the map). The log board is as wide as the map.
+- The stats board has headed sections: stats, gear, the potion belt as a row of boxes, boons
+  (once you have one) and a table of the controls for your class.
+
+### Fixed
+- Enemy health bars are always drawn on top: the player's parry or restock bar no longer hides
+  the bar of an enemy standing right below the player, and swings, arrows and hit flashes no
+  longer cover them.
+
 ## [0.2.1] - 2026-10-16
 
 A playable fix-up on top of 0.2.0: a Windows window that opens at full size, and a round of
@@ -116,6 +159,5 @@ The full list, with the reasons, is in `packaging/NOTES.md`. In short:
 3. Before announcing:
    - VirusTotal scan of the Windows zip / exe.
    - Fresh-machine launch on Windows with no Python installed: no console window, keys work.
-   - Save/load round-trip, including a save from the previous release; saves land in the per-user
-     data folder.
+   - Crash path: a broken build leaves `crash.log` in the per-user data folder.
    - Note the settings defaults (map size, FOV, turn delay) the build ships with.

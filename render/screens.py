@@ -11,7 +11,7 @@ import textwrap
 
 import pygame
 
-from render import choice, palette
+from render import choice, palette, shop_text
 
 TITLE_OPTIONS = ['Start', 'Quit']
 CLASS_OPTIONS = ['Warrior', 'Archer']
@@ -260,3 +260,136 @@ def paint_choice(canvas, state):
             else:
                 at = text.get_rect(centerx=rect.centerx, top=top + i * line_h)
             surface.blit(text, at)
+
+
+def _shop_geometry(layout, state, bounds=None):
+    """(box, row rects) for the open shop: a box centred on the map with a
+    title, the gold line, five two-line offer rows and the hint (half a line
+    of margin round each, and a whole one under the gold line).
+
+    The box is as big as its text needs, not clamped to the map: glyph
+    mode's map is far too small for an offer's price, so the box may cover
+    the boards. Given `bounds` (the window), it is shrunk to fit and pushed
+    inside them; only text that still doesn't fit is clipped by the box."""
+    line_h = layout.font.get_linesize()
+    pad = layout.cell_w
+    area = layout.map_rect()
+    lines = [
+        line
+        for n, offer in enumerate(state.shop.offers, start=1)
+        for line in shop_text.offer_lines(n, offer, state.player)
+    ]
+    texts = [shop_text.TITLE, shop_text.HINT, shop_text.gold_line(state.player), *lines]
+    row_w = _choice_text_w(layout, texts) + 2 * pad
+    row_h = 2 * line_h + line_h // 2
+    gap = max(1, line_h // 4)
+    count = len(state.shop.offers)
+    head_h = 3 * line_h  # title and gold line, half a line round each
+    box = pygame.Rect(
+        0, 0, row_w + 2 * pad, head_h + count * row_h + (count - 1) * gap + 2 * line_h
+    )
+    box.center = area.center
+    if bounds is not None:
+        box.size = (min(box.width, bounds.width), min(box.height, bounds.height))
+        box.center = area.center
+        box = box.clamp(bounds)
+    inner_w = max(1, box.width - 2 * pad)
+    top = box.top + head_h
+    rows = []
+    for i in range(count):
+        rect = pygame.Rect(0, top + i * (row_h + gap), min(row_w, inner_w), row_h)
+        rect.centerx = box.centerx
+        rows.append(rect)
+    return box, rows
+
+
+def _shop_lines(layout, state, bounds=None):
+    """(box, rows, [(text, rect, offer or None, bold)]) for every line the
+    shop paints, each at the rect its text takes."""
+    box, rows = _shop_geometry(layout, state, bounds)
+    line_h = layout.font.get_linesize()
+    font = layout.font
+
+    def place(text, offer=None, bold=False, **at):
+        font.set_bold(bold)  # measured as Canvas.text_surface renders it
+        try:
+            size = font.size(text)
+        finally:
+            font.set_bold(False)
+        return text, pygame.Rect((0, 0), size).move_to(**at), offer, bold
+
+    placed = [
+        place(shop_text.TITLE, bold=True, centerx=box.centerx, top=box.top + line_h // 2),
+        place(
+            shop_text.gold_line(state.player),
+            centerx=box.centerx,
+            top=box.top + line_h + line_h // 2,
+        ),
+        place(shop_text.HINT, centerx=box.centerx, bottom=box.bottom - line_h // 2),
+    ]
+    for number, (offer, rect) in enumerate(zip(state.shop.offers, rows), start=1):
+        lines = shop_text.offer_lines(number, offer, state.player)
+        top = rect.top + (rect.height - len(lines) * line_h) // 2
+        for i, line in enumerate(lines):
+            left = rect.left + layout.cell_w
+            placed.append(place(line, offer, i == 0, left=left, top=top + i * line_h))
+    return box, rows, placed
+
+
+def shop_rect(layout, state, bounds=None):
+    """The open shop's box (inside `bounds`, the window, if given)."""
+    return _shop_geometry(layout, state, bounds)[0]
+
+
+def shop_row_rects(layout, state, bounds=None):
+    """The five offer rows' rects, in key order."""
+    return _shop_geometry(layout, state, bounds)[1]
+
+
+def shop_line_rects(layout, state, bounds=None):
+    """[(text, rect)] for every line the shop paints: title, gold, hint and
+    each offer's two lines."""
+    return [(text, rect) for text, rect, _, _ in _shop_lines(layout, state, bounds)[2]]
+
+
+def _offer_ink(offer):
+    """The offer's own ink, whether or not the player can afford it: only a
+    sold offer is greyed."""
+    if offer.sold:
+        return palette.SEEN
+    if offer.kind == 'weapon':
+        return palette.ink(offer.item.color)
+    if offer.kind == 'boon':
+        return palette.ink(offer.boon.color)
+    return palette.INK
+
+
+def paint_shop(canvas, state):
+    """Overlay for the open shop: a dark framed box (centred on the map,
+    inside the window) with the title, the player's gold, five parchment
+    rows inked by the offer (rarity ink for a weapon, the boon's colour,
+    plain ink for the heal; greyed, palette.SEEN, once sold) -- an
+    unaffordable offer's price in palette.INK_DANGER -- and the hint."""
+    layout = canvas.layout
+    surface = canvas.surface
+    box, rows, placed = _shop_lines(layout, state, surface.get_rect())
+    border = max(1, layout.cell_h // 12)
+    previous_clip = surface.get_clip()
+    surface.set_clip(box)
+    surface.fill(palette.BACKGROUND, box)
+    pygame.draw.rect(surface, palette.PAGE_EDGE, box, border)
+    for rect in rows:
+        surface.fill(palette.PAGE, rect)
+        pygame.draw.rect(surface, palette.PAGE_EDGE, rect, border)
+    for text, rect, offer, bold in placed:
+        ink = palette.TEXT if offer is None else _offer_ink(offer)
+        price = None if offer is None or bold else shop_text.price_text(offer, state.player)
+        if price is None or shop_text.affordable(offer, state.player):
+            surface.blit(canvas.text_surface(text, ink, bold=bold), rect)
+            continue
+        # A detail line the player can't afford: the price, at its end, in red.
+        head = text[: -len(price)]
+        surface.blit(canvas.text_surface(head, ink), rect)
+        price_at = rect.move(layout.font.size(head)[0], 0)
+        surface.blit(canvas.text_surface(price, palette.INK_DANGER), price_at)
+    surface.set_clip(previous_clip)

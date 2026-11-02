@@ -4,7 +4,8 @@ Same semantics main.py relied on with python-dotenv: a real environment
 variable wins over the file, and env_int() falls back to the default on a
 missing or unparseable value instead of crashing. Search order
 (desktop_build_plan.md §5 WS-B task 3): $PYROGUE_CONFIG -> a .env next to the
-exe (frozen) / main.py (source) -> .env in the CWD -> code defaults.
+exe (frozen) / main.py (source) -> .env in the CWD (in a frozen exe too, so a
+file in the folder you launch it from also applies) -> code defaults.
 
 Accepted syntax, deliberately small: `KEY=VALUE` per line; blank lines and
 lines starting with `#` are ignored; an optional leading `export ` is
@@ -92,9 +93,13 @@ def load(path=None):
     return applied
 
 
-def env_int(name, default):
-    """os.environ[name] as an int, or `default` if unset or not an integer."""
+def env_int(name, default, minimum=None, maximum=None):
+    """os.environ[name] as an int, or `default` if unset, not an integer, or
+    outside [`minimum`, `maximum`] (either bound may be None)."""
     try:
-        return int(os.getenv(name, default))
+        value = int(os.getenv(name, default))
     except ValueError:
         return default
+    if (minimum is not None and value < minimum) or (maximum is not None and value > maximum):
+        return default
+    return value

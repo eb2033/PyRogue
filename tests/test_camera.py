@@ -4,6 +4,7 @@ pygame -- runs in the nothing-installed CI job too."""
 import unittest
 from unittest import mock
 
+from game.combat import Parry, Shot
 from game.item import Item
 from game.monster import Monster
 from game.state import GameState
@@ -16,7 +17,7 @@ WIDTH, HEIGHT = 40, 20
 
 def lone_fight(char_class='warrior'):
     """A level with only the player and one goblin, orthogonally adjacent."""
-    state = GameState(WIDTH, HEIGHT, char_class=char_class)
+    state = GameState(WIDTH, HEIGHT, char_class=char_class, seed=0)
     px, py = state.player.x, state.player.y
     for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
         if state.game_map[py + dy][px + dx] == '.':
@@ -30,13 +31,12 @@ def lone_fight(char_class='warrior'):
 
 
 class ViewGeometryTest(unittest.TestCase):
-    def test_combat_view_centres_the_pair_with_two_squares_round_it(self):
+    def test_combat_view_centres_the_pair_with_two_squares_round_it_unclamped(self):
         a, b = Monster(10, 5, 'goblin'), Monster(11, 5, 'goblin')
         view = camera.combat_view(a, b)
         self.assertEqual(view, View(8, 3, 6, 5))
         self.assertEqual(view.center, (11.0, 5.5))  # midway between the two cells
-
-    def test_combat_view_is_not_clamped_at_the_map_edge(self):
+        # Not clamped at the map edge.
         view = camera.combat_view(Monster(1, 1, 'goblin'), Monster(1, 2, 'goblin'))
         self.assertEqual(view, View(-1, -1, 5, 6))
 
@@ -148,7 +148,7 @@ class SpearZoomTest(unittest.TestCase):
     def arena(self, spear=True):
         from game.item import Item
 
-        state = GameState(WIDTH, HEIGHT, char_class='warrior')
+        state = GameState(WIDTH, HEIGHT, char_class='warrior', seed=0)
         for y in range(1, HEIGHT - 1):
             for x in range(1, WIDTH - 1):
                 state.game_map[y][x] = '.'
@@ -187,13 +187,20 @@ class SpearZoomTest(unittest.TestCase):
         m.alive = False
         self.assertEqual(director.plan(state)[-1].end, camera.full_view(state.width, state.height))
 
-    def test_wall_in_the_middle_does_not_zoom(self):
-        state = self.arena()
-        self.add(state, 10, 12)
-        state.game_map[11][10] = '#'
-        state.update_fov()
-        self.assertEqual(state.zoom_opponents(), [])
-        self.assertEqual(Director().plan(state), [])
+    def test_no_zoom_two_away_behind_a_wall_diagonally_or_without_a_spear(self):
+        for case, spear, at, wall in (
+            ('wall in the middle', True, (10, 12), (10, 11)),
+            ('diagonal', True, (12, 12), None),
+            ('no spear', False, (12, 10), None),
+        ):
+            with self.subTest(case):
+                state = self.arena(spear=spear)
+                self.add(state, *at)
+                if wall is not None:
+                    state.game_map[wall[1]][wall[0]] = '#'
+                    state.update_fov()
+                self.assertEqual(state.zoom_opponents(), [])
+                self.assertEqual(Director().plan(state), [])
 
     def test_monster_in_the_middle_is_the_only_opponent(self):
         state = self.arena()
@@ -201,18 +208,6 @@ class SpearZoomTest(unittest.TestCase):
         far = self.add(state, 8, 10)
         self.assertEqual(state.zoom_opponents(), [near])
         self.assertNotIn(far, state.zoom_opponents())
-
-    def test_diagonal_two_away_does_not_zoom(self):
-        state = self.arena()
-        self.add(state, 12, 12)
-        self.assertEqual(state.zoom_opponents(), [])
-        self.assertEqual(Director().plan(state), [])
-
-    def test_no_spear_two_away_does_not_zoom(self):
-        state = self.arena(spear=False)
-        self.add(state, 12, 10)
-        self.assertEqual(state.zoom_opponents(), [])
-        self.assertEqual(Director().plan(state), [])
 
     def test_spear_with_adjacent_monster_still_zooms(self):
         state = self.arena()
@@ -230,7 +225,7 @@ class SmoothZoomTest(unittest.TestCase):
     for HOLD_TURNS player turns after) -- both counted in player turns."""
 
     def arena(self):
-        state = GameState(WIDTH, HEIGHT, char_class='warrior')
+        state = GameState(WIDTH, HEIGHT, char_class='warrior', seed=0)
         for y in range(1, HEIGHT - 1):
             for x in range(1, WIDTH - 1):
                 state.game_map[y][x] = '.'
@@ -419,7 +414,7 @@ class HitShakeTest(unittest.TestCase):
         state.player.power = 1
         goblin.hp = goblin.max_hp = 99
         state.attack(state.player, goblin)
-        hit = state.combat_events[-1]._replace(crit=crit)
+        hit = state.hits()[-1]._replace(crit=crit)
         return state, hit
 
     @staticmethod
@@ -493,10 +488,7 @@ class HitShakeTest(unittest.TestCase):
 def archer_arena():
     """An archer at (10, 10) on open floor with nothing else on the level;
     crits off, so damage is predictable."""
-    import random
-
-    random.seed(5)
-    state = GameState(WIDTH, HEIGHT, char_class='archer')
+    state = GameState(WIDTH, HEIGHT, char_class='archer', seed=5)
     for y in range(1, HEIGHT - 1):
         for x in range(1, WIDTH - 1):
             state.game_map[y][x] = FLOOR
@@ -518,10 +510,10 @@ def add_goblin(state, x, y, hp=1000):
 
 class ArrowFlightTest(unittest.TestCase):
     """Every arrow is staged as Flight beats along its path (from
-    GameState.shots), each hit's Impact right after the Flight that reaches it."""
+    GameState.events_of(Shot)), each hit's Impact right after the Flight that reaches it."""
 
     def setUp(self):
-        patcher = mock.patch('game.state.BASE_CRIT_CHANCE', 0.0)
+        patcher = mock.patch('game.fight.BASE_CRIT_CHANCE', 0.0)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.state = archer_arena()
@@ -570,8 +562,8 @@ class ArrowFlightTest(unittest.TestCase):
         add_goblin(self.state, 13, 11)
         beats = self.shoot()
         # One shot record carrying all three arrows, each from the player's cell.
-        self.assertEqual(len(self.state.shots), 1)
-        shot = self.state.shots[0]
+        self.assertEqual(len(self.state.events_of(Shot)), 1)
+        shot = self.state.events_of(Shot)[0]
         self.assertEqual(len(shot.arrows), 3)
         self.assertEqual({arrow.path[0] for arrow in shot.arrows}, {(10, 10)})
         # The aim arrow is the shot's own path: flown first, its Impact after it.
@@ -593,7 +585,7 @@ class ArrowFlightTest(unittest.TestCase):
         x, y = path[-1]
         self.assertFalse(self.state.visible[y][x + 1])
 
-    def test_flight_timing_and_position(self):
+    def test_flight_timing_and_position_and_a_shorter_path_keeps_pace(self):
         path = ((0, 0), (1, 0), (2, 0), (3, 0), (4, 0), (5, 0))
         flight = Flight((path,), 5)
         self.assertEqual(camera.flight_ms(flight), 5 * camera.FLIGHT_MS_PER_CELL)
@@ -601,8 +593,7 @@ class ArrowFlightTest(unittest.TestCase):
         self.assertEqual(camera.flight_step(path, 5, 0), ((0, 0), (1, 0), 0))
         self.assertEqual(camera.flight_step(path, 5, 0.5), ((2, 0), (3, 0), 0.5))
         self.assertEqual(camera.flight_step(path, 5, 1), ((4, 0), (5, 0), 1))
-
-    def test_a_shorter_path_in_a_flight_keeps_pace_then_is_gone(self):
+        # A shorter path in a flight keeps pace, then is gone.
         short = ((0, 0), (1, 0), (2, 0))
         # Same pace as a 4-step arrow: one cell per quarter of the flight.
         self.assertEqual(camera.flight_step(short, 4, 0.25), ((1, 0), (2, 0), 0))
@@ -612,14 +603,14 @@ class ArrowFlightTest(unittest.TestCase):
 
     def volley(self):
         Item(0, 0, 'volley_bow', 'common').apply(self.state.player, self.state.log)
-        return self.state.shots
+        return self.state.events_of(Shot)
 
     def test_a_volley_flies_all_its_arrows_at_once_from_the_player(self):
         self.volley()
         add_goblin(self.state, 13, 9)  # a side arrow's goblin, 3 steps out
         add_goblin(self.state, 15, 10)  # the aim arrow's, 5 steps out
         beats = self.shoot()
-        shot = self.state.shots[0]
+        shot = self.state.events_of(Shot)[0]
         self.assertEqual(len(shot.arrows), 3)
         flights = [b for b in beats if isinstance(b, Flight)]
         # The first flight carries every arrow, each from the player's cell.
@@ -652,18 +643,18 @@ class ArrowFlightTest(unittest.TestCase):
             hit = beats[i].hit
             self.assertIn((hit.x, hit.y), ends)
         # The aim arrow is still in the air while the near goblin is struck.
-        aim = self.state.shots[0].arrows[0].path
+        aim = self.state.events_of(Shot)[0].arrows[0].path
         self.assertIn((aim[1], aim[2]), beats[impacts[near]].held)
 
     def test_the_goblin_archers_shot_is_a_one_arrow_flight_then_impact(self):
-        from game.combat import Arrow, Shot
+        from game.combat import Arrow
 
         state = self.state
         goblin = add_goblin(state, 14, 10)
         state.player.hp = 1000
-        with mock.patch.object(state, '_dodged', return_value=False):
+        with mock.patch.object(state.rng, 'random', return_value=0.99):  # no dodge
             state._monster_shot(goblin)
-        shot = state.shots[-1]
+        shot = state.events_of(Shot)[-1]
         self.assertEqual(len(shot.arrows), 1)
         self.assertIsInstance(shot, Shot)
         self.assertIsInstance(shot.arrows[0], Arrow)
@@ -678,7 +669,7 @@ class ArrowFlightTest(unittest.TestCase):
 def open_floor(width, height):
     """A level whose map is `width` x `height` of open floor inside a wall
     border, with only the player on it, standing in the middle."""
-    state = GameState(WIDTH, HEIGHT)
+    state = GameState(WIDTH, HEIGHT, seed=0)
     state.width, state.height = width, height
     state.game_map = [
         [WALL if x in (0, width - 1) or y in (0, height - 1) else FLOOR for x in range(width)]
@@ -703,15 +694,14 @@ class FollowViewTest(unittest.TestCase):
         self.assertEqual(camera.view_size(40, 20), (32, 16))
         self.assertEqual(camera.view_size(50, 20), (40, 16))
 
-    def test_the_view_centres_the_player_and_clamps_to_the_map(self):
+    def test_the_view_centres_the_player_clamps_and_shows_a_small_map_whole(self):
         def at(x, y):
             return camera.follow_view(Monster(x, y, 'goblin'), 100, 50, (32, 16))
 
         self.assertEqual(at(50, 25), View(34, 17, 32, 16))  # player at its centre
         self.assertEqual(at(1, 1), View(0, 0, 32, 16))
         self.assertEqual(at(98, 48), View(68, 34, 32, 16))
-
-    def test_a_map_that_fits_is_shown_whole_and_centred(self):
+        # A map that fits is shown whole and centred.
         for x, y in ((1, 1), (10, 5), (18, 8)):
             view = camera.follow_view(Monster(x, y, 'goblin'), 20, 10, (32, 16))
             self.assertEqual(view, View(-6, -3, 32, 16))
@@ -765,7 +755,7 @@ class FollowViewTest(unittest.TestCase):
         self.assertIsNone(director.view)
 
     def test_a_new_floor_does_not_pan_from_the_old_one(self):
-        state = GameState(WIDTH, HEIGHT)
+        state = GameState(WIDTH, HEIGHT, seed=0)
         director = Director(view_size=self.SIZE)
         director.plan(state)
         state.next_level()
@@ -778,7 +768,7 @@ class FollowViewTest(unittest.TestCase):
 def warrior_arena(kind='weapon'):
     """A warrior at (10, 10) on open floor holding a common `kind`, alone on
     the level."""
-    state = GameState(WIDTH, HEIGHT, char_class='warrior')
+    state = GameState(WIDTH, HEIGHT, char_class='warrior', seed=0)
     for y in range(1, HEIGHT - 1):
         for x in range(1, WIDTH - 1):
             state.game_map[y][x] = FLOOR
@@ -794,7 +784,7 @@ class SwingTest(unittest.TestCase):
     by the attacker's weapon; arrows and dodges get none."""
 
     def setUp(self):
-        patcher = mock.patch('game.state.BASE_CRIT_CHANCE', 0.0)
+        patcher = mock.patch('game.fight.BASE_CRIT_CHANCE', 0.0)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -819,7 +809,7 @@ class SwingTest(unittest.TestCase):
         pts = [p for i in range(steps) for p in camera.swing_points(swing, i / steps)]
         return max(x - cx for x, _, _ in pts), max(abs(y - cy) for _, y, _ in pts)
 
-    def test_each_weapon_kind_gets_its_swing(self):
+    def test_each_weapon_kind_gets_its_swing_right_before_its_impact(self):
         expected = {
             'weapon': ('standard', 120),
             'sword_shield': ('standard', 120),
@@ -831,9 +821,13 @@ class SwingTest(unittest.TestCase):
         }
         for kind, (name, ms) in expected.items():
             with self.subTest(kind=kind):
-                (swing,) = self.swings(self.blow(kind))
+                beats = self.blow(kind)
+                (swing,) = self.swings(beats)
                 self.assertEqual((swing.shape.name, swing.shape.ms), (name, ms))
                 self.assertEqual((swing.origin, swing.target), ((10, 10), (11, 10)))
+                # Planned right before its impact.
+                self.assertEqual([type(b) for b in beats[:2]], [Swing, Impact])
+                self.assertIs(beats[0].hit, beats[1].hit)
 
     def test_the_spear_swings_across_two_tiles(self):
         (swing,) = self.swings(self.blow('spear', at=(12, 10)))
@@ -886,40 +880,34 @@ class SwingTest(unittest.TestCase):
         self.assertEqual((swing.origin, swing.target), ((10, 11), (10, 10)))
         self.assertIs(swing.hit.attacker, goblin)
 
-    def test_a_swing_is_planned_right_before_its_impact(self):
-        beats = self.blow('great_sword')
-        self.assertEqual([type(b) for b in beats[:2]], [Swing, Impact])
-        self.assertIs(beats[0].hit, beats[1].hit)
-
-    def test_an_arrow_gets_no_swing(self):
-        state = archer_arena()
-        add_goblin(state, 11, 10)  # point blank, even
-        director = Director()
-        director.plan(state)
-        self.assertTrue(state.shoot_arrow(1, 0))
-        beats = director.plan(state)
-        self.assertTrue(any(isinstance(b, Impact) for b in beats))
-        self.assertEqual(self.swings(beats), [])
-
-    def test_a_goblin_archers_arrow_gets_no_swing(self):
-        state = warrior_arena()
-        archer = add_goblin(state, 14, 10)
-        director = Director()
-        director.plan(state)
-        state._monster_shot(archer)
-        beats = director.plan(state)
-        self.assertTrue(any(isinstance(b, Impact) for b in beats))
-        self.assertEqual(self.swings(beats), [])
-
-    def test_a_dodge_gets_no_swing(self):
-        state = warrior_arena()
-        goblin = add_goblin(state, 11, 10)
-        director = Director()
-        director.plan(state)
-        with mock.patch('game.state.dodge_chance', return_value=100):
-            state.attack(goblin, state.player)
-        self.assertEqual(state.combat_events, [])
-        self.assertEqual(self.swings(director.plan(state)), [])
+    def test_arrows_and_dodges_get_no_swing(self):
+        with self.subTest("the archer's arrow"):
+            state = archer_arena()
+            add_goblin(state, 11, 10)  # point blank, even
+            director = Director()
+            director.plan(state)
+            self.assertTrue(state.shoot_arrow(1, 0))
+            beats = director.plan(state)
+            self.assertTrue(any(isinstance(b, Impact) for b in beats))
+            self.assertEqual(self.swings(beats), [])
+        with self.subTest("a goblin archer's arrow"):
+            state = warrior_arena()
+            archer = add_goblin(state, 14, 10)
+            director = Director()
+            director.plan(state)
+            state._monster_shot(archer)
+            beats = director.plan(state)
+            self.assertTrue(any(isinstance(b, Impact) for b in beats))
+            self.assertEqual(self.swings(beats), [])
+        with self.subTest('a dodge'):
+            state = warrior_arena()
+            goblin = add_goblin(state, 11, 10)
+            director = Director()
+            director.plan(state)
+            with mock.patch('game.fight.dodge_chance', return_value=100):
+                state.attack(goblin, state.player)
+            self.assertEqual(state.hits(), [])
+            self.assertEqual(self.swings(director.plan(state)), [])
 
     def test_the_arc_lies_in_the_direction_of_the_blow(self):
         for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
@@ -948,18 +936,19 @@ class ParryTest(unittest.TestCase):
     "Parry!" text's fade (ParryText)."""
 
     def setUp(self):
-        patcher = mock.patch('game.state.BASE_CRIT_CHANCE', 0.0)
+        patcher = mock.patch('game.fight.BASE_CRIT_CHANCE', 0.0)
         patcher.start()
         self.addCleanup(patcher.stop)
-        patcher = mock.patch('game.state.dodge_chance', return_value=0)
+        patcher = mock.patch('game.fight.dodge_chance', return_value=0)
         self.dodge = patcher.start()
         self.addCleanup(patcher.stop)
 
     def parried(self, kind='great_sword', armed=True):
-        """The goblin east of the warrior swings at them; the beats staged."""
+        """The goblin east of the warrior swings at them; the beats staged
+        (the Director is kept as self.director)."""
         state = warrior_arena(kind)
         goblin = add_goblin(state, 11, 10)
-        director = Director()
+        director = self.director = Director()
         director.plan(state)
         state.parry_armed = armed
         hp = state.player.hp
@@ -967,12 +956,12 @@ class ParryTest(unittest.TestCase):
         beats = [b for b in director.plan(state) if not isinstance(b, Pan)]
         return state, goblin, hp, beats
 
-    def test_a_parried_blow_stages_swing_shield_riposte_then_the_text_fade(self):
+    def test_a_parried_blow_stages_swing_shield_riposte_then_the_text_fade_once(self):
         state, goblin, _, beats = self.parried()
         self.assertEqual(
             [type(b) for b in beats], [Swing, camera.Guard, Swing, Impact, camera.ParryText]
         )
-        (parry,) = state.parries
+        (parry,) = state.events_of(Parry)
         monster_swing, guard, riposte_swing, impact, text = beats
         # 1. The monster's standard swing, from its cell at the warrior.
         self.assertIs(monster_swing.hit, parry)
@@ -987,37 +976,29 @@ class ParryTest(unittest.TestCase):
         self.assertEqual((riposte_swing.origin, riposte_swing.target), ((10, 10), (11, 10)))
         self.assertIs(impact.hit, riposte_swing.hit)
         self.assertIs(impact.hit.defender, goblin)
+        # Staged once: the same round, redrawn, stages nothing.
+        self.assertEqual(self.director.plan(state), [])
 
     def test_the_parry_sorts_before_the_riposte_and_records_no_hit(self):
         state, goblin, hp, _ = self.parried()
-        (parry,) = state.parries
-        (riposte,) = state.combat_events  # nothing for the parried blow
+        (parry,) = state.events_of(Parry)
+        (riposte,) = state.hits()  # nothing for the parried blow
         self.assertLess(parry.serial, riposte.serial)
         self.assertIs(riposte.attacker, state.player)
         self.assertEqual((parry.monster, parry.player), (goblin, state.player))
         self.assertEqual((parry.x, parry.y), (10, 10))
         self.assertEqual(state.player.hp, hp)  # no damage taken
 
-    def test_the_parry_is_staged_once(self):
-        state = warrior_arena()
-        goblin = add_goblin(state, 11, 10)
-        director = Director()
-        director.plan(state)
-        state.parry_armed = True
-        state._monster_melee(goblin)
-        director.plan(state)
-        self.assertEqual(director.plan(state), [])  # the same round, redrawn
-
     def test_a_dodged_blow_shows_no_parry(self):
         self.dodge.return_value = 100
         state, _, _, beats = self.parried()
-        self.assertEqual(state.parries, [])
+        self.assertEqual(state.events_of(Parry), [])
         self.assertTrue(state.parry_armed)  # still armed for the next blow
         self.assertEqual(beats, [])
 
     def test_a_normal_blow_shows_its_swing_and_no_parry(self):
         state, goblin, _, beats = self.parried(armed=False)
-        self.assertEqual(state.parries, [])
+        self.assertEqual(state.events_of(Parry), [])
         self.assertEqual([type(b) for b in beats], [Swing, Impact])
         self.assertIs(beats[0].hit.attacker, goblin)
         self.assertEqual(beats[0].shape, camera.SWING_SHAPES['standard'])

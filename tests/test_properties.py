@@ -63,7 +63,7 @@ PLAY_ACTIONS = [
 # HYPOTHESIS_PROFILE=deep runs ~20x the examples for a local bug hunt.
 settings.register_profile('deep', max_examples=2000)
 settings.load_profile(os.environ.get('HYPOTHESIS_PROFILE', 'default'))
-# Dungeon generation is ~8 ms a map, so a whole playthrough can blow the
+# Generating a level takes 4-11 ms (it grows with depth), so a whole playthrough can blow the
 # default 200 ms deadline on a slow CI runner; time isn't what we test. The
 # slow tests also run fewer examples than the fast ones by default.
 SLOW = settings(
@@ -291,8 +291,7 @@ class PlaythroughPropertyTests(unittest.TestCase):
     )
 
     def new_game(self, seed, char_class):
-        random.seed(seed)
-        return GameState(40, 20, char_class=char_class)
+        return GameState(40, 20, char_class=char_class, seed=seed)
 
     def check_invariants(self, state):
         player = state.player
@@ -309,6 +308,12 @@ class PlaythroughPropertyTests(unittest.TestCase):
                 (monster.x, monster.y), (player.x, player.y), f'{monster.name} on the player'
             )
         self.assertNotIn(None, state.entities)
+        # game/level.py: one creature to a tile. (A monster may walk onto a
+        # chest or shrine; only spawning keeps them apart: tests/test_level.py.)
+        creatures = [(player.x, player.y)] + [(m.x, m.y) for m in living]
+        if state.shopkeeper is not None:
+            creatures.append((state.shopkeeper.x, state.shopkeeper.y))
+        self.assertEqual(len(creatures), len(set(creatures)), 'two creatures on one tile')
 
     @SLOW
     @playthroughs

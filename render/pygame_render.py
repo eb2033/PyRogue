@@ -9,7 +9,8 @@ while the player thinks.
 
 Division of labour with the other render modules:
   ui.Layout / ui.Canvas  geometry and grid text drawing (WS-D)
-  ui.paint_panel         the side panel (WS-D)
+  boards.BoardCache      the stats and message-log boards, cached as surfaces (a frame blits
+                         them); paints via ui.paint_panel_content / ui.paint_log_messages (WS-D)
   screens                title / class-select / game-over frames (WS-D)
   tileset.Tileset        tiles for map chars, None -> draw the glyph (WS-C)
   palette                Entity.color int -> RGB (this stream)
@@ -33,14 +34,17 @@ os.environ.setdefault('PYGAME_HIDE_SUPPORT_PROMPT', '1')
 
 import pygame
 
+from game import level
+from game.gold import GoldPile
 from game.monster import Monster
 from game.paths import resource_path
 from game.quiver import RESTOCK_TURNS
 from game.state import PARRY_COOLDOWN
-from render import camera, choice, input_map, palette, screens, ui
+from render import boards, camera, choice, input_map, palette, screens, ui
 from render.banner import render_banner
 from render.base import Action, Renderer
 from render.menu import Menu
+from render.sound import SoundBoard
 from render.tileset import Tileset
 
 ARCHER_TILE = '&'  # tiles.json key for the archer player (a bow-carrying figure)
@@ -59,7 +63,9 @@ FLIGHT_MS = camera.FLIGHT_MS_PER_CELL  # per cell an arrow crosses
 SWING_MS = camera.SWING_MS  # a standard melee swing; other shapes in proportion
 GUARD_MS = camera.GUARD_MS  # the parry's shield outline
 PARRY_FADE_MS = camera.PARRY_FADE_MS  # the "Parry!" text fading after the riposte
-FRAME_MS = 16
+# A beat's frame rate cap: _play paints, then waits out the rest of the frame
+# (Clock.tick), rather than a fixed sleep on top of the paint time.
+BEAT_FPS = 60
 
 # Walking gait: an entity that just took a step leans this many degrees, the
 # lean alternating left/right with each step, for STEP_MS.
@@ -151,6 +157,15 @@ PILE_ANGLE = 45  # degrees: the pile's arrows lie diagonally, side by side
 PILE_ARROW_LENGTH = 0.8  # of the cell's smaller side
 PILE_SPACING = 0.2  # of the cell, between neighbouring arrows in a pile
 
+# Slimes, drawn rather than tiled until they get pixel art: a green square
+# centred in the cell, this fraction of the cell's smaller side by kind, with
+# a darker green rim. The same in tile and glyph mode.
+SLIME_CELL_FRACTION = {'slime_small': 0.45, 'slime_medium': 0.65, 'slime_large': 0.85}
+SLIME_RGB = (96, 204, 72)
+SLIME_EDGE_RGB = (36, 120, 40)
+SLIME_COLORS = frozenset({SLIME_RGB, SLIME_EDGE_RGB})
+SLIME_EDGE = 0.08  # the rim's width, of the square's side
+
 # Events after which the window contents may be stale: repaint the last frame.
 REPAINT_EVENTS = (
     pygame.VIDEORESIZE,
@@ -200,6 +215,7 @@ class PygameRenderer(Renderer):
         swing_ms=SWING_MS,
         guard_ms=GUARD_MS,
         parry_fade_ms=PARRY_FADE_MS,
+        sound=None,
     ):
         """`width` x `height`: the base map size (MAP_WIDTH/MAP_HEIGHT). The
         map area is laid out for camera.view_size of it -- a fixed number of
@@ -217,16 +233,20 @@ class PygameRenderer(Renderer):
         changes); `swing_ms`: how long a standard melee swing plays -- the
         other swing shapes in proportion (0 = no swings); `guard_ms` /
         `parry_fade_ms`: how long a parry's shield shows / its "Parry!" takes
-        to fade once the riposte has landed (0 = skipped)."""
+        to fade once the riposte has landed (0 = skipped);
+        `sound`: a sound.SoundBoard (None -> a silent one)."""
         # Before any display call: the window and desktop sizes are then real
         # pixels, not Windows' scaled ones.
         _make_dpi_aware()
         pygame.display.init()
         pygame.display.set_caption('PyRogue')
         _set_window_icon()
-        # Hold-to-repeat, like a terminal's autorepeat.
+        # Hold-to-repeat, like a key autorepeat.
         pygame.key.set_repeat(300, 60)
 
+        self.sound = sound or SoundBoard.silent()
+        # The GameState whose sounds were last offered to the board.
+        self._sound_state = None
         self.tileset = tileset or Tileset()
         # The map area is the exploring view's size, not the level's: a new,
         # bigger floor never relayouts the window.
@@ -238,6 +258,10 @@ class PygameRenderer(Renderer):
         screen = self._set_mode(self._windowed_size, pygame.RESIZABLE)
         self.canvas = ui.Canvas(screen, self.layout)
         self.layout.fit(screen.get_size())
+        # The stats and log boards, painted once per change (render/boards.py).
+        self.boards = boards.BoardCache()
+        # Paces _play's frames to BEAT_FPS.
+        self._clock = pygame.time.Clock()
 
         # Whatever produced the frame currently on screen, so an expose or
         # resize can repaint it without the game loop's involvement.
@@ -307,6 +331,7 @@ class PygameRenderer(Renderer):
         """Pick up the current window surface and size, then repaint."""
         self.canvas.surface = cast(pygame.Surface, pygame.display.get_surface())
         self.layout.fit(self.canvas.surface.get_size())
+        self.boards.invalidate()
         self._repaint()
 
     def toggle_fullscreen(self):
@@ -416,7 +441,7 @@ class PygameRenderer(Renderer):
     # -- menus ----------------------------------------------------------------
 
     def _run_menu(self, banner_lines, options, descriptions=None):
-        """Up/down/enter menu, same keys as the terminal one. Returns the
+        """Up/down/enter menu (W/S or the arrows move, Enter picks). Returns the
         chosen option, or None on 'q' or window close."""
         menu = Menu(options)
         repaint = True
@@ -474,10 +499,13 @@ class PygameRenderer(Renderer):
         self._occupied = set()
 
     def choose_class(self):
+        """The class select. Returns 'warrior' or 'archer', or None on 'q'
+        or a window close: main.play then goes back to the title (which a
+        close ends at once)."""
         choice = self._run_menu(
             ['Choose your class'], screens.CLASS_OPTIONS, screens.CLASS_DESCRIPTIONS
         )
-        return (choice or 'Warrior').lower()
+        return choice.lower() if choice is not None else None
 
     # -- game frame -----------------------------------------------------------
 
@@ -487,6 +515,11 @@ class PygameRenderer(Renderer):
         the paint. While a flight or impact plays, the monsters that later
         beats' hits are still to land on are drawn as they were before those
         hits (`pending`)."""
+        if state is not self._sound_state:
+            # A restart builds a new GameState whose serials start over.
+            self._sound_state = state
+            self.sound.reset()
+        self.sound.play_new(state.events)
         self._state = state
         tilts = self.track_steps(state.visible_entities())
         beats = self.director.plan(state)
@@ -639,7 +672,9 @@ class PygameRenderer(Renderer):
                     break
                 self._show(lambda t=t: paint(t))
                 self._service_window()
-                pygame.time.wait(FRAME_MS)
+                # Wait out what's left of the frame: paint time + the wait is
+                # one frame, not paint time + a whole frame.
+                self._clock.tick(BEAT_FPS)
         finally:
             self._animating = False
 
@@ -717,17 +752,24 @@ class PygameRenderer(Renderer):
             entities = state.visible_entities()
             if pending:
                 entities = self._before_hits(state, entities, pending)
-            if self._jolt is not None and any(e is self._jolt[0] for e in entities):
-                # The struck sprite last, so it shakes on top of a neighbour.
-                entities = [e for e in entities if e is not self._jolt[0]] + [self._jolt[0]]
+            # Paint order is by kind, not list order (game/level.py): piles,
+            # then chests and shrines, then creatures on top -- so nothing
+            # hides a monster, whenever it was added to the list.
+            entities = sorted(entities, key=level.draw_layer)
+            struck = self._jolt[0] if self._jolt is not None and self._jolt[1] != (0, 0) else None
+            if struck is not None and any(e is struck for e in entities):
+                # The struck sprite last, so it shakes on top of a neighbour;
+                # back in its cell, it keeps its usual place in the order.
+                entities = [e for e in entities if e is not struck] + [struck]
             # Cells something stands on: a pile under it isn't drawn in glyph
             # mode, where the two characters would overlap.
-            self._occupied = {(e.x, e.y) for e in entities if getattr(e, 'kind', None) != 'arrows'}
+            self._occupied = {
+                (e.x, e.y)
+                for e in entities
+                if getattr(e, 'kind', None) != 'arrows' and not isinstance(e, GoldPile)
+            }
             for entity in entities:
                 self._paint_entity(entity)
-            for entity in entities:
-                if isinstance(entity, Monster) and entity is not state.player:
-                    self._paint_health_bar(entity, state.player, map_rect)
             if getattr(state.player, 'quiver', None) is not None:
                 self._paint_restock_bar(state, map_rect)
             elif hasattr(state, 'parry_progress'):
@@ -740,6 +782,12 @@ class PygameRenderer(Renderer):
                 self._paint_impact(*impact)
             if guard is not None:
                 self._paint_guard(*guard)
+            # Enemy health bars over everything else on the map (sprites, the
+            # player's ability bar, swings, arrows, impacts, the shield), but
+            # before the shake so they jolt with the map.
+            for entity in entities:
+                if isinstance(entity, Monster) and entity is not state.player:
+                    self._paint_health_bar(entity, state.player, map_rect)
             if shake != (0, 0):
                 self._shift_map(map_rect, shake)
             # After the shake: the text holds still while the map jolts.
@@ -751,8 +799,11 @@ class PygameRenderer(Renderer):
             self._proj = None
             self._jolt = None
 
-        ui.paint_panel(self.canvas, state)
-        if state.is_choosing:
+        # Blits, unless what a board shows has changed since it was painted.
+        self.boards.paint(self.canvas, state)
+        if state.shop_open:
+            screens.paint_shop(self.canvas, state)
+        elif state.is_choosing:
             screens.paint_choice(self.canvas, state)
         if state.game_over:
             screens.paint_game_over(self.canvas)
@@ -779,14 +830,19 @@ class PygameRenderer(Renderer):
     def health_bar_rect(self, monster, player, map_rect):
         """Pixel rect of `monster`'s health bar: centred just above its cell,
         or along the cell's own top edge when there is no room above (the
-        top of the map or of the zoomed view) or the player stands there."""
+        top of the map or of the zoomed view) -- or, when the player stands
+        there, just under the player's ability bar, which hangs over that
+        edge (restock_bar_rect)."""
         rect = self._map_cell_rect(monster.x, monster.y)
         boss = getattr(monster, 'is_boss', False)
         width = rect.width if boss else max(4, round(rect.width * HEALTH_BAR_WIDTH))
         height = max(2, round(rect.height * HEALTH_BAR_HEIGHT)) + (1 if boss else 0)
         gap = max(1, rect.height // 20)
         top = rect.top - gap - height
-        if top < map_rect.top or (player.x, player.y) == (monster.x, monster.y - 1):
+        if (player.x, player.y) == (monster.x, monster.y - 1):
+            ability = self.restock_bar_rect(player).inflate(2, 2)  # with its rim
+            top = max(rect.top, ability.bottom) + gap
+        elif top < map_rect.top:
             top = rect.top + gap
         bar = pygame.Rect(rect.centerx - width // 2, top, width, height)
         return bar.move(self._jolt_of(monster))  # stays on a sprite that shakes
@@ -796,12 +852,20 @@ class PygameRenderer(Renderer):
         monster they strike is drawn at the cell of its first such hit (a
         sling's knockback hasn't happened yet), with the hp it had then, and
         back on screen if one of them killed it. Copies -- the state is never
-        touched. The player is left alone (no health bar on the map)."""
+        touched. The player is left alone (no health bar on the map). Gold
+        on a cell where one of those hits kills is left out: the pile it
+        dropped isn't there until the blow lands; so are the slimes a killed
+        slime split into."""
         ghosts = {}
+        dropped = set()
+        killed = set()
         for hit in pending:
             monster = hit.defender
             if monster is state.player or not isinstance(monster, Monster):
                 continue
+            if hit.killed:
+                dropped.add((monster.x, monster.y))
+                killed.add(id(monster))
             ghost = ghosts.get(id(monster))
             if ghost is None:
                 ghost = copy.copy(monster)
@@ -810,9 +874,20 @@ class PygameRenderer(Renderer):
             ghost.hp += hit.damage
         if not ghosts:
             return entities
-        drawn = [ghosts.get(id(e), e) for e in entities]
+        drawn = [
+            ghosts.get(id(e), e)
+            for e in entities
+            if not (isinstance(e, GoldPile) and (e.x, e.y) in dropped)
+            and id(getattr(e, 'split_from', None)) not in killed
+        ]
         present = {id(e) for e in entities}
-        drawn += [g for key, g in ghosts.items() if key not in present and state.visible[g.y][g.x]]
+        drawn += [
+            g
+            for key, g in ghosts.items()
+            if key not in present
+            and state.visible[g.y][g.x]
+            and id(getattr(g, 'split_from', None)) not in killed
+        ]
         if self._jolt is not None and id(self._jolt[0]) in ghosts:
             self._jolt = (ghosts[id(self._jolt[0])], self._jolt[1])
         return drawn
@@ -1132,6 +1207,12 @@ class PygameRenderer(Renderer):
         if getattr(entity, 'kind', None) == 'arrows':
             self._paint_arrow_pile(entity)
             return
+        if (
+            isinstance(entity, GoldPile)
+            and not self.layout.tile
+            and (entity.x, entity.y) in self._occupied
+        ):
+            return  # glyph mode: '$' and what stands on it would overlap
         angle = self._tilts.get(id(entity), 0)
         offset = self._jolt_of(entity)
         rgb = palette.color(entity.color, palette.VISIBLE)
@@ -1142,7 +1223,10 @@ class PygameRenderer(Renderer):
         clip = self._clip_to_map() if offset != (0, 0) else None
         self._sprite_offset = offset
         try:
-            if getattr(entity, 'is_boss', False):
+            fraction = SLIME_CELL_FRACTION.get(getattr(entity, 'kind', ''))
+            if fraction is not None:
+                self._paint_slime(entity, fraction, angle)
+            elif getattr(entity, 'is_boss', False):
                 self._paint_boss(
                     entity.x, entity.y, entity.char, palette.brighten(rgb), entity.color, angle
                 )
@@ -1155,6 +1239,32 @@ class PygameRenderer(Renderer):
             self._sprite_offset = (0, 0)
             if clip is not None:
                 self.canvas.surface.set_clip(clip)
+
+    def slime_rect(self, slime, fraction):
+        """Pixel rect of `slime`'s square: `fraction` of its cell's smaller
+        side, centred in the cell (and moving with a shaking sprite)."""
+        cell = self._map_cell_rect(slime.x, slime.y).move(self._sprite_offset)
+        side = max(2, round(min(cell.size) * fraction))
+        square = pygame.Rect(0, 0, side, side)
+        square.center = cell.center
+        return square
+
+    def _paint_slime(self, slime, fraction, angle=0):
+        """A slime: a green square with a darker rim (SLIME_CELL_FRACTION),
+        leaning with the walking gait. In glyph mode the floor's dot is
+        cleared first, so it doesn't show beside a small square."""
+        if not self.layout.tile:
+            self.canvas.surface.fill(
+                palette.BACKGROUND, self._map_cell_rect(slime.x, slime.y).move(self._sprite_offset)
+            )
+        square = self.slime_rect(slime, fraction)
+        art = pygame.Surface(square.size, pygame.SRCALPHA)
+        art.fill(SLIME_EDGE_RGB)
+        rim = max(1, round(square.width * SLIME_EDGE))
+        art.fill(SLIME_RGB, art.get_rect().inflate(-2 * rim, -2 * rim))
+        if angle:
+            art = pygame.transform.rotate(art, angle)
+        self.canvas.surface.blit(art, art.get_rect(center=square.center))
 
     def _paint_impact(self, hit, t):
         """A blow landing on `hit.defender`: its cell flashes red and fades,
@@ -1379,7 +1489,8 @@ class PygameRenderer(Renderer):
             if event is None:
                 return Action.QUIT
             if event.type == pygame.KEYDOWN:
-                action = input_map.lookup(event, choosing=choosing)
+                shopping = state is not None and state.shop_open
+                action = input_map.lookup(event, choosing=choosing, shopping=shopping)
                 if (
                     self._last_was_repeat
                     and action in REPEAT_BLOCKED_ACTIONS
@@ -1402,7 +1513,7 @@ class PygameRenderer(Renderer):
 
         Only window events are pulled off the queue; key presses are left
         queued, so typing ahead during the monster phase works the way it does
-        in the terminal (where getch() simply reads them later).
+        as in any keyboard-driven loop that reads keys later.
         """
         if ms <= 0:
             return

@@ -21,20 +21,52 @@ import random
 from collections import namedtuple
 from typing import cast
 
-from game.monster import BOSS_LEVEL_INTERVAL, ORTHOGONAL_STEPS, Monster, is_boss_level, spawn_boss
+from game.level import free_tiles, room_tiles
+from game.monster import (
+    BOSS_LEVEL_INTERVAL,
+    ORTHOGONAL_STEPS,
+    SLIME_BANDS,
+    Monster,
+    is_boss_level,
+    spawn_boss,
+)
 from game.rng import Rng
 
 FIRST_BOSS_DEPTH = BOSS_LEVEL_INTERVAL
 
-GOBLIN_PACK_START = 1  # goblins per pack on floors 1-5
-GOBLIN_PACK_EVERY = 5  # floors per +1 goblin
-GOBLIN_PACK_MAX = 3
+GOBLIN_PACK_MAX = 5
+# (first floor, pack size) steps: 1 on floors 1-4, 2 on 5-7, 3 on 8-10, 4 on 11-12, 5 from 13.
+GOBLIN_PACK_STEPS = ((1, 1), (5, 2), (8, 3), (11, 4), (13, 5))
+# Goblin archers start on floor 4: 1 on floors 4-7, 2 on 8-11, 3 from 12.
+ARCHER_PACK_STEPS = ((4, 1), (8, 2), (12, 3))
+
+
+def _step_size(steps, depth):
+    size = steps[0][1]
+    for first, n in steps:
+        if depth >= first:
+            size = n
+    return size
 
 
 def goblin_pack_size(depth):
-    """1 on floors 1-5, 2 on 6-10, 3 from 11 on (capped)."""
-    grown = GOBLIN_PACK_START + max(0, depth - 1) // GOBLIN_PACK_EVERY
-    return min(GOBLIN_PACK_MAX, grown)
+    """1 on floors 1-4, 2 on 5-7, 3 on 8-10, 4 on 11-12, 5 from 13 (capped)."""
+    return min(GOBLIN_PACK_MAX, _step_size(GOBLIN_PACK_STEPS, depth))
+
+
+def goblin_archer_pack_size(depth):
+    """1 on floors 4-7, 2 on 8-11, 3 from 12."""
+    return _step_size(ARCHER_PACK_STEPS, depth)
+
+
+def _slime_bands():
+    """(kind, first floor, last floor or None) for each of
+    monster.SLIME_BANDS: a band runs to the floor before the next one starts."""
+    starts = [first for first, _ in SLIME_BANDS[1:]] + [None]
+    return [
+        (kind, first, None if nxt is None else nxt - 1)
+        for (first, kind), nxt in zip(SLIME_BANDS, starts, strict=True)
+    ]
 
 
 # kind: a monster.MONSTER_TYPES key. min_depth/max_depth: inclusive range
@@ -49,8 +81,14 @@ SPAWN_RULES = (
     SpawnRule('orc', 1, FIRST_BOSS_DEPTH, lambda depth: 1, 1, True),
     # ...after it, in a pair that never stands side by side.
     SpawnRule('orc', FIRST_BOSS_DEPTH + 1, None, lambda depth: 2, 1, True),
-    # A goblin archer shoots from range; from floor 4 on, always alone.
-    SpawnRule('goblin_archer', 4, None, lambda depth: 1, 1, True),
+    # A goblin archer shoots from range; from floor 4 on, in a spread pack.
+    SpawnRule('goblin_archer', 4, None, goblin_archer_pack_size, 1, True),
+    # A lone slime, its size by floor (one rule per monster.SLIME_BANDS band):
+    # it splits on death.
+    *(
+        SpawnRule(kind, first, last, lambda depth: 1, 1, True)
+        for kind, first, last in _slime_bands()
+    ),
 )
 
 # Boss depth -> (kind, count) standing guard beside the boss. Boss floors
@@ -74,11 +112,6 @@ def choose_rule(depth, rng: Rng = random, rules=SPAWN_RULES):
     return rng.choices(options, weights=[r.weight for r in options])[0]
 
 
-def room_tiles(room):
-    """Every floor tile of a room, row by row (carve_room's range)."""
-    return [(x, y) for y in range(room.y1, room.y2) for x in range(room.x1, room.x2)]
-
-
 def _chebyshev(a, b):
     return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
 
@@ -87,7 +120,7 @@ def pick_tiles(room, count, rng: Rng = random, occupied=(), spread=False):
     """Up to `count` free tiles of `room`. With spread=True no two picked
     tiles touch, diagonals included. Fewer come back only if the room cannot
     hold them (never for a 4x4+ room and a pack of 3 or less)."""
-    free = [t for t in room_tiles(room) if t not in occupied]
+    free = free_tiles(room, occupied)
     rng.shuffle(free)
     picked = []
     for tile in free:
@@ -118,7 +151,7 @@ def spawn_boss_room(room, depth, rng: Rng = random, occupied=None):
             for t in room_tiles(room)
             if t not in occupied and min(_chebyshev(t, o) for o in occupied) >= 2
         ]
-        free = free or [t for t in room_tiles(room) if t not in occupied]
+        free = free or free_tiles(room, occupied)
         cx, cy = rng.choice(free) if free else (cx, cy)
     boss = spawn_boss(room, depth, at=(cx, cy))
     occupied.add((cx, cy))
@@ -139,17 +172,35 @@ def spawn_boss_room(room, depth, rng: Rng = random, occupied=None):
     return monsters
 
 
-def spawn_level(rooms, depth, rng: Rng = random, rules=SPAWN_RULES):
+def pick_boss_room(rooms, depth, rng: Rng = random):
+    """The boss arena on a boss floor (any room but rooms[0], unless it is
+    the only one), else None."""
+    if not is_boss_level(depth):
+        return None
+    return rng.choice(rooms[1:]) if len(rooms) > 1 else rooms[-1]
+
+
+def spawn_level(
+    rooms, depth, rng: Rng = random, rules=SPAWN_RULES, exclude=(), boss_room=None, occupied=None
+):
     """Every enemy on a floor. Returns (monsters, boss_room), boss_room being
-    None off boss floors."""
-    occupied = {rooms[0].center()}  # the player's start tile
-    boss_room = None
-    if is_boss_level(depth):
-        boss_room = rng.choice(rooms[1:]) if len(rooms) > 1 else rooms[-1]
+    None off boss floors. Rooms in `exclude` (the shop's) get no enemies. A
+    caller that must know the boss room before spawning (to keep the shop out
+    of it) picks it with pick_boss_room and passes it in; left None, it is
+    picked here (and stays None off boss floors).
+
+    `occupied` is the floor's shared occupancy set (game/level.py): tiles
+    already taken, which no monster is put on, and to which every monster's
+    tile is added, so the spawners after this one (chests, the shrine) keep
+    off them. Left None, it starts as the player's start tile alone."""
+    if occupied is None:
+        occupied = {rooms[0].center()}  # the player's start tile
+    if boss_room is None:
+        boss_room = pick_boss_room(rooms, depth, rng)
 
     monsters = []
     for room in rooms[1:]:
-        if room is boss_room:
+        if room is boss_room or any(room is ex for ex in exclude):
             continue
         rule = choose_rule(depth, rng, rules)
         if rule is not None:

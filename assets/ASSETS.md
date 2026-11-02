@@ -73,3 +73,11 @@ is referenced from `tiles.json` or the code.
 | `blood/blood_03.png` | same sheet | CC0 | Frame (col 2, row 2), cropped and scaled the same way. |
 | `blood/blood_04.png` | same sheet | CC0 | Frame (col 3, row 2), cropped and scaled the same way. |
 | `blood/blood_05.png` | same sheet | CC0 | Frame (col 0, row 3), cropped and scaled the same way. |
+
+## Sounds
+
+Sound effects are optional: `assets/sounds/<slot>.ogg` (preferred) or `<slot>.wav`, looked up by
+`render/sound.py`'s `SoundBoard`; a missing file is silent. The 12 slots are `attack_heavy`,
+`attack_light`, `attack_bow`, `attack_crossbow`, `monster_attack_goblin`, `monster_attack_orc`,
+`door`, `descend`, `chest_open`, `enemy_alert`, `gold_pickup` and `footsteps`. No sound files are
+bundled yet; every file added later needs a row in this document with its source and licence.

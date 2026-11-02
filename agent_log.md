@@ -1,5 +1,10 @@
 # Agent Log — PythonRogue stretch-goal implementation
 
+> **History, not instructions.** These entries describe the code as it was on their dates. Since
+> then the curses terminal renderer (`render/curses_render.py`), save/load (`game/save.py`, `S`/`L`)
+> and `render/tcod_render.py` have all been deleted, and the class stats, damage formula, potion
+> heals and test counts below have changed. `CLAUDE.md` describes the current code.
+
 Session date: 2026-08-26. Goal: implement every baseline feature and every stretch goal from
 `roguelike_reference.md` §8 / `CLAUDE.md`'s "Not yet implemented" list, testing each piece as it
 was built, without pushing anything to a remote.
@@ -413,7 +418,8 @@ files got touched and how, not tooling. Concretely:
 
 ## 8. What's still explicitly out of scope
 
-- `render/tcod_render.py` remains an unimplemented scaffold. It's not one of the six `CLAUDE.md`
+- `render/tcod_render.py` remains an unimplemented scaffold (since deleted: tcod was dropped for
+  pygame-ce, see §10). It's not one of the six `CLAUDE.md`
   stretch goals — it's a separate, self-initiated research thread (`going_graphical.md`) about an
   eventual graphical build, and pulling in `tcod`/`numpy` would violate the stdlib-only constraint
   the terminal build is designed to preserve. Left untouched.

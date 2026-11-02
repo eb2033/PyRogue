@@ -16,8 +16,15 @@ try:
 except ImportError:  # pragma: no cover - terminal-only checkout
     pygame = None
 
-from game.item import CHEST_CHAR, CHEST_COLOR, ITEM_CHARS, POTION_CHEST_COLOR
-from game.monster import MONSTER_TYPES
+from game.gold import GOLD_CHAR
+from game.item import (
+    CHEST_CHAR,
+    CHEST_COLOR,
+    GOLD_CHEST_COLOR,
+    ITEM_CHARS,
+    POTION_CHEST_COLOR,
+)
+from game.monster import MONSTER_TYPES, SLIME_KINDS
 from game.paths import resource_path
 from game.shrine import SHRINE_CHAR
 from game.tiles import FLOOR, WALL
@@ -31,9 +38,12 @@ MAX_ASSET_BYTES = 10 * 1024 * 1024
 
 def drawable_chars():
     """Every char the game can put on the map (CLAUDE.md, Tile chars)."""
-    monsters = {char for char, *_ in MONSTER_TYPES.values()}
+    # Slimes are left out: the renderer draws them as green squares by kind
+    # (render/pygame_render.py's SLIME_CELL_FRACTION), never their placeholder
+    # char 'j', until they get pixel art. No slime is ever a boss.
+    monsters = {char for kind, (char, *_) in MONSTER_TYPES.items() if kind not in SLIME_KINDS}
     return (
-        {WALL, FLOOR, '+', '>', '@', CHEST_CHAR, SHRINE_CHAR}
+        {WALL, FLOOR, '+', '>', '@', 'P', CHEST_CHAR, SHRINE_CHAR, GOLD_CHAR}
         | set(ITEM_CHARS.values())
         | monsters
         | {c.upper() for c in monsters}
@@ -48,12 +58,10 @@ def mean_rgb(surface):
 class TilesetFallbackTest(unittest.TestCase):
     """The fallback contract: no assets means 'draw the glyph', never an error."""
 
-    def test_no_path_falls_back_to_glyphs(self):
+    def test_no_path_or_missing_directory_falls_back_to_glyphs(self):
         tileset = Tileset(path=None)
         self.assertFalse(tileset.available)
         self.assertIsNone(tileset.glyph('@', 1))
-
-    def test_missing_directory_falls_back(self):
         with self.assertLogs('render.tileset', 'WARNING'):
             tileset = Tileset(Path(tempfile.gettempdir()) / 'no-such-pyrogue-assets')
         self.assertFalse(tileset.available)
@@ -97,8 +105,9 @@ class BundledTilesetTest(unittest.TestCase):
     def tearDownClass(cls):
         pygame.display.quit()
 
-    def test_bundled_assets_load(self):
+    def test_bundled_assets_load_and_an_unknown_char_falls_back_to_the_glyph(self):
         self.assertTrue(self.tileset.available)
+        self.assertIsNone(self.tileset.glyph('Z'))
 
     def test_every_drawable_char_has_a_tile_of_the_requested_size(self):
         for char in sorted(drawable_chars()):
@@ -107,21 +116,20 @@ class BundledTilesetTest(unittest.TestCase):
                 self.assertIsNotNone(tile, f'no tile for {char!r}')
                 self.assertEqual(tile.get_size(), (size, size))
 
-    def test_unknown_char_falls_back_to_the_glyph(self):
-        self.assertIsNone(self.tileset.glyph('Z'))
-
-    def test_potion_chest_is_pinker_than_a_gear_chest(self):
+    def test_potion_chest_is_pinker_and_gold_chest_yellower_than_a_gear_chest(self):
         pink = mean_rgb(self.tileset.glyph(CHEST_CHAR, POTION_CHEST_COLOR, 32))
         cyan = mean_rgb(self.tileset.glyph(CHEST_CHAR, CHEST_COLOR, 32))
         self.assertGreater(pink[0] - pink[2], cyan[0] - cyan[2])
         self.assertGreater(cyan[2], pink[2] - 30)  # cyan keeps its blue
+        gold = mean_rgb(self.tileset.glyph(CHEST_CHAR, GOLD_CHEST_COLOR, 32))
+        # Yellow is red and green high over blue.
+        self.assertGreater(gold[0] + gold[1] - 2 * gold[2], cyan[0] + cyan[1] - 2 * cyan[2])
+        self.assertGreater(gold[0], cyan[0])
 
-    def test_remembered_cells_are_darker(self):
+    def test_remembered_cells_are_darker_and_tiles_are_cached(self):
         lit = mean_rgb(self.tileset.glyph(FLOOR, 0, 32))
         dim = mean_rgb(self.tileset.glyph(FLOOR, 0, 32, dim=True))
         self.assertLess(sum(dim), sum(lit))
-
-    def test_tiles_are_cached(self):
         self.assertIs(self.tileset.glyph('@', 1, 32), self.tileset.glyph('@', 1, 32))
 
 

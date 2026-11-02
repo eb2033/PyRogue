@@ -30,8 +30,3 @@ def round_damage(value, rng: Rng = random):
     if frac > 0 and rng.random() < frac:
         return floor + 1
     return floor
-
-
-def plain_round(value):
-    """Plain rounding; a drop-in replacement for round_damage."""
-    return int(round(value))

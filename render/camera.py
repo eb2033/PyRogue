@@ -22,7 +22,7 @@ before showing the frame. The kinds:
                      arrows flying together, cell to cell, for `steps`
                      cells at FLIGHT_MS_PER_CELL a cell: paths[i] is arrow
                      i's cells over this stretch. Planned from
-                     GameState.shots (game/combat.py's Shot): every arrow in
+                     a Shot in GameState.events (game/combat.py): every arrow in
                      shot.arrows leaves the shooter's cell at the same moment
                      (a volley's arrows fly side by side; any other bow, and
                      the goblin archer, is a one-arrow Shot on the same path).
@@ -56,14 +56,14 @@ before showing the frame. The kinds:
                      and longer on a crit), and the beat always plays out:
                      keys pressed meanwhile wait in the queue until it ends
   Guard(parry)       the warrior's parry turning a monster's blow aside
-                     (game/combat.py's Parry, from GameState.parries): a
+                     (game/combat.py's Parry, from GameState.events): a
                      light shield outline over the warrior's cell for
                      GUARD_MS, fading out at the end. A parried blow records
                      no Hit, so its Parry stages the sequence: the monster's
                      standard Swing (hit = the Parry) from its cell at the
                      warrior, the Guard, then the riposte's own Swing and
-                     Impact (its Hit, staged as any melee blow), then a
-                     ParryText. Keys wait in the queue throughout.
+                     Impact (parry.riposte, the Hit that follows it in the
+                     stream, staged as any melee blow), then a ParryText. Keys wait in the queue throughout.
   ParryText(parry)   ends that sequence: the blue "Parry!" over the warrior
                      appears with the Guard, stays over every beat up to
                      here, and fades out over this one (PARRY_FADE_MS).
@@ -86,7 +86,7 @@ import math
 import random
 from collections import namedtuple
 
-from game.combat import Parry, Shot
+from game.combat import Hit, Parry, Shot
 
 # The exploring zoom -- the one knob for it. The map area is laid out for
 # base map / VIEW_ZOOM cells per axis (view_size), so tiles are VIEW_ZOOM
@@ -151,6 +151,7 @@ SWING_MS = SWING_SHAPES['standard'].ms
 WEAPON_SWINGS = {
     'dagger': 'short',
     'rapier': 'skinny',
+    'fencing_sword': 'skinny',
     'great_sword': 'wide',
     'war_axe': 'wide',
     'spear': 'long',
@@ -351,8 +352,10 @@ class Director:
     """Decides what the camera should show and stages the beats to get there.
 
     Keeps the combat view (None = not zoomed on a fight: the exploring view,
-    `explore_view`), the monster the camera is following, and the serial of
-    the last hit it staged. Reads the GameState; never mutates it.
+    `explore_view`), the monster the camera is following, and its cursor
+    into GameState.events (the serial of the last event it read). Reads the
+    GameState; never mutates it. A new GameState needs a new Director (its
+    serials start over).
 
     `view_size`: (cols, rows) of the exploring view (see `view_size`); None
     shows the whole map, whatever its size, and never follows the player.
@@ -379,7 +382,7 @@ class Director:
         self._map = None  # the level (its game_map) at the last frame
         self._shown = None  # the view planned for the last frame
         self.focus = None
-        self._last_hit = 0
+        self._cursor = 0  # the last event serial planned
         self._turn = None  # state.turn at the last frame
         self._pos_seen = None  # the player's position at the last frame
         self._pos_before = None  # ... before their latest turn
@@ -402,16 +405,11 @@ class Director:
         move. Updates the director as if they had
         played (the renderer may cut an animation short, never skip one)."""
         beats = []
-        new = [e for e in state.combat_events if e.serial > self._last_hit]
-        new += [s for s in getattr(state, 'shots', ()) if s.serial > self._last_hit]
-        new += [p for p in getattr(state, 'parries', ()) if p.serial > self._last_hit]
-        staged = set()  # serials of hits a shot has already staged
         closing = {}  # a riposte's Hit serial -> the Parry whose ParryText follows it
-        for event in sorted(new, key=lambda e: e.serial):
-            self._last_hit = max(self._last_hit, event.serial)
+        for event in state.events_since(self._cursor):
+            self._cursor = event.serial
             if isinstance(event, Shot):
                 beats += self._shot_beats(state, event)
-                staged.update(hit.serial for arrow in event.arrows for hit in arrow.hits)
             elif isinstance(event, Parry):
                 if not state.visible[event.y][event.x]:
                     continue
@@ -419,13 +417,13 @@ class Director:
                 if swing is not None:
                     beats.append(swing)
                 beats.append(Guard(event))
-                riposte = self._riposte_of(state, event)
+                riposte = event.riposte
                 if riposte is not None and state.visible[riposte.y][riposte.x]:
                     closing[riposte.serial] = event
                 else:
                     beats.append(ParryText(event))
-            elif event.serial not in staged and state.visible[event.y][event.x]:
-                # Not an arrow's (a shot staged those): a melee blow.
+            elif isinstance(event, Hit) and state.visible[event.y][event.x]:
+                # In the stream itself, not a Shot's: a melee blow.
                 swing = self._swing(state, event)
                 if swing is not None:
                     beats.append(swing)
@@ -452,19 +450,6 @@ class Director:
         return beats
 
     @staticmethod
-    def _riposte_of(state, parry):
-        """The riposte's Hit that `parry` led to: the first after it of the
-        warrior's on that monster, or None."""
-        for hit in state.combat_events:
-            if (
-                hit.serial > parry.serial
-                and hit.attacker is parry.player
-                and hit.defender is parry.monster
-            ):
-                return hit
-        return None
-
-    @staticmethod
     def _swing(state, hit):
         """The Swing before melee `hit`: from where its attacker stands to
         the defender's cell, shaped by the attacker's weapon. None if the two
@@ -489,7 +474,7 @@ class Director:
         mirror = False
         if shape.name == 'skinny':
             earlier = 0
-            for other in state.combat_events:
+            for other in state.hits():
                 if other.serial >= hit.serial:
                     break
                 if other.attacker is attacker and other.defender is hit.defender:
@@ -602,7 +587,7 @@ class Director:
     def _pick_focus(self, state, opponents):
         if self.focus in opponents:
             return self.focus  # stay on the fight already framed
-        for hit in reversed(state.combat_events):
+        for hit in reversed(state.hits()):
             other = hit.defender if hit.attacker is state.player else hit.attacker
             if other in opponents:
                 return other  # whoever just traded blows with the player

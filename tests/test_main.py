@@ -157,6 +157,15 @@ class PlayLoopTest(unittest.TestCase):
         self.assertEqual(renderer.log, ['title', 'class'])
         self.assertEqual(len(runs), 1)
 
+    def test_no_class_goes_back_to_the_title_without_a_run(self):
+        import main
+
+        script, runs = self.die_then('restart')
+        renderer = StandInRenderer([True, False], [None], script)
+        main.play(renderer, 40, 20, delay_ms=0)
+        self.assertEqual(renderer.log, ['title', 'class', 'title'])
+        self.assertEqual(runs, [])
+
     def test_quit_on_the_title_after_a_restart_ends_play(self):
         import main
 

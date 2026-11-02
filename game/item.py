@@ -1,8 +1,8 @@
 """Items (spec §6, stretch goal #4) plus a gear/rarity system and chests.
 
-Item kinds: potions (drunk on the spot), gear for the equipment slots --
+Item kinds: potions (kept on the belt, drunk with `h`), gear for the equipment slots --
 the weapon slot (bonus power: the plain 'weapon' kind and the
-WEAPON_TYPES, six per class, each with a special effect from WEAPON_EFFECTS) and armor
+WEAPON_TYPES, seven per class, each with a special effect from WEAPON_EFFECTS) and armor
 (ARMOR_KINDS: heavy 'armor', all defense, and 'leather', defense plus dodge;
 see ARMOR_SPLIT) -- and junk (a dud drop with no stats). Every potion and gear item is tiered Common ->
 Uncommon -> Rare -> Epic; rarity drives both the visual color (an int
@@ -27,7 +27,8 @@ the pick always equips, replacing whatever was in that slot.
 import random
 from typing import cast
 
-from game.entity import Entity
+from game.entity import FIXTURE, PILE, Entity
+from game.gold import GOLD_CHEST_CHANCE_PER_FLOOR
 from game.rng import Rng
 from game.shrine import boon_total, heal_multiplier
 
@@ -68,14 +69,30 @@ LEATHER_DODGE = {rarity: split[1] for rarity, split in ARMOR_SPLIT['leather'].it
 # Whatever the armor, the player's dodge chance never goes above this.
 MAX_DODGE = 50
 
-# The weapon types (each fills the weapon slot): the warrior's six and the
-# archer's six. Their damage bonus is the GEAR_BONUS table plus a per-kind
+# The weapon types (each fills the weapon slot): the warrior's seven and the
+# archer's seven. Their damage bonus is the GEAR_BONUS table plus a per-kind
 # offset; their special effect is data in WEAPON_EFFECTS below. The plain
 # 'weapon' kind is the original sword line with no effect (the starting
 # weapon; it never drops). A class only ever finds its own weapon types in a
 # chest (CLASS_WEAPONS, roll_gear_kind).
-WARRIOR_WEAPONS = ['war_axe', 'rapier', 'great_sword', 'sword_shield', 'dagger', 'spear']
-ARCHER_WEAPONS = ['longbow', 'heavy_crossbow', 'volley_bow', 'sling', 'hunters_bow', 'quickdraw']
+WARRIOR_WEAPONS = [
+    'war_axe',
+    'rapier',
+    'great_sword',
+    'sword_shield',
+    'dagger',
+    'spear',
+    'fencing_sword',
+]
+ARCHER_WEAPONS = [
+    'longbow',
+    'heavy_crossbow',
+    'volley_bow',
+    'sling',
+    'hunters_bow',
+    'quickdraw',
+    'hand_crossbow',
+]
 WEAPON_TYPES = WARRIOR_WEAPONS + ARCHER_WEAPONS
 CLASS_WEAPONS = {'warrior': WARRIOR_WEAPONS, 'archer': ARCHER_WEAPONS}
 WEAPON_DAMAGE_OFFSET = {
@@ -85,21 +102,26 @@ WEAPON_DAMAGE_OFFSET = {
     'sword_shield': 0,
     'dagger': -1,
     'spear': 0,
+    'fencing_sword': -1,
     'longbow': -1,
     'heavy_crossbow': 2,
     'volley_bow': -2,
     'sling': -1,
     'hunters_bow': -1,
     'quickdraw': 0,
+    'hand_crossbow': -1,
 }
 AXE_MAX_HP = {'common': 3, 'uncommon': 6, 'rare': 9, 'epic': 15}
 # The requested 1/2/3 shield defense, x3 for the ARMOR_DEFENSE rescale, with
 # epic continuing the step as the 4th value.
 SHIELD_DEFENSE = {'common': 3, 'uncommon': 6, 'rare': 9, 'epic': 12}
-# Added to the player's crit chance (game.state.crit_chance), capped at 1.0 there.
+# Added to the player's crit chance (game.fight.crit_chance), capped at 1.0 there.
 DAGGER_CRIT = {'common': 0.05, 'uncommon': 0.10, 'rare': 0.15, 'epic': 0.20}
 RAPIER_STRIKES = 2
 SPEAR_REACH = 2
+# Fencing sword: its parry's riposte multiplies raw power by this instead of
+# game.fight.CRIT_MULTIPLIER (1.5).
+FENCING_RIPOSTE = {'common': 2.0, 'uncommon': 2.15, 'rare': 2.3, 'epic': 2.5}
 # The archer's weapons (GameState.shoot_arrow reads these off player.weapon).
 # Longbow: an arrow passes through this many monsters, each hit in full.
 LONGBOW_PIERCE = {'common': 2, 'uncommon': 2, 'rare': 3, 'epic': 4}
@@ -115,6 +137,9 @@ SLING_KNOCKBACK = {'common': 1, 'uncommon': 1, 'rare': 2, 'epic': 2}
 HUNTER_MARK = {'common': 0.25, 'uncommon': 0.50, 'rare': 0.75, 'epic': 1.00}
 # Quickdraw shortbow: every Nth shot takes no monster phase.
 QUICKDRAW_TEMPO = {'common': 4, 'uncommon': 4, 'rare': 3, 'epic': 2}
+# Hand crossbow: no reload; a hop directly away from an adjacent monster
+# doesn't end the turn, so the next shot lands before the monsters answer
+# (the hop-shot: game/turns.py).
 # Whatever the weapon's bonus, the player's power never drops below this.
 MIN_POWER = 1
 
@@ -138,6 +163,9 @@ EFFECT_DEFAULTS = {
     'knockback': 0,
     'mark_bonus': 0.0,
     'tempo': 0,
+    # 0.0: none, so a riposte uses game.fight.CRIT_MULTIPLIER.
+    'riposte_mult': 0.0,
+    'hop_shot': False,
 }
 WEAPON_EFFECTS = {
     'war_axe': {'max_hp_bonus': AXE_MAX_HP},
@@ -146,12 +174,14 @@ WEAPON_EFFECTS = {
     'sword_shield': {'defense_bonus': SHIELD_DEFENSE},
     'dagger': {'crit_bonus': DAGGER_CRIT},
     'spear': {'reach': SPEAR_REACH},
+    'fencing_sword': {'riposte_mult': FENCING_RIPOSTE},
     'longbow': {'pierce': LONGBOW_PIERCE},
     'heavy_crossbow': {'reload': CROSSBOW_RELOAD},
     'volley_bow': {'spread': VOLLEY_SPREAD, 'spread_factor': VOLLEY_FACTOR},
     'sling': {'knockback': SLING_KNOCKBACK},
     'hunters_bow': {'mark_bonus': HUNTER_MARK},
     'quickdraw': {'tempo': QUICKDRAW_TEMPO},
+    'hand_crossbow': {'hop_shot': True},
     # Not a weapon, but dodge rides on the same per-item effect mechanism.
     'leather': {'dodge': LEATHER_DODGE},
 }
@@ -227,6 +257,10 @@ GEAR_NAMES = {
     ('spear', 'uncommon'): 'Iron Spear',
     ('spear', 'rare'): 'Steel Spear',
     ('spear', 'epic'): 'Skypiercer Spear',
+    ('fencing_sword', 'common'): 'Blunted Foil',
+    ('fencing_sword', 'uncommon'): 'Fencing Sword',
+    ('fencing_sword', 'rare'): "Duelmaster's Foil",
+    ('fencing_sword', 'epic'): 'Mirrorblade Foil',
     ('longbow', 'common'): 'Frayed Longbow',
     ('longbow', 'uncommon'): 'Ash Longbow',
     ('longbow', 'rare'): 'Yew Longbow',
@@ -251,6 +285,10 @@ GEAR_NAMES = {
     ('quickdraw', 'uncommon'): 'Quickdraw Shortbow',
     ('quickdraw', 'rare'): 'Swift Shortbow',
     ('quickdraw', 'epic'): 'Quicksilver Shortbow',
+    ('hand_crossbow', 'common'): 'Rickety Hand Crossbow',
+    ('hand_crossbow', 'uncommon'): 'Hand Crossbow',
+    ('hand_crossbow', 'rare'): "Skirmisher's Crossbow",
+    ('hand_crossbow', 'epic'): 'Viper Hand Crossbow',
 }
 POTION_NAMES = {
     'common': 'potion of healing',
@@ -280,7 +318,11 @@ ARMOR_DROP_CHANCE = 0.20
 CHEST_CHAR = '='
 CHEST_COLOR = 3  # gear chests: reuses the cyan pair the old flat "item" color used
 POTION_CHEST_COLOR = 8  # potion chests: pink (8 in render/palette.py)
-CHEST_KINDS = ['potion', 'gear']
+GOLD_CHEST_COLOR = 1  # gold chests: yellow (see game/gold.py)
+# What a chest can be. Only 'potion' and 'gear' are rolled for a kind-less
+# chest (roll_kind); a gold chest is only ever placed by spawn_chests.
+CHEST_COLORS = {'potion': POTION_CHEST_COLOR, 'gold': GOLD_CHEST_COLOR}
+CHEST_KINDS = ['potion', 'gear', 'gold']
 # How many items a gear chest (and a boss chest) offers to choose from.
 GEAR_CHEST_DROPS = 3
 BOSS_CHEST_MIN_RARITIES = ['rare', 'epic']
@@ -311,7 +353,7 @@ def roll_rarity(depth=1, rng: Rng = random):
 def roll_kind(rng: Rng = random):
     """Potion or gear, 50/50: the kind of a Chest built without one. Chests
     on the map get their kind from spawn_chests."""
-    return rng.choice(CHEST_KINDS)
+    return rng.choice([kind for kind in CHEST_KINDS if kind != 'gold'])
 
 
 def class_weapons(char_class):
@@ -372,8 +414,8 @@ def potion_heal(rarity, player=None):
 
 def belt_slot_label(item, player=None):
     """Short text for one belt slot: a potion's heal ('+35', after
-    `player`'s boons if given), or '---' for an empty slot (None). Both
-    renderers' panels use it."""
+    `player`'s boons if given), or '---' for an empty slot (None). The
+    window's panel uses it."""
     if item is None:
         return '---'
     return f'+{potion_heal(item.rarity, player)}'
@@ -426,6 +468,10 @@ class Item(Entity):
     knockback: int
     mark_bonus: float
     tempo: int
+    riposte_mult: float
+    hop_shot: bool
+
+    layer = PILE
 
     def __init__(self, x, y, kind='potion', rarity='common'):
         # Weapon effects, defaulted for every item (see WEAPON_EFFECTS).
@@ -453,10 +499,6 @@ class Item(Entity):
         for attr, value in WEAPON_EFFECTS.get(kind, {}).items():
             setattr(self, attr, _effect_value(value, rarity))
 
-    @property
-    def is_gear(self):
-        return self.kind in GEAR_SLOTS
-
     def apply(self, player, log):
         """Use the item on the player: drink a potion, equip gear into its
         slot (always -- the old piece is replaced and discarded), or, for
@@ -469,8 +511,9 @@ class Item(Entity):
             heal = potion_heal(cast(str, self.rarity), player)
             healed = min(heal, player.max_hp - player.hp)
             player.hp += healed
-            player.inventory.append(self.name)
-            log(f'You drink a {self.name} and recover {healed} HP.')
+            player.items_used.append(self.name)
+            article = 'an' if self.name[0] in 'aeiou' else 'a'
+            log(f'You drink {article} {self.name} and recover {healed} HP.')
             return
 
         slot = GEAR_SLOTS[self.kind]
@@ -488,7 +531,7 @@ class Item(Entity):
         # and the bows' effects are read off player.weapon when they are used.
         player.power = gear_power(player)
         player.defense = gear_defense(player)
-        player.inventory.append(self.name)
+        player.items_used.append(self.name)
         if old is not None:
             log(f'You swap {old.name} for {self.name} ({self.rarity}).')
         else:
@@ -496,8 +539,8 @@ class Item(Entity):
 
 
 class Chest(Entity):
-    """A sealed container. Its kind ('potion' or 'gear') is fixed at spawn
-    so the renderer can tell potion chests from gear chests by colour. What
+    """A sealed container. Its kind ('potion', 'gear' or 'gold') is fixed at spawn
+    so the renderer can tell potion, gold and gear chests apart by colour. What
     is inside isn't rolled until opened -- fresh against the depth it's
     opened at, so "the deeper you go the better the loot" holds for a chest
     you find early but open late, too.
@@ -507,10 +550,12 @@ class Chest(Entity):
     (spec-follow-up: "guaranteed rare drop").
     """
 
+    layer = FIXTURE
+
     def __init__(self, x, y, guaranteed_min_rarity=None, kind=None, rng: Rng = random):
         if kind is None:
             kind = 'gear' if guaranteed_min_rarity else roll_kind(rng)
-        color = POTION_CHEST_COLOR if kind == 'potion' else CHEST_COLOR
+        color = CHEST_COLORS.get(kind, CHEST_COLOR)
         super().__init__(x, y, CHEST_CHAR, color=color, name='chest')
         self.guaranteed_min_rarity = guaranteed_min_rarity
         self.kind = kind
@@ -518,12 +563,14 @@ class Chest(Entity):
     @property
     def offers_choice(self):
         """True if opening this chest asks the player to pick one item."""
-        return self.kind != 'potion'
+        return self.kind == 'gear'
 
     def open(self, depth, rng: Rng = random, char_class='warrior'):
         """Roll the contents. Returns a list of Items: one potion for a
         potion chest, GEAR_CHEST_DROPS choices for a gear or boss chest --
         weapons of `char_class`'s kinds only (roll_gear_kind)."""
+        if self.kind == 'gold':
+            return []  # gold is not an item: GameState.open_chest pays it out
         if self.kind == 'potion':
             return [Item(self.x, self.y, 'potion', roll_rarity(depth, rng))]
         if self.guaranteed_min_rarity == 'rare':
@@ -541,14 +588,23 @@ def _place_chest(room, kind, occupied, rng):
     return None
 
 
-def spawn_chests(rooms, rng: Rng = random, depth=None):
-    """Chests for a fresh level, never in rooms[0] (the player's start) or on
-    the stairs: a potion chest per room with POTION_CHEST_CHANCE_PER_ROOM, and
-    at most one gear chest per floor with GEAR_CHEST_CHANCE_PER_FLOOR -- except
-    that floor 1 (depth == 1) always gets its one gear chest."""
+def spawn_chests(rooms, rng: Rng = random, depth=None, exclude=(), occupied=None):
+    """Chests for a fresh level, never in rooms[0] (the player's start), on
+    the stairs, on a tile of `occupied`, or in a room of `exclude`: a potion
+    chest per room with POTION_CHEST_CHANCE_PER_ROOM, and at most one gear
+    chest and at most one gold chest per floor with
+    GEAR_CHEST_CHANCE_PER_FLOOR and GOLD_CHEST_CHANCE_PER_FLOOR -- except
+    that floor 1 (depth == 1) always gets its one gear chest.
+
+    `occupied` is the floor's shared occupancy set (game/level.py: the
+    player, the shopkeeper and the monsters by now). The stairs tile
+    (rooms[-1].center()) and every chest's tile are added to it, so the
+    shrine after this keeps off them too."""
     chests = []
-    occupied = {rooms[-1].center()} if rooms else set()
-    candidates = rooms[1:]
+    occupied = set() if occupied is None else occupied
+    if rooms:
+        occupied.add(rooms[-1].center())
+    candidates = [room for room in rooms[1:] if not any(room is ex for ex in exclude)]
     for room in candidates:
         if rng.random() < POTION_CHEST_CHANCE_PER_ROOM:
             chest = _place_chest(room, 'potion', occupied, rng)
@@ -556,6 +612,10 @@ def spawn_chests(rooms, rng: Rng = random, depth=None):
                 chests.append(chest)
     if candidates and (depth == 1 or rng.random() < GEAR_CHEST_CHANCE_PER_FLOOR):
         chest = _place_chest(rng.choice(candidates), 'gear', occupied, rng)
+        if chest is not None:
+            chests.append(chest)
+    if candidates and rng.random() < GOLD_CHEST_CHANCE_PER_FLOOR:
+        chest = _place_chest(rng.choice(candidates), 'gold', occupied, rng)
         if chest is not None:
             chests.append(chest)
     return chests
